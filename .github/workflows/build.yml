@@ -1,0 +1,305 @@
+# Simpan file ini sebagai: .github/workflows/build.yml  (di repo GitHub privat Anda)
+#
+# Cara pakai singkat:
+#   1. Unggah project.zip ke ROOT repo (sejajar dengan folder .github).
+#   2. Tab Actions -> "Build APK" -> Run workflow (atau otomatis jalan saat project.zip diperbarui).
+#   3. Unduh EditorVideo-A05.apk dari halaman Releases (atau dari Artifacts), lalu pasang di HP.
+#
+# Tanda tangan APK:
+#   - Paling stabil: isi 4 secret repo (Settings -> Secrets and variables -> Actions):
+#       KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+#   - Jika secret tidak diisi: keystore dibuat otomatis (password acak, tidak ditampilkan di log)
+#     lalu disimpan di cache GitHub Actions (kunci tetap: keystore-v1) supaya tanda tangan sama
+#     di build berikutnya. Cache bisa hilang (mis. tidak dipakai 7 hari). Jika hilang, tanda
+#     tangan berubah dan aplikasi lama harus di-uninstall dulu sebelum memasang yang baru.
+#   - Keystore TIDAK PERNAH disimpan di repo dan password TIDAK PERNAH dicetak ke log.
+
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'project.zip'
+
+permissions:
+  contents: write
+
+# Satu build pada satu waktu, supaya keystore otomatis tidak dibuat dua kali secara bersamaan.
+concurrency:
+  group: build-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build EditorVideo-A05.apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Ambil isi repo
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Ekstrak project.zip
+        run: |
+          set -eu
+          if [ ! -f project.zip ]; then
+            echo "::error title=project.zip tidak ada::Unggah project.zip ke root repo (sejajar dengan folder .github), lalu jalankan ulang."
+            exit 1
+          fi
+          rm -rf _src
+          mkdir _src
+          unzip -q -o project.zip -d _src
+          # Cari settings.gradle(.kts) yang paling dangkal: zip boleh berisi proyek langsung di root
+          # atau di dalam satu folder.
+          FOUND=$(find _src -maxdepth 4 \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -not -path '*/__MACOSX/*' -print | awk -F/ '{print NF "\t" $0}' | sort -n | head -n 1 | cut -f2-)
+          if [ -z "$FOUND" ]; then
+            echo "::error title=Isi project.zip salah::settings.gradle(.kts) tidak ditemukan di dalam project.zip. Zip harus berisi proyek Android (settings.gradle.kts, app/, dst)."
+            echo "Isi tingkat atas project.zip:"
+            ls -la _src
+            exit 1
+          fi
+          ROOT=$(dirname "$FOUND")
+          PROJECT_DIR="$GITHUB_WORKSPACE/$ROOT"
+          rm -f "$PROJECT_DIR/local.properties"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Root proyek: $ROOT"
+          ls -la "$PROJECT_DIR"
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "::warning::Folder app/ tidak ditemukan di root proyek."
+          fi
+
+      - name: Pasang Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Pasang Gradle 8.7
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.7'
+          cache-provider: basic
+          add-job-summary: never
+          validate-wrappers: false
+
+      - name: Terima lisensi dan siapkan Android SDK
+        run: |
+          set +e
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            SDKM=$(command -v sdkmanager)
+          fi
+          if [ -z "$SDKM" ] || [ ! -x "$SDKM" ]; then
+            echo "::warning::sdkmanager tidak ditemukan. Mengandalkan unduhan otomatis oleh Gradle."
+            exit 0
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1
+          "$SDKM" --install "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -n 5
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Pulihkan keystore otomatis dari cache
+        id: kscache
+        uses: actions/cache@v5
+        with:
+          path: ~/.editorvideo-keystore
+          key: keystore-v1
+
+      - name: Siapkan tanda tangan (keystore)
+        env:
+          SECRET_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -eu
+          if [ -n "$SECRET_KEYSTORE_BASE64" ] && [ -n "$SECRET_KEYSTORE_PASSWORD" ] && [ -n "$SECRET_KEY_ALIAS" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
+            # --- Jalur 1: keystore dari secrets repo ---
+            KS_FILE="$RUNNER_TEMP/release.jks"
+            if ! printf '%s' "$SECRET_KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$KS_FILE" 2>/dev/null; then
+              echo "::error title=KEYSTORE_BASE64 tidak valid::Isi secret KEYSTORE_BASE64 bukan base64 yang benar."
+              exit 1
+            fi
+            KS_PASS=$(printf '%s' "$SECRET_KEYSTORE_PASSWORD" | tr -d '\r\n')
+            KEY_PASS=$(printf '%s' "$SECRET_KEY_PASSWORD" | tr -d '\r\n')
+            KEY_ALIAS=$(printf '%s' "$SECRET_KEY_ALIAS" | tr -d '\r\n')
+            export KS_PASS
+            if ! keytool -list -keystore "$KS_FILE" -storepass:env KS_PASS -alias "$KEY_ALIAS" > /dev/null 2>&1; then
+              echo "::error title=Secrets keystore tidak cocok::Keystore tidak bisa dibuka atau alias tidak ditemukan. Periksa KEYSTORE_BASE64, KEYSTORE_PASSWORD, dan KEY_ALIAS."
+              exit 1
+            fi
+            {
+              echo "KEYSTORE_PATH=$KS_FILE"
+              echo "KEYSTORE_PASSWORD=$KS_PASS"
+              echo "KEY_ALIAS=$KEY_ALIAS"
+              echo "KEY_PASSWORD=$KEY_PASS"
+              echo "SIGN_MODE=Secrets repo (stabil)"
+            } >> "$GITHUB_ENV"
+            echo "Memakai keystore dari secrets repo."
+          else
+            # --- Jalur 2: keystore otomatis, disimpan di cache ---
+            if [ -n "$SECRET_KEYSTORE_BASE64$SECRET_KEYSTORE_PASSWORD$SECRET_KEY_ALIAS$SECRET_KEY_PASSWORD" ]; then
+              echo "::warning::Secrets keystore belum lengkap (butuh 4 secret). Memakai keystore otomatis."
+            fi
+            KS_DIR="$HOME/.editorvideo-keystore"
+            mkdir -p "$KS_DIR"
+            chmod 700 "$KS_DIR"
+            if [ -s "$KS_DIR/release.jks" ] && [ -s "$KS_DIR/pass.txt" ]; then
+              SIGN_MODE="Keystore otomatis (dipulihkan dari cache)"
+              echo "Memakai keystore otomatis dari cache."
+            else
+              rm -f "$KS_DIR/release.jks" "$KS_DIR/pass.txt"
+              KS_PASS=$(openssl rand -hex 16)
+              export KS_PASS
+              keytool -genkeypair -keystore "$KS_DIR/release.jks" -storetype PKCS12 \
+                -alias editorvideo -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass:env KS_PASS -keypass:env KS_PASS \
+                -dname "CN=Editor Video, O=Pribadi, C=ID" > /dev/null 2>&1
+              printf '%s' "$KS_PASS" > "$KS_DIR/pass.txt"
+              chmod 600 "$KS_DIR/release.jks" "$KS_DIR/pass.txt"
+              SIGN_MODE="Keystore otomatis BARU (tanda tangan berbeda dari build sebelumnya, jika ada)"
+              echo "Keystore otomatis baru dibuat dan akan disimpan ke cache."
+            fi
+            KS_PASS=$(cat "$KS_DIR/pass.txt")
+            echo "::add-mask::$KS_PASS"
+            {
+              echo "KEYSTORE_PATH=$KS_DIR/release.jks"
+              echo "KEYSTORE_PASSWORD=$KS_PASS"
+              echo "KEY_ALIAS=editorvideo"
+              echo "KEY_PASSWORD=$KS_PASS"
+              echo "SIGN_MODE=$SIGN_MODE"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Build APK release
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          gradle --version
+          gradle --no-daemon --console=plain --stacktrace assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Cari APK dan periksa tanda tangan
+        run: |
+          set -eu
+          cd "$PROJECT_DIR"
+          APK_SRC=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            echo "::error title=APK tidak ditemukan::Build selesai tetapi tidak ada APK di app/build/outputs/apk/release."
+            exit 1
+          fi
+          case "$APK_SRC" in
+            *unsigned*)
+              echo "::error title=APK tidak bertanda tangan::Hasil build bernama unsigned. Periksa langkah keystore."
+              exit 1
+              ;;
+          esac
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          APK="$GITHUB_WORKSPACE/out/EditorVideo-A05.apk"
+          cp "$APK_SRC" "$APK"
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          BT=$(ls -d "$SDK_ROOT"/build-tools/*/ 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$BT" ] || [ ! -x "${BT}apksigner" ]; then
+            echo "::error title=apksigner tidak ditemukan::Build-tools Android tidak tersedia untuk memverifikasi APK."
+            exit 1
+          fi
+          if ! "${BT}apksigner" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/apksigner.txt" 2>&1; then
+            cat "$RUNNER_TEMP/apksigner.txt"
+            echo "::error title=Tanda tangan APK tidak valid::apksigner gagal memverifikasi APK."
+            exit 1
+          fi
+          grep -E "^Verifies|Verified using|certificate SHA-256" "$RUNNER_TEMP/apksigner.txt" || true
+          CERT_SHA=$(grep -m 1 'certificate SHA-256 digest' "$RUNNER_TEMP/apksigner.txt" | sed 's/.*: //')
+          echo "CERT_SHA256=$CERT_SHA" >> "$GITHUB_ENV"
+          if [ -x "${BT}aapt2" ]; then
+            "${BT}aapt2" dump badging "$APK" 2>/dev/null | grep -E "^package:|^sdkVersion|^targetSdkVersion" || true
+          fi
+
+      - name: Unggah APK sebagai artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: EditorVideo-A05
+          path: out/EditorVideo-A05.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Buat GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          TAG="v1.0.${GITHUB_RUN_NUMBER}"
+          APK="$GITHUB_WORKSPACE/out/EditorVideo-A05.apk"
+          NOTES="Build otomatis nomor ${GITHUB_RUN_NUMBER} dari commit ${GITHUB_SHA:0:7}. Unduh EditorVideo-A05.apk lalu pasang di HP."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" --title "Editor Video $TAG" --notes "$NOTES" --target "$GITHUB_SHA"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Ringkasan dan cara pasang
+        run: |
+          set -eu
+          APK="$GITHUB_WORKSPACE/out/EditorVideo-A05.apk"
+          APK_SIZE=$(du -h "$APK" | cut -f1)
+          APK_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          REL_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Editor Video siap dipasang
+
+          | Info | Nilai |
+          |---|---|
+          | Versi | 1.0.${GITHUB_RUN_NUMBER} (versionCode ${GITHUB_RUN_NUMBER}) |
+          | Berkas | EditorVideo-A05.apk (${APK_SIZE}) |
+          | Tanda tangan | ${SIGN_MODE} |
+          | SHA-256 sertifikat | ${CERT_SHA256} |
+          | SHA-256 APK | ${APK_SHA} |
+
+          ### Unduh
+          - Halaman rilis: ${REL_URL}
+          - Atau artifact bernama EditorVideo-A05 di bagian bawah halaman run ini (berupa zip).
+
+          ### Pasang di Samsung Galaxy A05
+          1. Buka halaman rilis di browser HP (sudah login GitHub), ketuk EditorVideo-A05.apk sampai terunduh.
+          2. Buka berkasnya lewat notifikasi unduhan atau Berkas Saya -> Download.
+          3. Jika diminta, aktifkan Instal aplikasi tidak dikenal untuk browser yang dipakai.
+          4. Jika tombol Instal diblokir, matikan Auto Blocker: Pengaturan -> Keamanan dan privasi -> Auto Blocker.
+          5. Jika muncul peringatan Play Protect, pilih Detail -> Tetap instal.
+          6. Jika gagal karena bentrok dengan aplikasi lama (tanda tangan berbeda), hapus aplikasi lama dulu lalu pasang lagi.
+          EOF
+
+      - name: Ringkas error (hanya bila gagal)
+        if: failure()
+        run: |
+          set +e
+          LOG="$RUNNER_TEMP/gradle.log"
+          {
+            echo "## Build gagal"
+            echo "Salin blok di bawah ini dan kirim ke Claude."
+            echo
+            printf '%s\n' '```'
+            if [ -f "$LOG" ]; then
+              grep -E '^e: ' "$LOG" | head -n 60
+              grep -E -A 14 'What went wrong' "$LOG" | head -n 40
+              grep -E 'error:|AAPT|Manifest merger|Execution failed' "$LOG" | head -n 20
+            else
+              echo "Log Gradle belum ada. Kegagalan terjadi sebelum tahap build; lihat langkah yang berwarna merah."
+            fi
+            printf '%s\n' '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Simpan log Gradle (hanya bila gagal)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gradle-log
+          path: ${{ runner.temp }}/gradle.log
+          if-no-files-found: ignore
+          retention-days: 7
