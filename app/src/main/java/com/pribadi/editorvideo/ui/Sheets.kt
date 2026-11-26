@@ -208,7 +208,7 @@ private fun SimpleFlow(hGap: Dp, vGap: Dp, content: @Composable () -> Unit) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sheet Tema Aplikasi (termasuk Medium Maroon)
+// Sheet 10 Pilihan Tema Aplikasi — Grid 2 Kolom dengan Mini Preview UI
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -219,15 +219,15 @@ fun ThemeSheet(vm: EditorViewModel, onClose: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Pilih Tema Aplikasi",
+                    text = "Pilih Tema (${AppTheme.entries.size} Pilihan)",
                     color = Ev.Text,
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp
                 )
                 Text(
-                    text = "Pilihan tema disimpan otomatis sebagai tampilan bawaan.",
+                    text = "Ketuk kartu mini preview di bawah untuk menerapkan tema.",
                     color = Ev.Muted,
                     fontSize = 11.5.sp
                 )
@@ -237,83 +237,431 @@ fun ThemeSheet(vm: EditorViewModel, onClose: () -> Unit) {
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        for (t in AppTheme.entries) {
-            val pal = paletteFor(t)
-            val active = vm.appTheme == t
+        // Grid 2 Kolom Mini Preview untuk 10 Tema
+        val rows = AppTheme.entries.chunked(2)
+        for (pair in rows) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 10.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (active) Ev.Accent.copy(alpha = 0.14f) else Ev.Bg)
-                    .border(
-                        width = if (active) 2.dp else 1.dp,
-                        color = if (active) Ev.Accent else Ev.Line,
-                        shape = RoundedCornerShape(14.dp)
-                    )
-                    .clickable {
-                        vm.selectTheme(t)
-                        onClose()
-                    }
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = t.label,
-                            color = Ev.Text,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                        if (active) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Ev.Accent)
-                                    .padding(horizontal = 7.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "Aktif",
-                                    color = Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = t.desc,
-                        color = Ev.Muted,
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp
+                for (t in pair) {
+                    val active = vm.appTheme == t
+                    ThemeMiniPreviewCard(
+                        theme = t,
+                        active = active,
+                        modifier = Modifier.weight(1f),
+                        onClick = { vm.selectTheme(t) }
                     )
                 }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                // Pratinjau palet warna tema
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    for (sw in listOf(pal.bg, pal.panel, pal.accent, pal.yellow)) {
-                        Box(
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(sw)
-                                .border(1.dp, Color(0x55FFFFFF), CircleShape)
-                        )
-                    }
+                if (pair.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
-        ActionButton("Tutup", false, Modifier.fillMaxWidth(), onClick = onClose)
+        ActionButton("Selesai", true, Modifier.fillMaxWidth(), onClick = onClose)
+    }
+}
+
+@Composable
+private fun ThemeMiniPreviewCard(
+    theme: AppTheme,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val pal = paletteFor(theme)
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (active) Ev.Accent.copy(alpha = 0.14f) else Ev.Bg)
+            .border(
+                width = if (active) 2.dp else 1.dp,
+                color = if (active) Ev.Accent else Ev.Line,
+                shape = RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(8.dp)
+    ) {
+        // Mini Preview antarmuka Editor Video menggunakan palet tema terkait
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(9.dp))
+                .background(pal.bg)
+                .border(1.dp, pal.line, RoundedCornerShape(9.dp))
+        ) {
+            // Mini TopBar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(pal.panel)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(pal.toolIcon)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(pal.yellow)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .width(22.dp)
+                        .height(7.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(pal.accent)
+                )
+            }
+
+            // Mini Preview Stage
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .background(pal.bg)
+                    .padding(vertical = 5.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(56.dp)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(pal.panel)
+                        .border(1.dp, pal.line, RoundedCornerShape(5.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(pal.accent)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 3.dp)
+                            .width(24.dp)
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(pal.yellow)
+                    )
+                }
+            }
+
+            // Mini Timeline + Playhead
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(22.dp)
+                    .background(pal.panel)
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(pal.accent)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(11.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color(pal.segBg))
+                            .border(1.dp, pal.accent, RoundedCornerShape(3.dp))
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(0.75f)
+                            .height(11.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color(pal.segBg))
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .width(1.5.dp)
+                        .fillMaxHeight()
+                        .background(Color.White)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(7.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = theme.label,
+                color = Ev.Text,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (active) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Ev.Accent)
+                        .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                ) {
+                    Text(
+                        text = "✓",
+                        color = Color.White,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = theme.desc,
+            color = Ev.Muted,
+            fontSize = 10.5.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sheet Fitur AI (Sementara UI: Gambar Posisi Seek + Textarea Prompt + Tombol Generate)
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun AiSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    val seekBmp = vm.aiSeekBitmap
+
+    FloatingSheetPanel(onTapOutside = onClose) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Ico(R.drawable.ic_ai, Ev.Yellow, 20.dp)
+                    Text(
+                        text = "Fitur AI",
+                        color = Ev.Text,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Ev.Ghost)
+                            .border(1.dp, Ev.Line, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "Preview UI",
+                            color = Ev.Yellow,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Gambar diambil otomatis sesuai posisi seek timeline saat ini.",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp
+                )
+            }
+            SmallIconButton(R.drawable.ic_close, onClose)
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Kotak Gambar Frame sesuai posisi seek
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(190.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Black)
+                .border(1.dp, Ev.Line, RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (seekBmp != null && !seekBmp.isRecycled) {
+                Image(
+                    bitmap = seekBmp.asImageBitmap(),
+                    contentDescription = "Frame posisi seek",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Ico(R.drawable.ic_ai, Ev.Muted, 28.dp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (vm.hasVideo) {
+                            "Mengambil gambar pada posisi seek…"
+                        } else {
+                            "Belum ada video · Impor video untuk menampilkan frame posisi seek"
+                        },
+                        color = Ev.Muted,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            if (vm.hasVideo) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xCC000000))
+                        .padding(horizontal = 9.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Posisi Seek · " + Fmt.time(vm.aiSeekTimeSec),
+                        color = Ev.Yellow,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xCC000000))
+                        .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+                        .clickable { vm.captureAiSeekFrame() }
+                        .padding(horizontal = 9.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = if (vm.aiFrameLoading) "Memuat…" else "Muat Ulang",
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Label + Textarea Prompt
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "PROMPT AI",
+                color = Ev.Muted,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (vm.aiPrompt.isNotEmpty()) {
+                Text(
+                    text = "Kosongkan",
+                    color = Ev.Accent,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable {
+                        vm.aiPrompt = ""
+                        vm.aiPreviewStatus = null
+                    }
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = vm.aiPrompt,
+            onValueChange = {
+                vm.aiPrompt = it
+                vm.aiPreviewStatus = null
+            },
+            placeholder = {
+                Text(
+                    text = "Tulis prompt AI untuk frame ini (misal: ubah pencahayaan dramatis, perhalus detail, gerakkan kamera perlahan…)",
+                    color = Ev.Muted,
+                    fontSize = 13.sp
+                )
+            },
+            minLines = 3,
+            maxLines = 6,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp, bottom = 12.dp)
+        )
+
+        val status = vm.aiPreviewStatus
+        if (status != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Ev.Bg)
+                    .border(1.dp, Ev.Accent.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                    .padding(11.dp)
+            ) {
+                Text(
+                    text = status,
+                    color = Ev.InfoText,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ActionButton(
+                text = "Tutup",
+                primary = false,
+                modifier = Modifier.weight(0.9f),
+                onClick = onClose
+            )
+            ActionButton(
+                text = "✨ Generate",
+                primary = true,
+                modifier = Modifier.weight(1.4f),
+                onClick = { vm.onAiGenerateClicked() }
+            )
+        }
     }
 }
 

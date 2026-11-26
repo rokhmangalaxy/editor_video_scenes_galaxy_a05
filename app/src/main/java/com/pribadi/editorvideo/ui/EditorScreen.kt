@@ -8,6 +8,7 @@ import androidx.annotation.DrawableRes
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -58,18 +59,21 @@ import com.pribadi.editorvideo.vm.EditorViewModel
 import com.pribadi.editorvideo.vm.Tool
 
 /**
- * Layar utama editor: bar atas (Reset, Tema, Catatan, Ekspor), pratinjau, kontrol putar,
- * bar alat, timeline kosong-di-awal dengan label durasi, serta panel-panel floating (max-height 80% scroll-y).
+ * Layar utama editor: bar atas (Reset, Tema 10 Pilihan, Catatan, Ekspor), pratinjau tunggal & Mode Grid 3 Kolom,
+ * kontrol putar, bar alat (termasuk Fitur AI), timeline kosong-di-awal dengan label durasi,
+ * serta panel-panel floating (max-height 80% scroll-y).
  */
 @Composable
 fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () -> Unit) {
     BackHandler(
-        enabled = vm.confirmText != null || vm.themeSheet || vm.speedSheet || vm.reverseSheet ||
-            vm.textSheet || vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen
+        enabled = vm.confirmText != null || vm.themeSheet || vm.aiSheet || vm.speedSheet ||
+            vm.reverseSheet || vm.textSheet || vm.sceneDetectSheet || vm.noteSheet ||
+            vm.exportSheet || vm.fullscreen
     ) {
         when {
             vm.confirmText != null -> vm.confirmText = null
             vm.themeSheet -> vm.themeSheet = false
+            vm.aiSheet -> vm.aiSheet = false
             vm.reverseSheet -> vm.reverseSheet = false
             vm.sceneDetectSheet -> vm.sceneDetectSheet = false
             vm.speedSheet -> vm.speedSheet = false
@@ -113,6 +117,10 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
 
             if (vm.themeSheet) {
                 ThemeSheet(vm) { vm.themeSheet = false }
+            }
+
+            if (vm.aiSheet) {
+                AiSheet(vm) { vm.aiSheet = false }
             }
 
             if (vm.speedSheet) {
@@ -283,7 +291,7 @@ private fun TopIcon(onClick: () -> Unit, content: @Composable BoxScope.() -> Uni
 }
 
 // ---------------------------------------------------------------------------------------------
-// Pratinjau
+// Pratinjau (Tunggal & Mode Grid 3 Kolom)
 // ---------------------------------------------------------------------------------------------
 
 private fun aspectOf(vm: EditorViewModel): Float {
@@ -298,27 +306,35 @@ private fun aspectOf(vm: EditorViewModel): Float {
 
 @Composable
 private fun Stage(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier) {
-    BoxWithConstraints(
-        modifier = modifier.fillMaxWidth(),
-        contentAlignment = Alignment.Center
-    ) {
-        if (!vm.fullscreen) {
-            val ar = aspectOf(vm)
-            val maxW = maxWidth * 0.94f
-            val maxH = maxOf(maxHeight - 8.dp, 1.dp)
-            var w: Dp = maxW
-            var h: Dp = w / ar
-            if (h > maxH) {
-                h = maxH
-                w = h * ar
+    if (vm.gridMode && !vm.fullscreen) {
+        VideoGridStage(
+            vm = vm,
+            onImport = onImport,
+            modifier = modifier
+        )
+    } else {
+        BoxWithConstraints(
+            modifier = modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!vm.fullscreen) {
+                val ar = aspectOf(vm)
+                val maxW = maxWidth * 0.94f
+                val maxH = maxOf(maxHeight - 8.dp, 1.dp)
+                var w: Dp = maxW
+                var h: Dp = w / ar
+                if (h > maxH) {
+                    h = maxH
+                    w = h * ar
+                }
+                PreviewBox(
+                    vm = vm,
+                    boxW = w,
+                    boxH = h,
+                    onEditText = { layer -> vm.openTextEditor(layer) },
+                    onImport = onImport
+                )
             }
-            PreviewBox(
-                vm = vm,
-                boxW = w,
-                boxH = h,
-                onEditText = { layer -> vm.openTextEditor(layer) },
-                onImport = onImport
-            )
         }
     }
 }
@@ -404,7 +420,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Kontrol putar
+// Kontrol putar & tombol Mode Grid 3 Kolom
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -429,12 +445,49 @@ private fun Controls(vm: EditorViewModel) {
             vm.hasVideo,
             Modifier.align(Alignment.Center)
         ) { vm.togglePlay() }
-        CtrlButton(
-            R.drawable.ic_fullscreen,
-            24.dp,
-            true,
-            Modifier.align(Alignment.CenterEnd)
-        ) { vm.toggleFullscreen() }
+        Row(
+            modifier = Modifier.align(Alignment.CenterEnd),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Tombol Mode Grid 3 Kolom
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (vm.gridMode) Ev.Accent else Ev.Ghost)
+                    .border(
+                        1.dp,
+                        if (vm.gridMode) Ev.Accent else Ev.Line,
+                        RoundedCornerShape(14.dp)
+                    )
+                    .clickable { vm.toggleGridMode() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Ico(
+                        id = R.drawable.ic_grid,
+                        tint = if (vm.gridMode) Color.White else Ev.Text,
+                        size = 16.dp
+                    )
+                    Text(
+                        text = "Grid",
+                        color = if (vm.gridMode) Color.White else Ev.Text,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            CtrlButton(
+                R.drawable.ic_fullscreen,
+                24.dp,
+                !vm.gridMode,
+                Modifier
+            ) { vm.toggleFullscreen() }
+        }
     }
 }
 
@@ -488,6 +541,7 @@ private fun ToolBar(vm: EditorViewModel) {
             }
             ToolItem("Potong", R.drawable.ic_split, false) { vm.onTool(Tool.SPLIT) }
             ToolItem("Scene", R.drawable.ic_scene_detect, vm.sceneDetectSheet) { vm.onTool(Tool.SCENE_DETECT) }
+            ToolItem("AI", R.drawable.ic_ai, vm.aiSheet) { vm.onTool(Tool.AI) }
             ToolItem(
                 if (sp == 1.0) "Kecepatan" else Fmt.one(sp) + "x",
                 R.drawable.ic_speed,
@@ -512,7 +566,7 @@ private fun ToolBar(vm: EditorViewModel) {
 private fun ToolItem(label: String, @DrawableRes icon: Int, on: Boolean, onClick: () -> Unit) {
     Column(
         modifier = Modifier
-            .width(74.dp)
+            .width(70.dp)
             .clickable(onClick = onClick)
             .padding(start = 4.dp, end = 4.dp, top = 12.dp, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

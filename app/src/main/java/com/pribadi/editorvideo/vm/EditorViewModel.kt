@@ -3,6 +3,7 @@ package com.pribadi.editorvideo.vm
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.view.Choreographer
@@ -64,7 +65,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Alat di bar bawah. */
-enum class Tool { SPLIT, SCENE_DETECT, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE }
+enum class Tool { SPLIT, SCENE_DETECT, AI, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE }
 
 /** Kategori catatan (Bug atau Pengembangan). */
 enum class NoteType(val label: String) {
@@ -106,8 +107,8 @@ data class ExportInfo(
 
 /**
  * Jembatan antara UI Compose, logika editor (EditorCore), pemutar pratinjau (ExoPlayer),
- * tema aplikasi (termasuk Medium Maroon), detektor scene (rescan + min 0.1 + simpan default),
- * perender Mundur & Loop (Normal + Mundur), kustomisasi teks kaya, catatan, dan ekspor.
+ * 10 tema aplikasi, Mode Grid 3 kolom, UI Fitur AI berbasis frame posisi seek,
+ * detektor scene, perender Mundur & Loop, kustomisasi teks kaya, catatan, dan ekspor.
  */
 class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -116,13 +117,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ state untuk UI
 
-    /** Pemicu gambar ulang Canvas (timeline, teks overlay). */
     var rev by mutableIntStateOf(0)
         private set
 
-    /** Tema aktif aplikasi (disimpan otomatis di perangkat). */
+    /** Tema aktif dari 10 pilihan tema aplikasi. */
     var appTheme by mutableStateOf(AppTheme.MEDIUM_MAROON)
         private set
+
+    /** Mode tampilan pratinjau: false = Tunggal, true = Mode Grid 3 Kolom. */
+    var gridMode by mutableStateOf(false)
+        private set
+
+    /** Sub-mode pada Mode Grid: 0 = Otomatis, 1 = Per Potongan, 2 = 9 Bagian Waktu. */
+    var gridSubMode by mutableIntStateOf(0)
 
     var playing by mutableStateOf(false)
         private set
@@ -181,17 +188,29 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     // Floating sheets (semua dibatasi max-height 80% + scroll-y)
     var themeSheet by mutableStateOf(false)
+    var aiSheet by mutableStateOf(false)
     var speedSheet by mutableStateOf(false)
     var reverseSheet by mutableStateOf(false)
     var textSheet by mutableStateOf(false)
     var noteSheet by mutableStateOf(false)
-    var noteTab by mutableIntStateOf(0) // 0 = Catatan Bug/Ide, 1 = Updated & Readme
+    var noteTab by mutableIntStateOf(0)
     var sceneDetectSheet by mutableStateOf(false)
     var confirmText by mutableStateOf<String?>(null)
     var exportSheet by mutableStateOf(false)
     var fullscreen by mutableStateOf(false)
 
-    // --- State Deteksi Scene + Grid Preview Deteksi (min 0.1 + ingat nilai terakhir + deteksi ulang) ---
+    // --- State UI Fitur AI (gambar sesuai posisi seek + prompt + tombol generate) ---
+    var aiSeekBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    var aiFrameLoading by mutableStateOf(false)
+        private set
+    var aiSeekTimeSec by mutableDoubleStateOf(0.0)
+        private set
+    var aiPrompt by mutableStateOf("")
+    var aiPreviewStatus by mutableStateOf<String?>(null)
+    private var aiFrameJob: Job? = null
+
+    // --- State Deteksi Scene + Grid Preview Deteksi ---
     var sceneScanning by mutableStateOf(false)
         private set
     var sceneScanProgress by mutableFloatStateOf(0f)
@@ -273,6 +292,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         importJob?.cancel()
         sceneScanJob?.cancel()
         reverseJob?.cancel()
+        aiFrameJob?.cancel()
         try {
             player.release()
         } catch (e: Exception) {
@@ -305,6 +325,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Aspect ratio tampilan untuk sumber ke-[srcIdx] (sudah memperhitungkan rotasi global). */
+    fun aspectOfSource(srcIdx: Int): Float {
+        val inf = sources.getOrElse(srcIdx) { sources.firstOrNull() }?.info ?: info
+        if (inf == null || inf.dispW <= 0 || inf.dispH <= 0) return 9f / 16f
+        return if (rot % 180 != 0) {
+            inf.dispH.toFloat() / inf.dispW.toFloat()
+        } else {
+            inf.dispW.toFloat() / inf.dispH.toFloat()
+        }
+    }
+
     fun toast(msg: String) {
         toastMsg = msg
         toastJob?.cancel()
@@ -314,14 +345,84 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ------------------------------------------------------------------ tema (Gelap Standar & Medium Maroon)
+    // ------------------------------------------------------------------ 10 tema & mode grid 3 kolom
 
     fun selectTheme(theme: AppTheme) {
         appTheme = theme
         Ev.activeTheme = theme
         prefs.edit().putString(KEY_APP_THEME, theme.id).apply()
         bump()
-        toast("Tema diubah ke ${theme.label}")
+        toast("Tema: ${theme.label}")
+    }
+
+    fun toggleGridMode() {
+        gridMode = !gridMode
+        if (!gridMode) {
+            refreshFrame()
+        }
+        toast(if (gridMode) "Mode Grid 3 Kolom aktif" else "Mode Pratinjau Tunggal")
+    }
+
+    // ------------------------------------------------------------------ UI Fitur AI (berdasarkan posisi seek)
+
+    fun openAiPanel() {
+        pause()
+        aiPreviewStatus = null
+        aiSeekTimeSec = core.t
+        aiSheet = true
+        captureAiSeekFrame()
+    }
+
+    fun captureAiSeekFrame() {
+        aiFrameJob?.cancel()
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
+            aiSeekBitmap = null
+            aiFrameLoading = false
+            aiSeekTimeSec = 0.0
+            return
+        }
+        val loc = core.locate(core.t)
+        val seg = core.segs[loc.i]
+        val src = sources.getOrElse(seg.src) { sources.first() }
+        aiSeekTimeSec = core.t
+        // Tampilkan thumbnail instan dulu selagi frame resolusi penuh diambil
+        aiSeekBitmap = thumbAt(seg.src, loc.s)
+        aiFrameLoading = true
+
+        val curRot = rot
+        val curFlip = flip
+        aiFrameJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val bmp = withContext(Dispatchers.IO) {
+                val ms = Math.round(max(0.0, loc.s) * 1000.0)
+                val grabbed = VideoFrames.grabFrame(ctx, src.uri, ms, src.info) ?: return@withContext null
+                val sized = VideoFrames.limitLongSide(grabbed, 960)
+                if (curRot % 360 == 0 && !curFlip) {
+                    sized
+                } else {
+                    val m = Matrix()
+                    if (curRot % 360 != 0) m.postRotate(curRot.toFloat())
+                    if (curFlip) m.postScale(-1f, 1f)
+                    val transformed = Bitmap.createBitmap(sized, 0, 0, sized.width, sized.height, m, true)
+                    if (transformed !== sized) sized.recycle()
+                    transformed
+                }
+            }
+            if (bmp != null) {
+                aiSeekBitmap = bmp
+            }
+            aiFrameLoading = false
+        }
+    }
+
+    fun onAiGenerateClicked() {
+        val promptClean = aiPrompt.trim()
+        if (promptClean.isEmpty()) {
+            toast("Masukkan prompt terlebih dahulu")
+            return
+        }
+        aiPreviewStatus = "Prompt siap pada frame ${Fmt.time(aiSeekTimeSec)} — fitur pemrosesan AI segera hadir."
+        toast("UI AI: Prompt dicatat untuk frame ${Fmt.time(aiSeekTimeSec)}")
     }
 
     // ------------------------------------------------------------------ pemutar
@@ -508,6 +609,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         bump()
     }
 
+    /** Memilih potongan ke-[segIdx] dari Mode Grid 3 Kolom dan melompat ke awal potongan tersebut. */
+    fun selectSegmentFromGrid(segIdx: Int) {
+        if (!hasVideo || segIdx !in core.segs.indices) return
+        val startT = core.lay.off[segIdx]
+        pause()
+        setSeekFast(false)
+        core.sel = segIdx
+        core.setTime(startT + 0.001)
+        seekVideoToEdit()
+        refreshDerived()
+        bump()
+    }
+
     fun setZoom(p: Double) {
         val np = clampD(p, Rules.PPS_MIN, Rules.PPS_MAX)
         if (np == pps) return
@@ -610,6 +724,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 openSceneDetector()
             }
 
+            Tool.AI -> {
+                openAiPanel()
+            }
+
             Tool.SPEED -> {
                 if (!hasVideo || core.segs.isEmpty()) {
                     toast("Impor video dulu")
@@ -669,7 +787,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ------------------------------------------------------------------ deteksi scene + deteksi ulang + min 0.1 + simpan default
+    // ------------------------------------------------------------------ deteksi scene
 
     fun openSceneDetector() {
         if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
@@ -704,7 +822,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         startSceneScan(segIdx, g, attempt = 0)
     }
 
-    /** Melakukan pemindaian ulang (deteksi ulang) secara paksa pada potongan saat ini. */
     fun rescanScenes() {
         if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) return
         val segIdx = core.sel.coerceIn(0, core.segs.size - 1)
@@ -749,7 +866,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Memperbarui sensitivitas (min 0.1) & durasi minimal (min 0.1) sekaligus menyimpannya sebagai nilai default terakhir. */
     fun updateSceneSettings(newSensitivity: Float, newMinDur: Double) {
         val sens = ((newSensitivity * 100f).roundToInt() / 100f).coerceIn(0.1f, 1.0f)
         val minD = ((newMinDur * 10.0).roundToInt() / 10.0).coerceIn(0.1, 5.0)
@@ -803,7 +919,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast(msg)
     }
 
-    // ------------------------------------------------------------------ membalikkan: opsi Mundur & Loop (Normal + Mundur)
+    // ------------------------------------------------------------------ membalikkan: Mundur & Loop
 
     private fun openReverseSheet() {
         if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
@@ -825,12 +941,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         reverseSheet = true
     }
 
-    /**
-     * Menerapkan pilihan pada panel Membalikkan:
-     *  - Seg.REV_NONE   : kembalikan ke video normal asli
-     *  - Seg.REV_MUNDUR : render video dengan urutan frame mundur (akhir -> awal)
-     *  - Seg.REV_LOOP   : render video gabungan Normal + Mundur
-     */
     fun applyReverseMode(targetMode: Int) {
         if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) return
         val segIdx = core.sel.coerceIn(0, core.segs.size - 1)
@@ -849,7 +959,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        // Gunakan rentang sumber asli supaya berpindah antara Mundur <-> Loop selalu bersih dari sumber asli
         val baseSrcIdx = if (g.origSrc in sources.indices) g.origSrc else g.src
         val baseA = if (g.origSrc in sources.indices) g.origA else g.a
         val baseB = if (g.origSrc in sources.indices && g.origB > g.origA) g.origB else g.b
@@ -898,7 +1007,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 sourceThumbs.add(arrayOfNulls(uniq))
                 sourceThumbReady.add(0)
 
-                // Pastikan origSrc/origA/origB tersimpan sebelum diganti
                 val msg = core.applyRenderedReverse(segIdx, newSrcIdx, revDur, targetMode)
                 setSeekFast(false)
                 player.setMediaItems(sources.map { MediaItem.fromUri(it.uri) })
@@ -1002,16 +1110,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.4 (Terbaru)",
+            version = "v1.0.5 (Terbaru)",
+            date = "27/11/2026",
+            title = "Mode Grid 3 Kolom, UI Fitur AI & 10 Pilihan Tema Mini Preview",
+            items = listOf(
+                "✓ [Pengembangan] Mode Grid menampilkan video ke dalam Grid 3 Kolom interaktif (mendukung tampilan per potongan maupun 9 bagian waktu, lengkap dengan pemutaran langsung di sel aktif).",
+                "✓ [Pengembangan] Menu Fitur AI baru (UI): menampilkan frame gambar sesuai posisi seek saat ini, kolom textarea prompt, dan tombol Generate.",
+                "✓ [Pengembangan] 10 pilihan tema warna aplikasi yang ditampilkan dalam Grid 2 Kolom lengkap dengan Mini Preview UI."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.4",
             date = "26/11/2026",
             title = "Tema Medium Maroon, Loop Video, Label Durasi & Deteksi Ulang Scene",
             items = listOf(
-                "✓ [Pengembangan] Tema warna Medium Maroon baru ditambahkan (dapat dipilih lewat tombol Tema di bar atas & tersimpan otomatis).",
-                "✓ [Bug Fixed] Timeline preview di awal kini benar-benar kosong sebelum ada video yang diimpor.",
-                "✓ [Pengembangan] Setiap potongan di timeline preview kini memiliki label durasi langsung (serta info durasi klip aktif & total di bawah).",
-                "✓ [Pengembangan] Seluruh panel floating (menu & fitur) dibatasi max-height 80% dengan scroll vertikal (scroll-y).",
-                "✓ [Pengembangan] Fitur Membalikkan kini memiliki opsi Mundur (urutan frame terbalik) dan Loop (gabungan video Normal + Mundur).",
-                "✓ [Bug Fixed] Deteksi Scene mendukung tombol Deteksi Ulang, nilai minimal 0.1, dan selalu mengingat nilai pengaturan terakhir sebagai default."
+                "✓ Tema Medium Maroon, timeline awal kosong bersih, dan label durasi di tiap potongan.",
+                "✓ Seluruh panel floating dibatasi max-height 80% + scroll-y.",
+                "✓ Opsi Mundur & Loop (Normal + Mundur), serta Deteksi Ulang Scene dengan nilai min 0.1."
             )
         ),
         UpdateLogEntry(
@@ -1019,36 +1134,21 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             date = "26/11/2026",
             title = "Deteksi Scene Grid, Kustomisasi Teks Kaya & Update Timpa APK",
             items = listOf(
-                "✓ Re-install / update APK terbaru langsung menimpa versi lama tanpa uninstall.",
-                "✓ Fitur Split Pendeteksi Scene dengan Grid Preview Deteksi.",
-                "✓ Kustomisasi Overlay Teks yang kaya + drag posisi di pratinjau.",
-                "✓ Render pembalik urutan frame MP4 & Readme di dalam Catatan > Updated."
-            )
-        ),
-        UpdateLogEntry(
-            version = "v1.0.2",
-            date = "26/11/2026",
-            title = "Multiseleksi Media, Pinch Zoom & Catatan",
-            items = listOf(
-                "✓ Impor media multiseleksi beberapa video sekaligus.",
-                "✓ Pinch 2 jari untuk zoom in/out di timeline dan pratinjau.",
-                "✓ Catatan Bug & Pengembangan tersimpan di perangkat."
+                "✓ Update APK langsung menimpa versi lama tanpa uninstall.",
+                "✓ Split Pendeteksi Scene dengan Grid Preview Deteksi & kustomisasi teks kaya."
             )
         )
     )
 
     private fun loadPrefsAndNotes() {
-        // Tema aplikasi
         val savedThemeId = prefs.getString(KEY_APP_THEME, AppTheme.MEDIUM_MAROON.id)
         appTheme = AppTheme.fromId(savedThemeId)
         Ev.activeTheme = appTheme
 
-        // Nilai terakhir Deteksi Scene sebagai default (min 0.1)
         sceneSensitivity = prefs.getFloat(KEY_SCENE_SENS, 0.55f).coerceIn(0.1f, 1.0f)
         sceneMinDur = ((prefs.getFloat(KEY_SCENE_MINDUR, 0.5f).toDouble() * 10.0).roundToInt() / 10.0)
             .coerceIn(0.1, 5.0)
 
-        // Daftar catatan
         val raw = prefs.getString(KEY_NOTES_JSON, null)
         if (raw == null) {
             notes = emptyList()
@@ -1205,16 +1305,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Mengosongkan semua media dan mengembalikan timeline ke kondisi kosong awal. */
     fun resetMedia() {
         pause()
         thumbJob?.cancel()
         importJob?.cancel()
         sceneScanJob?.cancel()
         reverseJob?.cancel()
+        aiFrameJob?.cancel()
         reverseRendering = false
         sceneScanning = false
         currentScanResult = null
+        aiSeekBitmap = null
         sources.clear()
         sourceThumbs.clear()
         sourceThumbReady.clear()
@@ -1267,7 +1368,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 } catch (e: Exception) {
-                    // thumbnail gagal: timeline tetap bisa dipakai dengan warna polos
+                    // diabaikan
                 } finally {
                     try {
                         r.release()
