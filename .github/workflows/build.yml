@@ -1,8 +1,8 @@
 # Simpan file ini sebagai: .github/workflows/build.yml  (di repo GitHub privat Anda)
 #
 # Cara pakai singkat:
-#   1. Unggah project.zip ke ROOT repo (sejajar dengan folder .github).
-#   2. Tab Actions -> "Build APK" -> Run workflow (atau otomatis jalan saat project.zip diperbarui).
+#   1. Proyek Android berada langsung di ROOT repo (settings.gradle.kts, build.gradle.kts, app/, dst).
+#   2. Tab Actions -> "Build APK" -> Run workflow (atau otomatis jalan saat kode proyek diperbarui).
 #   3. Unduh EditorVideo-A05.apk dari halaman Releases (atau dari Artifacts), lalu pasang di HP.
 #
 # Tanda tangan APK:
@@ -20,7 +20,11 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'project.zip'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build.yml'
 
 permissions:
   contents: write
@@ -42,33 +46,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Ekstrak project.zip
+      - name: Periksa struktur proyek
         run: |
           set -eu
-          if [ ! -f project.zip ]; then
-            echo "::error title=project.zip tidak ada::Unggah project.zip ke root repo (sejajar dengan folder .github), lalu jalankan ulang."
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          if [ ! -f "$PROJECT_DIR/settings.gradle.kts" ] && [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
+            echo "::error title=Struktur proyek tidak lengkap::settings.gradle(.kts) tidak ditemukan di root repo."
+            ls -la "$PROJECT_DIR"
             exit 1
           fi
-          rm -rf _src
-          mkdir _src
-          unzip -q -o project.zip -d _src
-          # Cari settings.gradle(.kts) yang paling dangkal: zip boleh berisi proyek langsung di root
-          # atau di dalam satu folder.
-          FOUND=$(find _src -maxdepth 4 \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -not -path '*/__MACOSX/*' -print | awk -F/ '{print NF "\t" $0}' | sort -n | head -n 1 | cut -f2-)
-          if [ -z "$FOUND" ]; then
-            echo "::error title=Isi project.zip salah::settings.gradle(.kts) tidak ditemukan di dalam project.zip. Zip harus berisi proyek Android (settings.gradle.kts, app/, dst)."
-            echo "Isi tingkat atas project.zip:"
-            ls -la _src
-            exit 1
-          fi
-          ROOT=$(dirname "$FOUND")
-          PROJECT_DIR="$GITHUB_WORKSPACE/$ROOT"
           rm -f "$PROJECT_DIR/local.properties"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Root proyek: $ROOT"
+          echo "Root proyek: $PROJECT_DIR"
           ls -la "$PROJECT_DIR"
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::warning::Folder app/ tidak ditemukan di root proyek."
+            echo "::error title=Folder app tidak ada::Folder app/ tidak ditemukan di root proyek."
+            exit 1
           fi
 
       - name: Pasang Java 17
