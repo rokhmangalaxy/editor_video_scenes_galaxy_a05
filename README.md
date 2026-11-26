@@ -4,10 +4,11 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
 
 ## Fitur Utama
 
-1. **Impor Media Multiseleksi (`+`):**
-   - Mendukung pemilihan satu atau beberapa video sekaligus dari galeri (*Photo Picker*).
+1. **Impor Media dari Galeri atau File Manager (`+` & Placeholder Pratinjau):**
+   - Saat pratinjau kosong, mengetuk placeholder pratinjau (maupun tombol **`+`**) menampilkan pilihan **Upload dari Galeri** (*Photo Picker*) atau **Pilih dari File Manager** (*Storage Access Framework*, multiseleksi).
    - Ketuk tombol **`+`** kapan saja untuk menambahkan video baru ke akhir timeline yang sedang diedit.
-2. **Pemecah Video Manual & Deteksi Scene Otomatis + Grid Preview:**
+2. **Pemecah Video Manual, Seek Auto Seleksi & Deteksi Scene Otomatis + Grid Preview:**
+   - **Seek Auto Seleksi Timeline:** Saat terdapat beberapa klip di timeline, mengetuk klip **sesudah** klip aktif otomatis memindahkan posisi *seek* ke **frame awal** klip tersebut; sedangkan mengetuk klip **sebelum** klip aktif memindahkan posisi *seek* ke **akhir frame** klip tersebut (disertai auto-seleksi klip).
    - **Potong (*Split*):** Memecah klip pada posisi *playhead* menjadi beberapa bagian.
    - **Deteksi Scene Otomatis (*Scene*):** Memindai pergantian adegan dalam klip secara otomatis, menampilkan **Grid Preview Deteksi** berisi thumbnail tiap bagian scene, durasi, sensitivitas, dan pilihan centang per scene sebelum di-split ke timeline.
    - **Trim Handle Kiri/Kanan:** Mengatur batas awal dan akhir setiap potongan langsung di timeline.
@@ -22,7 +23,7 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
 5. **Mode Grid Lengkap (Floating 3–9 Kolom, 12 Warna Custom Tag Transparan, Sort, Filter & Multiplayer Collage):**
    - **Floating Range Vertikal 3–9 Kolom:** Grid menggunakan lebar penuh 100%, sedangkan penggeser range vertikal **3 sampai 9 kolom** tampil mengambang (*floating*) saat simbol kostum kolom di-toggle.
    - **Preview Frame Pertama Utuh:** Setiap item Grid menampilkan **frame pertama klip secara utuh** (tanpa terpotong/*crop*), selaras penuh dengan tampilan *autoplay* saat diklik.
-   - **Tagging (12 Opsi Warna), Label Transparan, Sort & Filter:** Buat *Custom Tag* dengan **12 pilihan warna** (label pada item Grid diberi efek transparansi), urutkan (*Sort*) berdasarkan urutan timeline, durasi, atau abjad tag, serta saring (*Filter*) tampilan per tag.
+   - **Tagging (12 Opsi Warna), Eksport/Import Tagging, Label Transparan, Sort & Filter:** Buat *Custom Tag* dengan **12 pilihan warna** (label pada item Grid diberi efek transparansi), **Eksport & Import Tagging** via berkas `.json` File Manager maupun Clipboard (mode *Gabung* atau *Timpa*), urutkan (*Sort*) berdasarkan urutan timeline, durasi, atau abjad tag, serta saring (*Filter*) tampilan per tag.
    - **Hold Multiseleksi & Multiplayer Collage:** Tekan tahan (*hold*) sel Grid untuk memilih banyak klip sekaligus, memberi tag massal, atau memutar seluruh klip terpilih secara serentak dalam kanvas **Multiplayer Collage**.
 6. **Fitur AI (Frame 100% Identik Preview + Step Per-Frame):**
    - Menu **AI** di toolbar bawah menangkap langsung buffer tampilan *Preview* (`TextureView`) yang tersinkronisasi penuh ke posisi *seek* (disertai *fallback* decode PTS presisi mikrodetik via `MediaCodec` dan tombol geser `±1 Frame` / `±5 Frame`), kolom **textarea prompt**, serta tombol **Generate** untuk persiapan penyisipan hasil AI secara presisi di posisi *seek*.

@@ -452,6 +452,35 @@ class EditorCore {
         return "Tag dihapus dari ${valid.size} potongan"
     }
 
+    /** Menerapkan hasil import tagging ke potongan-potongan timeline (mendukung Undo/Redo). */
+    fun applyImportedSegmentTags(
+        tagsBySegIndex: Map<Int, List<String>>,
+        replaceExisting: Boolean
+    ): Int {
+        if (!hasVideo || segs.isEmpty()) return 0
+        val n = ArrayList(segs)
+        var changed = 0
+        for (idx in n.indices) {
+            val g = n[idx]
+            val incoming = tagsBySegIndex[idx]?.map { it.trim() }?.filter { it.isNotEmpty() }
+            val nextTags = if (replaceExisting) {
+                (incoming ?: emptyList()).distinct()
+            } else {
+                if (incoming.isNullOrEmpty()) g.tags else (g.tags + incoming).distinct()
+            }
+            if (nextTags != g.tags) {
+                n[idx] = g.copy(tags = nextTags)
+                changed++
+            }
+        }
+        if (changed > 0) {
+            segs = n
+            push()
+            build()
+        }
+        return changed
+    }
+
     /** Menghapus beberapa potongan sekaligus (menyisakan minimal 1 potongan di timeline). */
     fun deleteSegments(indices: Set<Int>): String {
         if (!hasVideo || segs.isEmpty()) return "Impor video dulu"

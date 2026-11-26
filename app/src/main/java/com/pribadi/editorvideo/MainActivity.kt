@@ -19,9 +19,10 @@ import com.pribadi.editorvideo.ui.EditorTheme
 import com.pribadi.editorvideo.vm.EditorViewModel
 
 /**
- * Satu-satunya activity. Tugasnya hanya:
+ * Satu-satunya activity. Tugasnya:
  *  - memasang layar Compose,
- *  - membuka pemilih video sistem dengan dukungan multiseleksi (Photo Picker / SAF),
+ *  - membuka pemilih video dari Galeri (Photo Picker) maupun File Manager (SAF) dengan multiseleksi,
+ *  - menangani eksport & import berkas Tagging (.json) lewat SAF,
  *  - meminta izin notifikasi (Android 13+) sebelum ekspor dimulai,
  *  - menjeda pemutaran saat aplikasi tidak terlihat.
  */
@@ -29,7 +30,7 @@ class MainActivity : ComponentActivity() {
 
     private val vm: EditorViewModel by viewModels()
 
-    private val pickVideos = registerForActivityResult(
+    private val pickVideosFromGallery = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
         if (uris.isNotEmpty()) {
@@ -41,6 +42,37 @@ class MainActivity : ComponentActivity() {
                 }
             }
             vm.importVideos(uris)
+        }
+    }
+
+    private val pickVideosFromFileManager = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            for (uri in uris) {
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (e: Exception) {
+                    // Diabaikan bila penyedia dokumen tidak mendukung persistable permission.
+                }
+            }
+            vm.importVideos(uris)
+        }
+    }
+
+    private val exportTaggingDoc = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            vm.exportTaggingToUri(uri)
+        }
+    }
+
+    private val importTaggingDoc = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            vm.importTaggingFromUri(uri)
         }
     }
 
@@ -63,7 +95,10 @@ class MainActivity : ComponentActivity() {
             EditorTheme(theme = vm.appTheme) {
                 EditorScreen(
                     vm = vm,
-                    onImport = { openPicker() },
+                    onPickGallery = { openGalleryPicker() },
+                    onPickFileManager = { openFileManagerPicker() },
+                    onExportTaggingFile = { openExportTagging() },
+                    onImportTaggingFile = { openImportTagging() },
                     onStartExport = { startExport() }
                 )
             }
@@ -81,15 +116,42 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    private fun openPicker() {
-        pickVideos.launch(
-            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-        )
+    private fun openGalleryPicker() {
+        try {
+            pickVideosFromGallery.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+            )
+        } catch (e: Exception) {
+            openFileManagerPicker()
+        }
+    }
+
+    private fun openFileManagerPicker() {
+        try {
+            pickVideosFromFileManager.launch(arrayOf("video/*"))
+        } catch (e: Exception) {
+            vm.toast("File Manager tidak ditemukan di perangkat ini")
+        }
+    }
+
+    private fun openExportTagging() {
+        try {
+            exportTaggingDoc.launch(vm.defaultTaggingFileName())
+        } catch (e: Exception) {
+            vm.toast("Gagal membuka dialog simpan berkas")
+        }
+    }
+
+    private fun openImportTagging() {
+        try {
+            importTaggingDoc.launch(arrayOf("application/json", "text/*", "*/*"))
+        } catch (e: Exception) {
+            vm.toast("Gagal membuka File Manager untuk import tagging")
+        }
     }
 
     private fun startExport() {
         if (!vm.hasVideo) {
-            // ViewModel akan menampilkan pesan "Impor video dulu sebelum ekspor".
             vm.startExport()
             return
         }

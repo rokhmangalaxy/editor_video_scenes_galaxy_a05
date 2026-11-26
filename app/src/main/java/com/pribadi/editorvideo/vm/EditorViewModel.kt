@@ -256,6 +256,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     // Floating sheets (semua dibatasi max-height 80% + scroll-y)
+    var importSourceSheet by mutableStateOf(false)
+    var tagImportReplaceMode by mutableStateOf(false)
     var themeSheet by mutableStateOf(false)
     var aiSheet by mutableStateOf(false)
     var speedSheet by mutableStateOf(false)
@@ -547,7 +549,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         updatedColors[finalTag.lowercase(Locale.ROOT)] = safeColorIdx
         tagColorMap = updatedColors
         saveTagColors(updatedColors)
-        toggleTagForCurrentTarget(finalTag)
+        if (hasVideo && core.segs.isNotEmpty()) {
+            toggleTagForCurrentTarget(finalTag)
+        } else {
+            bump()
+            toast("Custom tag \"$finalTag\" ditambahkan")
+        }
     }
 
     private fun saveCustomTags(tags: List<String>) {
@@ -624,13 +631,219 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openGridTagManager() {
-        if (!hasVideo || core.segs.isEmpty()) {
-            toast("Impor video terlebih dahulu")
-            return
-        }
-        // Bila masih mode 9 Bagian Waktu pada 1 klip utuh, beri tahu atau tag klip #1
-        pause()
+        if (hasVideo) pause()
         gridTagSheet = true
+    }
+
+    // ------------------------------------------------------------------ Eksport & Import Tagging (Mode Grid)
+
+    fun defaultTaggingFileName(): String {
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+        return "tagging_video_$stamp.json"
+    }
+
+    /** Membangun JSON lengkap berisi daftar tag, warna 12 opsi, dan pemetaan tag tiap klip. */
+    fun buildTaggingExportJson(): String {
+        val root = JSONObject()
+        root.put("format", "editor_video_tagging_v1")
+        root.put("exportedAt", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+
+        // Gabungkan semua nama tag yang terdaftar maupun yang terpasang di klip
+        val allTagNames = LinkedHashSet<String>()
+        for (t in availableTags) {
+            val clean = t.trim()
+            if (clean.isNotEmpty()) allTagNames.add(clean)
+        }
+        for (g in core.segs) {
+            for (t in g.tags) {
+                val clean = t.trim()
+                if (clean.isNotEmpty()) allTagNames.add(clean)
+            }
+        }
+
+        val tagsArr = JSONArray()
+        for (tagName in allTagNames) {
+            val cIdx = tagColorIndex(tagName)
+            val cOpt = TAG_COLOR_PALETTE.getOrElse(cIdx) { TAG_COLOR_PALETTE.first() }
+            val tObj = JSONObject()
+            tObj.put("name", tagName)
+            tObj.put("colorIndex", cIdx)
+            tObj.put("colorName", cOpt.name)
+            tagsArr.put(tObj)
+        }
+        root.put("availableTags", tagsArr)
+
+        val segsArr = JSONArray()
+        for ((idx, g) in core.segs.withIndex()) {
+            val sObj = JSONObject()
+            sObj.put("index", idx)
+            sObj.put("clipNumber", idx + 1)
+            sObj.put("src", g.src)
+            sObj.put("startSec", g.a)
+            sObj.put("endSec", g.b)
+            val gTags = JSONArray()
+            for (t in g.tags) gTags.put(t)
+            sObj.put("tags", gTags)
+            segsArr.put(sObj)
+        }
+        root.put("segments", segsArr)
+        return root.toString(2)
+    }
+
+    fun exportTaggingToUri(uri: Uri) {
+        val jsonText = buildTaggingExportJson()
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = try {
+                app.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                    out.write(jsonText.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                    true
+                } ?: false
+            } catch (e: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) {
+                if (ok) {
+                    val taggedClips = core.segs.count { it.tags.isNotEmpty() }
+                    toast("Eksport tagging berhasil (${availableTags.size} tag, $taggedClips klip bertag)")
+                } else {
+                    toast("Gagal menyimpan berkas tagging")
+                }
+            }
+        }
+    }
+
+    fun importTaggingFromUri(uri: Uri) {
+        val app = getApplication<Application>()
+        val replaceMode = tagImportReplaceMode
+        viewModelScope.launch(Dispatchers.IO) {
+            val rawText = try {
+                app.contentResolver.openInputStream(uri)?.use { inp ->
+                    inp.readBytes().toString(Charsets.UTF_8)
+                }
+            } catch (e: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (rawText.isNullOrBlank()) {
+                    toast("Berkas tagging kosong atau tidak bisa dibaca")
+                } else {
+                    importTaggingFromJson(rawText, replaceMode)
+                }
+            }
+        }
+    }
+
+    fun importTaggingFromJson(rawJson: String, replaceExisting: Boolean = tagImportReplaceMode): Boolean {
+        return try {
+            val root = JSONObject(rawJson.trim())
+            val mergedTags = ArrayList(availableTags)
+            val mergedColors = LinkedHashMap(tagColorMap)
+            var importedDefCount = 0
+
+            fun registerTagDef(nameRaw: String, colorIdxOpt: Int?) {
+                val clean = nameRaw.trim().take(24)
+                if (clean.isEmpty()) return
+                val existing = mergedTags.firstOrNull { it.equals(clean, ignoreCase = true) }
+                val canonical = existing ?: clean
+                if (existing == null) {
+                    mergedTags.add(canonical)
+                }
+                if (colorIdxOpt != null && colorIdxOpt in 0..TAG_COLOR_PALETTE.lastIndex) {
+                    mergedColors[canonical.lowercase(Locale.ROOT)] = colorIdxOpt
+                }
+                importedDefCount++
+            }
+
+            val availArr = root.optJSONArray("availableTags")
+            if (availArr != null) {
+                for (i in 0 until availArr.length()) {
+                    val item = availArr.opt(i)
+                    when (item) {
+                        is JSONObject -> {
+                            val nm = item.optString("name", "")
+                            val hasCol = item.has("colorIndex")
+                            val cIdx = if (hasCol) item.optInt("colorIndex", 0) else null
+                            registerTagDef(nm, cIdx)
+                        }
+                        is String -> registerTagDef(item, null)
+                    }
+                }
+            }
+
+            val segTagsMap = LinkedHashMap<Int, List<String>>()
+            val segsArr = root.optJSONArray("segments")
+            if (segsArr != null && hasVideo && core.segs.isNotEmpty()) {
+                val curSegs = core.segs
+                for (i in 0 until segsArr.length()) {
+                    val sObj = segsArr.optJSONObject(i) ?: continue
+                    val rawIdx = sObj.optInt("index", -1)
+                    val src = sObj.optInt("src", 0)
+                    val startSec = sObj.optDouble("startSec", Double.NaN)
+                    val endSec = sObj.optDouble("endSec", Double.NaN)
+                    val tArr = sObj.optJSONArray("tags") ?: continue
+
+                    val parsedTags = ArrayList<String>()
+                    for (j in 0 until tArr.length()) {
+                        val rawT = tArr.optString(j, "").trim().take(24)
+                        if (rawT.isNotEmpty()) {
+                            registerTagDef(rawT, null)
+                            val canonical = mergedTags.firstOrNull { it.equals(rawT, ignoreCase = true) } ?: rawT
+                            if (canonical !in parsedTags) parsedTags.add(canonical)
+                        }
+                    }
+
+                    // Cocokkan klip: indeks + waktu -> rentang waktu -> indeks klip
+                    val matchedIdx: Int = when {
+                        rawIdx in curSegs.indices && !startSec.isNaN() && !endSec.isNaN() &&
+                            abs(curSegs[rawIdx].a - startSec) < 0.08 &&
+                            abs(curSegs[rawIdx].b - endSec) < 0.08 -> rawIdx
+                        !startSec.isNaN() && !endSec.isNaN() -> {
+                            val byTime = curSegs.indexOfFirst { g ->
+                                g.src == src && abs(g.a - startSec) < 0.08 && abs(g.b - endSec) < 0.08
+                            }
+                            if (byTime >= 0) byTime else if (rawIdx in curSegs.indices) rawIdx else -1
+                        }
+                        rawIdx in curSegs.indices -> rawIdx
+                        else -> -1
+                    }
+
+                    if (matchedIdx in curSegs.indices) {
+                        val prev = segTagsMap[matchedIdx] ?: emptyList()
+                        segTagsMap[matchedIdx] = (prev + parsedTags).distinct()
+                    }
+                }
+            }
+
+            if (importedDefCount == 0 && segTagsMap.isEmpty()) {
+                toast("Format JSON tagging tidak dikenali atau kosong")
+                return false
+            }
+
+            availableTags = mergedTags
+            tagColorMap = mergedColors
+            saveCustomTags(mergedTags)
+            saveTagColors(mergedColors)
+
+            val changedSegs = if (hasVideo && core.segs.isNotEmpty() && (segTagsMap.isNotEmpty() || replaceExisting)) {
+                core.applyImportedSegmentTags(segTagsMap, replaceExisting)
+            } else {
+                0
+            }
+
+            refreshDerived()
+            bump()
+            if (hasVideo && core.segs.isNotEmpty()) {
+                toast("Import tagging sukses: ${mergedTags.size} tag, $changedSegs klip diperbarui")
+            } else {
+                toast("Import daftar tag & warna berhasil (${mergedTags.size} tag)")
+            }
+            true
+        } catch (e: Exception) {
+            toast("Gagal membaca format JSON tagging")
+            false
+        }
     }
 
     fun toggleTagForCurrentTarget(tag: String) {
@@ -1140,6 +1353,51 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         pause()
         setSeekFast(false)
         core.setTime(tt)
+        seekVideoToEdit(forceExact = true)
+        refreshDerived()
+        bump()
+    }
+
+    /**
+     * Fitur Seek Auto Seleksi pada Timeline:
+     *  - Bila ada beberapa klip dan seek sedang berada di klip ke-[curIdx]:
+     *    • Mengklik klip sesudahnya (targetIdx > curIdx) -> posisi seek melompat ke FRAME AWAL klip target
+     *      sekaligus meng-auto-seleksi klip target.
+     *    • Mengklik klip sebelumnya (targetIdx < curIdx) -> posisi seek melompat ke AKHIR FRAME klip target
+     *      sekaligus meng-auto-seleksi klip target.
+     *  - Mengklik di dalam klip yang sudah aktif saat ini (targetIdx == curIdx) atau di area ruler
+     *    akan memindahkan posisi seek langsung ke waktu ketukan [tt].
+     */
+    fun tapTimelineAt(tt: Double, onClipArea: Boolean) {
+        if (!hasVideo || core.segs.isEmpty()) return
+        if (tt < 0.0 || tt > core.total) return
+        pause()
+        setSeekFast(false)
+
+        val segs = core.segs
+        val curIdx = core.sel.coerceIn(0, segs.size - 1)
+        val targetIdx = core.locate(tt).i
+
+        if (onClipArea && segs.size >= 2 && targetIdx != curIdx) {
+            if (targetIdx > curIdx) {
+                // Klip sesudahnya -> pindah ke frame awal dari klip target
+                val startOfTarget = core.lay.off[targetIdx]
+                core.sel = targetIdx
+                core.setTime(startOfTarget)
+            } else {
+                // Klip sebelumnya -> pindah ke akhir frame dari klip target (tetap di dalam klip target)
+                val g = segs[targetIdx]
+                val fps = (sources.getOrElse(g.src) { sources.first() }.info.fps.takeIf { it > 1f } ?: 30f).toDouble()
+                val oneFrameTimeline = (1.0 / fps) / max(0.1, g.sp)
+                val inset = min(oneFrameTimeline * 0.85, g.len * 0.25).coerceAtLeast(0.002)
+                val endOfTarget = core.lay.off[targetIdx] + max(0.0, g.len - inset)
+                core.sel = targetIdx
+                core.setTime(endOfTarget)
+            }
+        } else {
+            core.setTime(tt)
+        }
+
         seekVideoToEdit(forceExact = true)
         refreshDerived()
         bump()
@@ -1662,13 +1920,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.9 (Terbaru)",
+            version = "v1.0.10 (Terbaru)",
+            date = "27/11/2026",
+            title = "Opsi Upload Galeri / File Manager, Seek Auto Seleksi Timeline & Eksport/Import Tagging",
+            items = listOf(
+                "✓ [Pengembangan] Saat pratinjau kosong, mengetuk placeholder pratinjau menampilkan opsi Upload dari Galeri (Photo Picker) atau pilih dari File Manager.",
+                "✓ [Pengembangan] Fitur Seek Auto Seleksi di Timeline: mengetuk klip sesudah klip aktif otomatis menempatkan seek di frame awal klip tersebut, sedangkan mengetuk klip sebelumnya menempatkan seek di akhir frame klip tersebut.",
+                "✓ [Pengembangan] Fitur Eksport & Import Tagging di Mode Grid (simpan/buka berkas .json lewat File Manager maupun salin/tempel Clipboard, lengkap dengan mode Gabung atau Timpa)."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.9",
             date = "27/11/2026",
             title = "Frame Pertama Utuh di Mode Grid, Floating Range Kolom & 12 Warna Custom Tag Transparan",
             items = listOf(
-                "✓ [Bug Fixed] Thumbnail setiap item di Mode Grid kini menampilkan frame pertama klip secara utuh (tanpa terpotong/crop dan konsisten rasio/rotasi/cermin dengan tampilan autoplay saat diklik).",
-                "✓ [Pengembangan] Input range vertikal kolom (3–9) kini tampil sebagai panel floating saat simbol kostum kolom di-toggle, sehingga tidak memakan ruang Grid.",
-                "✓ [Pengembangan] Custom Tag dilengkapi 12 opsi warna yang dapat dipilih/diubah kapan saja, serta seluruh label pada item Grid diberi efek transparansi."
+                "✓ [Bug Fixed] Thumbnail setiap item di Mode Grid menampilkan frame pertama klip secara utuh sesuai autoplay.",
+                "✓ [Pengembangan] Input range vertikal kolom (3–9) tampil sebagai panel floating saat simbol kostum kolom di-toggle.",
+                "✓ [Pengembangan] Custom Tag 12 opsi warna & transparansi pada seluruh label item Grid."
             )
         ),
         UpdateLogEntry(
@@ -1677,15 +1945,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             title = "Presisi Frame AI 100% Identik Preview & Mode Grid (3–9 Kolom, Tag/Sort/Filter, Multiplayer Collage)",
             items = listOf(
                 "✓ [Bug Fixed] Gambar di panel AI 100% sama persis dengan tampilan Preview + step ±1 frame.",
-                "✓ [Pengembangan] Opsi range vertikal 3–9 kolom, Tagging, Sort, Filter, serta Hold Multiseleksi & Multiplayer Collage."
-            )
-        ),
-        UpdateLogEntry(
-            version = "v1.0.5",
-            date = "27/11/2026",
-            title = "Mode Grid, UI Fitur AI & 10 Pilihan Tema Mini Preview",
-            items = listOf(
-                "✓ Mode Grid interaktif, menu Fitur AI (UI), serta 10 pilihan tema dengan Grid 2 Kolom Mini Preview."
+                "✓ [Pengembangan] Mode Grid 3–9 kolom, Tagging, Sort, Filter, serta Hold Multiseleksi & Multiplayer Collage."
             )
         )
     )

@@ -173,8 +173,8 @@ fun PreviewBox(
                 ReverseProgressOverlay(vm)
             }
         } else {
-            EmptyPreviewState(onImport = onImport)
-            OverlayLayer(vm, onEditText)
+            EmptyPreviewState()
+            OverlayLayer(vm, onEditText, onEmptyTap = onImport)
         }
     }
 }
@@ -203,14 +203,35 @@ fun VideoGridStage(
         if (!vm.hasVideo || vm.core.segs.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize()) {
                 EmptyGridState(cols = cols, onImport = onImport)
-                GridColToggleSymbol(
-                    cols = cols,
-                    active = vm.gridColSliderOpen,
-                    onClick = { vm.toggleGridColSlider() },
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                )
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Ev.Ghost)
+                            .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                            .clickable { vm.openGridTagManager() }
+                            .padding(horizontal = 8.dp, vertical = 3.5.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Ico(R.drawable.ic_tag, Ev.Yellow, 12.dp)
+                            Text("Tag", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    GridColToggleSymbol(
+                        cols = cols,
+                        active = vm.gridColSliderOpen,
+                        onClick = { vm.toggleGridColSlider() }
+                    )
+                }
             }
         } else {
             val segs = vm.core.segs
@@ -1286,16 +1307,16 @@ private fun ReverseProgressOverlay(vm: EditorViewModel) {
 }
 
 /**
- * Tampilan pratinjau awal yang bersih ketika belum ada video yang dipilih (tanpa menampilkan Readme).
+ * Tampilan placeholder pratinjau awal ketika belum ada video:
+ * jika diklik akan menampilkan opsi upload dari Galeri atau File Manager.
  */
 @Composable
-private fun EmptyPreviewState(onImport: () -> Unit) {
+private fun EmptyPreviewState() {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Ev.Panel)
             .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
-            .clickable(onClick = onImport)
             .padding(20.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
@@ -1318,11 +1339,41 @@ private fun EmptyPreviewState(onImport: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Ketuk untuk memilih satu atau beberapa video",
+            text = "Ketuk untuk pilih dari Galeri atau File Manager",
             color = Ev.Muted,
             fontSize = 12.sp,
             textAlign = TextAlign.Center
         )
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Ev.Ghost)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 9.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Ico(R.drawable.ic_gallery, Ev.Yellow, 14.dp)
+                Text("Galeri", color = Ev.Text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Ev.Ghost)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 9.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Ico(R.drawable.ic_folder, Ev.InfoText, 14.dp)
+                Text("File Manager", color = Ev.Text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
     }
 }
 
@@ -1383,7 +1434,12 @@ private fun VideoSurface(vm: EditorViewModel, boxW: Dp, boxH: Dp) {
  * Dua layer teks overlay digambar dengan kode yang sama persis seperti saat ekspor.
  */
 @Composable
-private fun OverlayLayer(vm: EditorViewModel, onEditText: (Int) -> Unit) {
+private fun OverlayLayer(
+    vm: EditorViewModel,
+    onEditText: (Int) -> Unit,
+    onEmptyTap: (() -> Unit)? = null
+) {
+    val latestEmptyTap = rememberUpdatedState(onEmptyTap)
     val slop = LocalDensity.current.run { 8.dp.toPx() }
     val hitPad = LocalDensity.current.run { 14.dp.toPx() }
     Canvas(
@@ -1446,6 +1502,8 @@ private fun OverlayLayer(vm: EditorViewModel, onEditText: (Int) -> Unit) {
                                     onEditText(hitOnDown)
                                 } else if (vm.hasVideo) {
                                     vm.togglePlay()
+                                } else {
+                                    latestEmptyTap.value?.invoke()
                                 }
                             }
                             break

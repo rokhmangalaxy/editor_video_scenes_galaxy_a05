@@ -442,7 +442,7 @@ private suspend fun PointerInputScope.timelineGestures(
                         }
                     } else if (tapOk) {
                         val tt = tDown + (down.position.x - w / 2f).toDouble() / (vm.pps * d)
-                        vm.tapAt(tt)
+                        vm.tapTimelineAt(tt, onClipArea = down.position.y <= RULER_TOP * d)
                     }
                     break
                 }

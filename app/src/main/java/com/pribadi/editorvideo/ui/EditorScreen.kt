@@ -64,16 +64,26 @@ import com.pribadi.editorvideo.vm.Tool
  * serta panel-panel floating (max-height 80% scroll-y).
  */
 @Composable
-fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () -> Unit) {
+fun EditorScreen(
+    vm: EditorViewModel,
+    onPickGallery: () -> Unit,
+    onPickFileManager: () -> Unit,
+    onExportTaggingFile: () -> Unit,
+    onImportTaggingFile: () -> Unit,
+    onStartExport: () -> Unit
+) {
+    val requestImportOptions = { vm.importSourceSheet = true }
+
     BackHandler(
-        enabled = vm.collageOpen || vm.confirmText != null || vm.gridTagSheet || vm.gridSortSheet ||
-            vm.themeSheet || vm.aiSheet || vm.speedSheet || vm.reverseSheet || vm.textSheet ||
-            vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen ||
-            vm.gridColSliderOpen || vm.gridMultiSelect
+        enabled = vm.collageOpen || vm.confirmText != null || vm.importSourceSheet ||
+            vm.gridTagSheet || vm.gridSortSheet || vm.themeSheet || vm.aiSheet ||
+            vm.speedSheet || vm.reverseSheet || vm.textSheet || vm.sceneDetectSheet ||
+            vm.noteSheet || vm.exportSheet || vm.fullscreen || vm.gridColSliderOpen || vm.gridMultiSelect
     ) {
         when {
             vm.collageOpen -> vm.closeMultiplayerCollage()
             vm.confirmText != null -> vm.confirmText = null
+            vm.importSourceSheet -> vm.importSourceSheet = false
             vm.gridTagSheet -> vm.gridTagSheet = false
             vm.gridSortSheet -> vm.gridSortSheet = false
             vm.themeSheet -> vm.themeSheet = false
@@ -111,14 +121,22 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
                     .navigationBarsPadding()
             ) {
                 TopBar(vm)
-                Stage(vm, onImport, Modifier.weight(1f))
+                Stage(vm, requestImportOptions, Modifier.weight(1f))
                 Controls(vm)
                 ToolBar(vm)
-                Timeline(vm, onImport)
+                Timeline(vm, requestImportOptions)
             }
 
             if (vm.fullscreen) {
-                FullscreenLayer(vm, onImport)
+                FullscreenLayer(vm, requestImportOptions)
+            }
+
+            if (vm.importSourceSheet) {
+                ImportSourceSheet(
+                    onPickGallery = onPickGallery,
+                    onPickFileManager = onPickFileManager,
+                    onClose = { vm.importSourceSheet = false }
+                )
             }
 
             if (vm.themeSheet) {
@@ -130,7 +148,12 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
             }
 
             if (vm.gridTagSheet) {
-                GridTagSheet(vm) { vm.gridTagSheet = false }
+                GridTagSheet(
+                    vm = vm,
+                    onExportFile = onExportTaggingFile,
+                    onImportFile = onImportTaggingFile,
+                    onClose = { vm.gridTagSheet = false }
+                )
             }
 
             if (vm.gridSortSheet) {

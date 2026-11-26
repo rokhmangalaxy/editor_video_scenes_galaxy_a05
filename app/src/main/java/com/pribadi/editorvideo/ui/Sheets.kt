@@ -709,12 +709,143 @@ private fun AiStepBtn(label: String, modifier: Modifier, onClick: () -> Unit) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Sheet Pilihan Sumber Impor Video (Galeri atau File Manager)
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun ImportSourceSheet(
+    onPickGallery: () -> Unit,
+    onPickFileManager: () -> Unit,
+    onClose: () -> Unit
+) {
+    FloatingSheetPanel(onTapOutside = onClose) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Pilih Sumber Video",
+                    color = Ev.Text,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Pilih satu atau beberapa video dari Galeri maupun File Manager.",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp
+                )
+            }
+            SmallIconButton(R.drawable.ic_close, onClose)
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Opsi 1: Upload dari Galeri (Photo Picker)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Ev.Accent.copy(alpha = 0.16f))
+                .border(1.5.dp, Ev.Accent, RoundedCornerShape(14.dp))
+                .clickable {
+                    onClose()
+                    onPickGallery()
+                }
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Ev.Accent),
+                contentAlignment = Alignment.Center
+            ) {
+                Ico(R.drawable.ic_gallery, Color.White, 22.dp)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Upload dari Galeri",
+                    color = Ev.Text,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.5.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Buka Galeri Foto & Video untuk memilih cepat (dukung multiseleksi)",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Opsi 2: Pilih dari File Manager (SAF)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(14.dp))
+                .clickable {
+                    onClose()
+                    onPickFileManager()
+                }
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Ev.Ghost)
+                    .border(1.dp, Ev.Line, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Ico(R.drawable.ic_folder, Ev.Yellow, 22.dp)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Pilih dari File Manager",
+                    color = Ev.Text,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.5.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Telusuri folder Penyimpanan Internal, Kartu SD, atau Download",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        ActionButton("Batal", false, Modifier.fillMaxWidth(), onClick = onClose)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Sheet Tagging & Sheet Sort untuk Mode Grid
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
+fun GridTagSheet(
+    vm: EditorViewModel,
+    onExportFile: () -> Unit,
+    onImportFile: () -> Unit,
+    onClose: () -> Unit
+) {
     val _rev = vm.rev
+    val ctx = LocalContext.current
     var newTagInput by remember { mutableStateOf("") }
     var selectedColorIdx by remember { mutableIntStateOf(5) } // default Ungu untuk tag kustom pertama
     val palette = EditorViewModel.TAG_COLOR_PALETTE
@@ -947,6 +1078,150 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
                     selectedColorIdx = (selectedColorIdx + 1) % palette.size
                 }
             )
+        }
+
+        // Bagian Eksport & Import Tagging (.json File Manager & Clipboard)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                .padding(11.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Ico(R.drawable.ic_import_export, Ev.Yellow, 16.dp)
+                    Text(
+                        text = "EKSPORT & IMPORT TAGGING",
+                        color = Ev.Text,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                // Toggle Mode Import: Gabung vs Timpa
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(if (!vm.tagImportReplaceMode) Ev.Accent else Ev.Ghost)
+                            .clickable { vm.tagImportReplaceMode = false }
+                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "Gabung",
+                            color = if (!vm.tagImportReplaceMode) Color.White else Ev.Muted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(if (vm.tagImportReplaceMode) Ev.Accent else Ev.Ghost)
+                            .clickable { vm.tagImportReplaceMode = true }
+                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "Timpa",
+                            color = if (vm.tagImportReplaceMode) Color.White else Ev.Muted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Simpan daftar custom tag, warna, dan tag klip ke berkas .json atau muat kembali kapan saja.",
+                color = Ev.Muted,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp
+            )
+
+            Spacer(modifier = Modifier.height(9.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ActionButton(
+                    text = "⬇ Eksport File (.json)",
+                    primary = true,
+                    modifier = Modifier.weight(1f),
+                    onClick = onExportFile
+                )
+                ActionButton(
+                    text = "⬆ Import File (.json)",
+                    primary = false,
+                    modifier = Modifier.weight(1f),
+                    onClick = onImportFile
+                )
+            }
+
+            Spacer(modifier = Modifier.height(7.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(Ev.Ghost)
+                        .border(1.dp, Ev.Line, RoundedCornerShape(9.dp))
+                        .clickable {
+                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            val json = vm.buildTaggingExportJson()
+                            cm?.setPrimaryClip(ClipData.newPlainText("Tagging Video JSON", json))
+                            vm.toast("JSON Tagging disalin ke clipboard")
+                        }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Salin JSON",
+                        color = Ev.InfoText,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(Ev.Ghost)
+                        .border(1.dp, Ev.Line, RoundedCornerShape(9.dp))
+                        .clickable {
+                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(ctx)?.toString()
+                            if (clipText.isNullOrBlank()) {
+                                vm.toast("Clipboard masih kosong")
+                            } else {
+                                vm.importTaggingFromJson(clipText, vm.tagImportReplaceMode)
+                            }
+                        }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Tempel JSON",
+                        color = Ev.InfoText,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
         }
 
         Row(
