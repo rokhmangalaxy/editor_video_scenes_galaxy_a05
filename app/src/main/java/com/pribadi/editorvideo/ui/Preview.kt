@@ -46,16 +46,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.pribadi.editorvideo.R
 import com.pribadi.editorvideo.export.OverlayRenderer
 import com.pribadi.editorvideo.model.Fmt
+import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.vm.EditorViewModel
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 /**
  * Kotak pratinjau:
- *  - Saat belum ada video (!vm.hasVideo): menampilkan kotak pratinjau bersih tanpa Readme
- *    (Readme & riwayat pembaruan dipindahkan ke menu Catatan > tab Updated).
- *  - Saat sudah ada video (vm.hasVideo): menampilkan video + teks overlay kaya, mendukung
- *    pinch-to-zoom 2 jari, ketuk teks untuk mengedit, dan seret 1 jari untuk memindah posisi teks.
+ *  - Saat belum ada video (!vm.hasVideo): menampilkan kotak pratinjau bersih tanpa Readme.
+ *  - Saat sudah ada video (vm.hasVideo): menampilkan video + teks overlay kaya, indikator Mundur / Loop,
+ *    mendukung pinch-to-zoom 2 jari, ketuk teks untuk mengedit, dan seret 1 jari untuk memindah posisi teks.
  */
 @Composable
 fun PreviewBox(
@@ -94,7 +94,7 @@ fun PreviewBox(
                         .align(Alignment.TopCenter)
                         .padding(top = 8.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xCC141416))
+                        .background(Ev.Bg.copy(alpha = 0.82f))
                         .border(1.dp, Ev.Line, RoundedCornerShape(14.dp))
                         .clickable { vm.resetPreviewZoom() }
                         .padding(horizontal = 10.dp, vertical = 4.dp)
@@ -109,16 +109,17 @@ fun PreviewBox(
             }
 
             if (vm.selReversed && !vm.reverseRendering) {
+                val badgeLabel = if (vm.selRevMode == Seg.REV_LOOP) "🔁 Loop" else "⏪ Mundur"
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(8.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xCCFF3B5C))
+                        .background(Ev.Accent.copy(alpha = 0.88f))
                         .padding(horizontal = 9.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = "⏪ Dibalik",
+                        text = badgeLabel,
                         color = Color.White,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold
@@ -143,10 +144,11 @@ fun PreviewBox(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "Membalikkan Urutan Frame… $pct%",
+                            text = "Merender ${vm.reverseRenderingLabel}… $pct%",
                             color = Ev.Text,
                             fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         LinearProgressIndicator(
@@ -274,10 +276,6 @@ private fun VideoSurface(vm: EditorViewModel, boxW: Dp, boxH: Dp) {
 
 /**
  * Dua layer teks overlay digambar dengan kode yang sama persis seperti saat ekspor.
- * Mendukung:
- *  - Ketuk 1 jari pada teks overlay untuk langsung membuka editor teks pada layer tersebut.
- *  - Seret (drag) 1 jari pada teks overlay untuk menggeser posisi teks bebas di pratinjau.
- *  - Cubit 2 jari (pinch in/out) pada video untuk memperbesar/memperkecil pratinjau.
  */
 @Composable
 private fun OverlayLayer(vm: EditorViewModel, onEditText: (Int) -> Unit) {

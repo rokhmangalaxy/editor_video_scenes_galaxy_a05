@@ -11,8 +11,9 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
    - **Potong (*Split*):** Memecah klip pada posisi *playhead* menjadi beberapa bagian.
    - **Deteksi Scene Otomatis (*Scene*):** Memindai pergantian adegan dalam klip secara otomatis, menampilkan **Grid Preview Deteksi** berisi thumbnail tiap bagian scene, durasi, sensitivitas, dan pilihan centang per scene sebelum di-split ke timeline.
    - **Trim Handle Kiri/Kanan:** Mengatur batas awal dan akhir setiap potongan langsung di timeline.
-3. **Membalikkan Urutan Frame (*Reverse Render*) & Alat Klip:**
-   - **Membalikkan (*Reverse*):** Merender potongan video dengan cara membalik urutan frame-nya (dari belakang ke depan) menjadi klip MP4 terbalik yang mulus saat diputar maupun diekspor.
+3. **Membalikkan: Opsi Mundur & Loop (*Normal + Mundur*) serta Alat Klip:**
+   - **Mundur (*Reverse*):** Merender potongan video dengan cara membalik urutan frame-nya (dari akhir ke awal) menjadi klip MP4 terbalik.
+   - **Loop (*Normal + Mundur*):** Menggabungkan video normal diikuti video mundur menjadi satu klip MP4 utuh (bolak-balik).
    - **Kecepatan (`0.1x` – `9.0x`):** Mengatur kecepatan per potongan atau menerapkannya ke semua potongan.
    - **Duplikat, Hapus, Putar (`90°`), Cermin (*Flip*), Beku (*Freeze Frame*), Undo & Redo.**
 4. **Kustomisasi Overlay Teks yang Kaya (Default Kosong):**

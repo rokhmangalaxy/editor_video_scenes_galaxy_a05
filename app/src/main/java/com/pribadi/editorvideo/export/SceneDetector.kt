@@ -18,13 +18,14 @@ data class SceneSample(
     val thumb: Bitmap?
 )
 
-/** Hasil pemindaian satu klip video (disimpan di memori agar slider sensitivitas instan). */
+/** Hasil pemindaian satu klip video (disimpan di memori agar slider instan, dan bisa dipindai ulang). */
 data class SceneScanResult(
     val srcIndex: Int,
     val segIndex: Int,
     val startSec: Double,
     val endSec: Double,
     val speed: Double,
+    val scanAttempt: Int,
     val samples: List<SceneSample>
 )
 
@@ -42,7 +43,7 @@ data class DetectedScene(
 
 /**
  * Pendeteksi pergantian adegan (Scene Cut Detector) berbasis perbandingan blok warna & histogram
- * antar-frame berurutan.
+ * antar-frame presisi (OPTION_CLOSEST), mendukung nilai minimal 0.1 dan deteksi ulang (rescan).
  */
 object SceneDetector {
 
@@ -60,12 +61,16 @@ object SceneDetector {
         startSec: Double,
         endSec: Double,
         speed: Double,
+        scanAttempt: Int = 0,
         onProgress: (Float) -> Unit
     ): SceneScanResult {
         val dur = max(0.2, endSec - startSec)
-        // Ambil antara 16 s/d 96 titik sampel sepanjang klip
-        val sampleCount = min(96, max(16, Math.round(dur * 3.0).toInt()))
+        // Pada deteksi ulang (scanAttempt > 0), tingkatkan kepadatan sampel + geser fase titik uji
+        val densityPerSec = if (scanAttempt > 0) 6.0 else 4.5
+        val maxSamples = if (scanAttempt > 0) 140 else 110
+        val sampleCount = min(maxSamples, max(20, Math.round(dur * densityPerSec).toInt()))
         val step = dur / sampleCount.toDouble()
+        val phaseShift = if (scanAttempt > 0) ((scanAttempt % 4) * 0.22 * step) else 0.0
 
         val samples = ArrayList<SceneSample>(sampleCount)
         val retriever = MediaMetadataRetriever()
@@ -80,11 +85,18 @@ object SceneDetector {
             retriever.setDataSource(context, srcUri)
             for (i in 0 until sampleCount) {
                 currentCoroutineContext().ensureActive()
-                val tSec = min(endSec - 0.02, startSec + i * step)
-                val us = Math.round(max(0.0, tSec) * 1_000_000.0)
+                val rawT = if (i == 0) startSec else startSec + i * step + phaseShift
+                val tSec = min(endSec - 0.01, max(startSec, rawT))
+                val us = Math.round(tSec * 1_000_000.0)
 
+                // Gunakan getScaledFrameAtTime + OPTION_CLOSEST agar frame akurat hingga skala 0.1 detik
                 var raw = try {
-                    retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    retriever.getScaledFrameAtTime(
+                        us,
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        GRID_THUMB_W * 2,
+                        GRID_THUMB_H * 2
+                    )
                 } catch (e: Exception) {
                     null
                 }
@@ -95,16 +107,21 @@ object SceneDetector {
                         null
                     }
                 }
+                if (raw == null) {
+                    raw = try {
+                        retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
 
                 var diff = 0f
                 var thumb: Bitmap? = lastThumb
 
                 if (raw != null) {
-                    val up = VideoFrames.upright(raw, srcInfo)
-                    // Buat signature 16x16 untuk menghitung perbedaan visual
-                    val sigBmp = Bitmap.createScaledBitmap(up, SIG_W, SIG_H, true)
+                    val sigBmp = Bitmap.createScaledBitmap(raw, SIG_W, SIG_H, true)
                     sigBmp.getPixels(sigPixels, 0, SIG_W, 0, 0, SIG_W, SIG_H)
-                    if (sigBmp !== up) sigBmp.recycle()
+                    if (sigBmp !== raw) sigBmp.recycle()
 
                     val curR = FloatArray(SIG_W * SIG_H)
                     val curG = FloatArray(SIG_W * SIG_H)
@@ -143,7 +160,7 @@ object SceneDetector {
                         for (k in curHist.indices) {
                             histDiff += abs(curHist[k] - pH[k])
                         }
-                        histDiff /= 6f // normalisasi ke 0..1
+                        histDiff /= 6f
 
                         diff = (blockDiff * 0.55f + histDiff * 0.45f).coerceIn(0f, 1f)
                     }
@@ -153,7 +170,7 @@ object SceneDetector {
                     prevB = curB
                     prevHist = curHist
 
-                    thumb = VideoFrames.coverCrop(up, GRID_THUMB_W, GRID_THUMB_H)
+                    thumb = VideoFrames.coverCrop(raw, GRID_THUMB_W, GRID_THUMB_H)
                     lastThumb = thumb
                 }
 
@@ -175,13 +192,14 @@ object SceneDetector {
             startSec = startSec,
             endSec = endSec,
             speed = speed,
+            scanAttempt = scanAttempt,
             samples = samples
         )
     }
 
     /**
-     * Menyusun daftar DetectedScene dari hasil pemindaian berdasarkan sensitivitas (0.1 .. 0.9)
-     * dan durasi minimal per scene (detik).
+     * Menyusun daftar DetectedScene dari hasil pemindaian berdasarkan sensitivitas (min 0.1 .. 1.0)
+     * dan durasi minimal per scene (min 0.1 detik).
      */
     fun buildScenes(
         scan: SceneScanResult,
@@ -195,16 +213,16 @@ object SceneDetector {
             )
         }
 
-        // Hitung ambang batas (threshold) adaptif dari distribusi diffScore
+        val minDur = minSceneDurSec.coerceIn(0.1, 10.0)
+        val normSens = sensitivity.coerceIn(0.1f, 1.0f)
+
         val diffs = samples.drop(1).map { it.diffScore }.sorted()
         val maxDiff = diffs.lastOrNull() ?: 0f
         val medianDiff = if (diffs.isNotEmpty()) diffs[diffs.size / 2] else 0f
 
-        // Sensitivitas tinggi (0.9) -> threshold rendah; sensitivitas rendah (0.1) -> threshold tinggi
-        val normSens = sensitivity.coerceIn(0.1f, 0.9f)
         val rawThreshold = max(
-            0.035f,
-            medianDiff + (maxDiff - medianDiff) * (1.0f - normSens * 0.88f)
+            0.025f,
+            medianDiff + (maxDiff - medianDiff) * (1.0f - normSens * 0.90f)
         )
 
         val cuts = ArrayList<Pair<Double, Float>>()
@@ -213,23 +231,21 @@ object SceneDetector {
             val s = samples[i]
             val sinceLast = s.timeSec - lastCutSec
             val leftRem = scan.endSec - s.timeSec
-            if (s.diffScore >= rawThreshold && sinceLast >= minSceneDurSec && leftRem >= minSceneDurSec) {
+            if (s.diffScore >= rawThreshold && sinceLast >= minDur && leftRem >= minDur) {
                 cuts.add(s.timeSec to s.diffScore)
                 lastCutSec = s.timeSec
             }
         }
 
-        // Bila tidak ada cut yang melampaui threshold tapi pengguna menaikkan sensitivitas cukup tinggi,
-        // ambil puncak perubahan tertinggi yang memenuhi jarak minimal.
-        if (cuts.isEmpty() && samples.size >= 4 && scan.endSec - scan.startSec >= minSceneDurSec * 2.0) {
+        if (cuts.isEmpty() && samples.size >= 4 && scan.endSec - scan.startSec >= minDur * 2.0) {
             val candidates = samples.drop(1)
-                .filter { it.timeSec - scan.startSec >= minSceneDurSec && scan.endSec - it.timeSec >= minSceneDurSec }
+                .filter { it.timeSec - scan.startSec >= minDur && scan.endSec - it.timeSec >= minDur }
                 .sortedByDescending { it.diffScore }
             val wantPeaks = max(1, Math.round(normSens * 3f).toInt())
             val picked = ArrayList<Pair<Double, Float>>()
             for (cand in candidates) {
-                if (cand.diffScore <= 0.005f) break
-                if (picked.all { abs(it.first - cand.timeSec) >= minSceneDurSec }) {
+                if (cand.diffScore <= 0.004f) break
+                if (picked.all { abs(it.first - cand.timeSec) >= minDur }) {
                     picked.add(cand.timeSec to cand.diffScore)
                     if (picked.size >= wantPeaks) break
                 }
@@ -238,7 +254,6 @@ object SceneDetector {
             cuts.addAll(picked)
         }
 
-        // Bangun daftar scene dari titik-titik potong
         val result = ArrayList<DetectedScene>(cuts.size + 1)
         var curStart = scan.startSec
         var curDiff = 1f

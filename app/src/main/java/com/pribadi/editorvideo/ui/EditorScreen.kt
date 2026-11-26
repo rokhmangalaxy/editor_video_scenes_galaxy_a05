@@ -53,23 +53,24 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.pribadi.editorvideo.R
 import com.pribadi.editorvideo.model.Fmt
+import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.vm.EditorViewModel
 import com.pribadi.editorvideo.vm.Tool
 
 /**
- * Layar utama editor: bar atas, pratinjau (tanpa Readme awal), kontrol putar,
- * bar alat (dilengkapi deteksi Scene, kustomisasi Teks kaya, Membalikkan frame), timeline,
- * serta sheet/dialog (kecepatan, deteksi scene + grid preview, teks overlay, catatan + updated/readme,
- * ekspor, konfirmasi), toast, dan mode layar penuh.
+ * Layar utama editor: bar atas (Reset, Tema, Catatan, Ekspor), pratinjau, kontrol putar,
+ * bar alat, timeline kosong-di-awal dengan label durasi, serta panel-panel floating (max-height 80% scroll-y).
  */
 @Composable
 fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () -> Unit) {
     BackHandler(
-        enabled = vm.confirmText != null || vm.speedSheet || vm.textSheet ||
-            vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen
+        enabled = vm.confirmText != null || vm.themeSheet || vm.speedSheet || vm.reverseSheet ||
+            vm.textSheet || vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen
     ) {
         when {
             vm.confirmText != null -> vm.confirmText = null
+            vm.themeSheet -> vm.themeSheet = false
+            vm.reverseSheet -> vm.reverseSheet = false
             vm.sceneDetectSheet -> vm.sceneDetectSheet = false
             vm.speedSheet -> vm.speedSheet = false
             vm.textSheet -> vm.textSheet = false
@@ -110,8 +111,16 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
                 FullscreenLayer(vm, onImport)
             }
 
+            if (vm.themeSheet) {
+                ThemeSheet(vm) { vm.themeSheet = false }
+            }
+
             if (vm.speedSheet) {
                 SpeedSheet(vm) { vm.speedSheet = false }
+            }
+
+            if (vm.reverseSheet) {
+                ReverseSheet(vm) { vm.reverseSheet = false }
             }
 
             if (vm.sceneDetectSheet) {
@@ -161,12 +170,12 @@ private fun TopBar(vm: EditorViewModel) {
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .padding(start = 8.dp, end = 16.dp),
+            .padding(start = 8.dp, end = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             TopIcon(
@@ -174,11 +183,14 @@ private fun TopBar(vm: EditorViewModel) {
                     if (vm.hasVideo) {
                         vm.resetMedia()
                     } else {
-                        vm.toast("Pratinjau sudah kosong")
+                        vm.toast("Pratinjau & timeline sudah kosong")
                     }
                 }
             ) {
-                Ico(R.drawable.ic_back, Ev.Text, 24.dp)
+                Ico(R.drawable.ic_back, Ev.Text, 23.dp)
+            }
+            TopIcon(onClick = { vm.themeSheet = true }) {
+                Ico(R.drawable.ic_palette, Ev.Yellow, 23.dp)
             }
             TopIcon(
                 onClick = {
@@ -187,7 +199,7 @@ private fun TopBar(vm: EditorViewModel) {
                 }
             ) {
                 Box {
-                    Ico(R.drawable.ic_note, Ev.Text, 24.dp)
+                    Ico(R.drawable.ic_note, Ev.Text, 23.dp)
                     if (openNotesCount > 0) {
                         Box(
                             modifier = Modifier
@@ -210,21 +222,35 @@ private fun TopBar(vm: EditorViewModel) {
             }
         }
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(18.dp))
                     .background(Ev.Ghost)
+                    .clickable { vm.themeSheet = true }
+                    .padding(horizontal = 11.dp, vertical = 7.dp)
+            ) {
+                Text(
+                    text = "Tema",
+                    color = Ev.Text,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.5.sp
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Ev.Ghost)
                     .clickable { vm.noteSheet = true }
-                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                    .padding(horizontal = 11.dp, vertical = 7.dp)
             ) {
                 Text(
                     text = "Catatan",
                     color = Ev.Text,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp
+                    fontSize = 12.5.sp
                 )
             }
             Box(
@@ -238,7 +264,7 @@ private fun TopBar(vm: EditorViewModel) {
                     text = "Ekspor",
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
+                    fontSize = 14.sp
                 )
             }
         }
@@ -260,7 +286,6 @@ private fun TopIcon(onClick: () -> Unit, content: @Composable BoxScope.() -> Uni
 // Pratinjau
 // ---------------------------------------------------------------------------------------------
 
-/** Rasio lebar/tinggi pratinjau mengikuti video yang sudah diputar (9:16 bila belum ada video). */
 private fun aspectOf(vm: EditorViewModel): Float {
     val inf = vm.info
     if (!vm.hasVideo || inf == null || inf.dispW <= 0 || inf.dispH <= 0) return 9f / 16f
@@ -401,7 +426,7 @@ private fun Controls(vm: EditorViewModel) {
         CtrlButton(
             if (vm.playing) R.drawable.ic_pause else R.drawable.ic_play,
             30.dp,
-            true,
+            vm.hasVideo,
             Modifier.align(Alignment.Center)
         ) { vm.togglePlay() }
         CtrlButton(
@@ -456,6 +481,11 @@ private fun ToolBar(vm: EditorViewModel) {
         ) {
             val sp = vm.selSpeed
             val hasText = vm.text1.isNotEmpty() || vm.text2.isNotEmpty()
+            val revLabel = when (vm.selRevMode) {
+                Seg.REV_MUNDUR -> "Mundur"
+                Seg.REV_LOOP -> "Loop"
+                else -> "Membalikkan"
+            }
             ToolItem("Potong", R.drawable.ic_split, false) { vm.onTool(Tool.SPLIT) }
             ToolItem("Scene", R.drawable.ic_scene_detect, vm.sceneDetectSheet) { vm.onTool(Tool.SCENE_DETECT) }
             ToolItem(
@@ -465,9 +495,9 @@ private fun ToolBar(vm: EditorViewModel) {
             ) { vm.onTool(Tool.SPEED) }
             ToolItem("Teks", R.drawable.ic_text, hasText) { vm.onTool(Tool.TEXT) }
             ToolItem(
-                "Membalikkan",
+                revLabel,
                 R.drawable.ic_reverse,
-                vm.selReversed || vm.reverseRendering
+                vm.selReversed || vm.reverseRendering || vm.reverseSheet
             ) { vm.onTool(Tool.REVERSE) }
             ToolItem("Duplikat", R.drawable.ic_dup, false) { vm.onTool(Tool.DUP) }
             ToolItem("Hapus", R.drawable.ic_del, false) { vm.onTool(Tool.DEL) }
@@ -524,7 +554,7 @@ private fun ToastHost(msg: String?, modifier: Modifier) {
                 .offset(y = (10f * (1f - a)).dp)
                 .alpha(a)
                 .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xF528282C))
+                .background(Ev.Panel.copy(alpha = 0.96f))
                 .padding(horizontal = 16.dp, vertical = 9.dp)
         ) {
             Text(

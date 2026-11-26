@@ -5,23 +5,25 @@ import kotlin.math.min
 
 /**
  * Logika inti editor (tanpa Android/Compose):
- * potongan (mendukung multi-video sumber), playhead, pilihan potongan, riwayat undo/redo,
+ * Di awal kosong (segs = emptyList(), hasVideo = false).
+ * Mendukung multi-video sumber, playhead, pilihan potongan, riwayat undo/redo,
  * potong, deteksi scene otomatis, beku, kecepatan, duplikat, hapus, putar, cermin,
- * membalikkan (reverse frame render), dan geser handle trim.
+ * membalikkan (opsi Mundur & Loop normal+mundur), dan geser handle trim.
  */
 class EditorCore {
 
-    /** Daftar durasi tiap video sumber (detik). */
-    var srcDurs: List<Double> = listOf(Rules.DEMO_DUR)
+    /** Daftar durasi tiap video sumber (detik). Di awal kosong. */
+    var srcDurs: List<Double> = emptyList()
         private set
 
-    /** Durasi video sumber pertama (kompatibilitas). */
-    val fullDur: Double get() = srcDurs.firstOrNull() ?: Rules.DEMO_DUR
+    /** Durasi video sumber pertama. */
+    val fullDur: Double get() = srcDurs.firstOrNull() ?: 0.0
 
     /** Durasi video sumber ke-[src]. */
     fun durOf(src: Int): Double = srcDurs.getOrElse(src) { fullDur }
 
-    var segs: List<Seg> = listOf(Seg(0.0, Rules.DEMO_DUR))
+    /** Daftar potongan di timeline. Di awal kosong (sebelum ada video). */
+    var segs: List<Seg> = emptyList()
         private set
 
     var lay: SegLayout = SegLayout(segs)
@@ -45,8 +47,8 @@ class EditorCore {
     private val hist = ArrayList<Snap>()
     private var hi = -1
 
-    val canUndo: Boolean get() = hi > 0
-    val canRedo: Boolean get() = hi < hist.size - 1
+    val canUndo: Boolean get() = hasVideo && hi > 0
+    val canRedo: Boolean get() = hasVideo && hi < hist.size - 1
 
     /** Dipanggil saat pemutaran harus dijeda. */
     var onPause: () -> Unit = {}
@@ -64,11 +66,6 @@ class EditorCore {
     val trimmingSide: Int get() = trimSide
     val trimmingIndex: Int get() = trimIdx
 
-    init {
-        calc()
-        push()
-    }
-
     val total: Double get() = lay.total
 
     // ------------------------------------------------------------------ model
@@ -80,10 +77,14 @@ class EditorCore {
     fun locate(tt: Double): Located = lay.locate(tt)
 
     private fun layoutSel() {
-        if (sel >= segs.size) sel = max(0, segs.size - 1)
+        sel = if (segs.isEmpty()) 0 else sel.coerceIn(0, segs.size - 1)
     }
 
     private fun updateSel() {
+        if (segs.isEmpty()) {
+            sel = 0
+            return
+        }
         val i = locate(t).i
         if (i != sel) {
             sel = i
@@ -123,7 +124,7 @@ class EditorCore {
     }
 
     fun undo(): Boolean {
-        if (hi > 0) {
+        if (hasVideo && hi > 0) {
             onPause()
             hi--
             apply(hist[hi])
@@ -133,13 +134,32 @@ class EditorCore {
     }
 
     fun redo(): Boolean {
-        if (hi < hist.size - 1) {
+        if (hasVideo && hi < hist.size - 1) {
             onPause()
             hi++
             apply(hist[hi])
             return true
         }
         return false
+    }
+
+    /** Mengosongkan timeline sepenuhnya ke kondisi awal (kosong). */
+    fun clear() {
+        onPause()
+        trimSide = 0
+        trimIdx = -1
+        trimOrig = null
+        trimSeg = null
+        srcDurs = emptyList()
+        segs = emptyList()
+        hasVideo = false
+        t = 0.0
+        sel = 0
+        rot = 0
+        flip = false
+        hist.clear()
+        hi = -1
+        calc()
     }
 
     /** Mengganti isi editor dengan satu video baru. */
@@ -166,7 +186,7 @@ class EditorCore {
     /** Menambahkan satu atau beberapa video baru ke akhir timeline yang sudah ada. */
     fun appendVideos(newDurs: List<Double>) {
         if (newDurs.isEmpty()) return
-        if (!hasVideo) {
+        if (!hasVideo || segs.isEmpty()) {
             loadVideos(newDurs)
             return
         }
@@ -192,6 +212,7 @@ class EditorCore {
     // ------------------------------------------------------------------ alat
 
     fun split(): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         val L = locate(t)
         val g = segs[L.i]
         if (g.fz) return "Potongan beku tidak bisa dipotong"
@@ -211,7 +232,7 @@ class EditorCore {
      * Memecah potongan ke-[segIdx] menjadi beberapa bagian sesuai hasil Deteksi Scene.
      */
     fun applySceneSplits(segIdx: Int, ranges: List<Pair<Double, Double>>): String {
-        if (segIdx !in segs.indices || ranges.isEmpty()) return "Tidak ada scene untuk diterapkan"
+        if (!hasVideo || segIdx !in segs.indices || ranges.isEmpty()) return "Tidak ada scene untuk diterapkan"
         val g = segs[segIdx]
         if (g.fz) return "Potongan beku tidak bisa dipecah"
         onPause()
@@ -239,6 +260,7 @@ class EditorCore {
     }
 
     fun freezeFrame(): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         onPause()
         val L = locate(t)
         val g = segs[L.i]
@@ -270,6 +292,7 @@ class EditorCore {
     }
 
     fun delete(): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         if (segs.size < 2) return "Tidak bisa menghapus satu-satunya klip"
         onPause()
         val n = ArrayList(segs)
@@ -284,6 +307,7 @@ class EditorCore {
     }
 
     fun duplicate(): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         onPause()
         val n = ArrayList(segs)
         n.add(sel + 1, segs[sel])
@@ -293,25 +317,31 @@ class EditorCore {
         return "Potongan diduplikat"
     }
 
-    fun rotate() {
+    fun rotate(): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         rot = (rot + 90) % 360
         push()
+        return null
     }
 
     fun mirror(): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         flip = !flip
         push()
         return if (flip) "Cermin kiri-kanan aktif" else "Cermin dimatikan"
     }
 
-    /** Status apakah potongan terpilih saat ini adalah hasil balik urutan frame. */
+    /** Status apakah potongan terpilih saat ini adalah hasil Mundur atau Loop. */
     val selReversed: Boolean get() = segs.getOrNull(sel)?.rev ?: false
 
+    /** Mode membalikkan pada potongan terpilih: 0 = Normal, 1 = Mundur, 2 = Loop. */
+    val selRevMode: Int get() = segs.getOrNull(sel)?.revMode ?: Seg.REV_NONE
+
     /**
-     * Mengganti potongan ke-[segIdx] dengan sumber video baru hasil render balik urutan frame.
+     * Mengganti potongan ke-[segIdx] dengan sumber video baru hasil render Mundur atau Loop (Normal + Mundur).
      */
-    fun applyRenderedReverse(segIdx: Int, newSrcIdx: Int, revDurSec: Double): String {
-        if (segIdx !in segs.indices) return "Potongan tidak ditemukan"
+    fun applyRenderedReverse(segIdx: Int, newSrcIdx: Int, revDurSec: Double, mode: Int): String {
+        if (!hasVideo || segIdx !in segs.indices) return "Potongan tidak ditemukan"
         onPause()
         val g = segs[segIdx]
         val updatedDurs = ArrayList(srcDurs)
@@ -327,7 +357,8 @@ class EditorCore {
             sp = g.sp,
             fz = false,
             d = 0.0,
-            rev = true,
+            rev = mode != Seg.REV_NONE,
+            revMode = mode,
             src = newSrcIdx,
             origSrc = if (g.origSrc >= 0) g.origSrc else g.src,
             origA = if (g.origSrc >= 0) g.origA else g.a,
@@ -341,12 +372,16 @@ class EditorCore {
         t = lay.off[segIdx]
         push()
         build()
-        return "Urutan frame potongan berhasil dibalik"
+        return if (mode == Seg.REV_LOOP) {
+            "Video Loop (Normal + Mundur) berhasil dibuat"
+        } else {
+            "Video Mundur berhasil dibuat"
+        }
     }
 
-    /** Mengembalikan potongan yang sudah dibalik ke video sumber aslinya (arah normal). */
+    /** Mengembalikan potongan yang sudah dibalik / di-loop ke video sumber aslinya (arah normal). */
     fun restoreFromReverse(segIdx: Int): String {
-        if (segIdx !in segs.indices) return "Potongan tidak ditemukan"
+        if (!hasVideo || segIdx !in segs.indices) return "Potongan tidak ditemukan"
         val g = segs[segIdx]
         if (!g.rev || g.origSrc < 0) return "Potongan sudah normal"
         onPause()
@@ -357,6 +392,7 @@ class EditorCore {
             fz = false,
             d = 0.0,
             rev = false,
+            revMode = Seg.REV_NONE,
             src = g.origSrc
         )
         val n = ArrayList(segs)
@@ -367,7 +403,7 @@ class EditorCore {
         t = lay.off[segIdx]
         push()
         build()
-        return "Arah potongan dikembalikan ke normal"
+        return "Potongan dikembalikan ke video normal"
     }
 
     // ------------------------------------------------------------------ kecepatan
@@ -376,6 +412,7 @@ class EditorCore {
     val selSpeed: Double get() = segs.getOrNull(sel)?.sp ?: 1.0
 
     fun setSpeed(v0: Double, commit: Boolean): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         val g = segs.getOrNull(sel) ?: return null
         var v = clampD(jsRound(v0 * 10.0) / 10.0, Rules.SPEED_MIN, Rules.SPEED_MAX)
         var msg: String? = null
@@ -400,18 +437,20 @@ class EditorCore {
 
     /** Mendorong riwayat setelah slider kecepatan selesai digeser (hanya bila ada perubahan). */
     fun commitIfChanged() {
+        if (!hasVideo || segs.isEmpty()) return
         if (hi < 0 || hist[hi].segs != segs || hist[hi].rot != rot || hist[hi].flip != flip) push()
     }
 
     /** Teks dialog konfirmasi "Terapkan ke semua potongan". */
     fun applyAllText(): String {
-        val g = segs[sel]
+        val g = segs.getOrNull(sel) ?: return ""
         return "Kecepatan " + Fmt.one(g.sp) + "x akan diterapkan ke semua " + segs.size +
             " potongan (termasuk potongan beku). Durasi tiap potongan akan berubah (minimal " +
             Fmt.jsNum(Rules.MIN) + " detik)."
     }
 
     fun applySpeedAll(): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
         val v = segs[sel].sp
         val gi = locate(t).i
         val frac = min(0.999, (t - lay.off[gi]) / segs[gi].len)
@@ -442,6 +481,7 @@ class EditorCore {
 
     /** Mulai menggeser handle. side: 1 = kiri, 2 = kanan. */
     fun trimBegin(side: Int) {
+        if (!hasVideo || segs.isEmpty()) return
         onPause()
         val g = segs[sel]
         trimIdx = sel
@@ -454,6 +494,7 @@ class EditorCore {
     fun trimMove(dx: Double) {
         val g0 = trimOrig ?: return
         val i = trimIdx
+        if (i !in segs.indices) return
         val maxDur = durOf(g0.src)
         if (trimSide == 1) {
             trimSeg = if (g0.fz) {
@@ -496,6 +537,13 @@ class EditorCore {
     fun trimEnd(): Boolean {
         val orig = trimOrig ?: return false
         val i = trimIdx
+        if (i !in segs.indices) {
+            trimSide = 0
+            trimIdx = -1
+            trimOrig = null
+            trimSeg = null
+            return false
+        }
         if (trimSide == 1) {
             val ng = trimSeg
             if (ng != null) {
@@ -512,7 +560,7 @@ class EditorCore {
         calc()
         sel = i
         layoutSel()
-        t = clampD(t, lay.off[i], lay.off[i] + segs[i].len - 0.01)
+        t = clampD(t, lay.off[i], max(lay.off[i], lay.off[i] + segs[i].len - 0.01))
         sync()
         if (changed) push()
         return changed

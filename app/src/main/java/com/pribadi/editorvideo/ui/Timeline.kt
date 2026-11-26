@@ -52,7 +52,6 @@ import com.pribadi.editorvideo.R
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Rules
 import com.pribadi.editorvideo.model.Seg
-import com.pribadi.editorvideo.model.clampD
 import com.pribadi.editorvideo.vm.EditorViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -82,45 +81,63 @@ private const val TIMES_TOP = 124f
 
 private val RULER_STEPS = doubleArrayOf(0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
 
-private class TlPaints(val d: Float) {
-    val line = Paint().apply { color = Ev.Line.toArgb() }
-    val segBg = Paint().apply { color = 0xFF333333.toInt() }
-    val fzBg = Paint().apply { color = 0xFF27394A.toInt() }
+private class TlPaints(val d: Float, palette: EvPalette) {
+    val line = Paint().apply { color = palette.line.toArgb() }
+    val segBg = Paint().apply { color = palette.segBg }
+    val fzBg = Paint().apply { color = palette.fzBg }
     val tile = Paint(Paint.FILTER_BITMAP_FLAG)
     val tileFz = Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = freezeFilter() }
     val ph = Paint()
-    val divider = Paint().apply { color = Ev.Bg.toArgb() }
+    val divider = Paint().apply { color = palette.bg.toArgb() }
     val selBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2f * d
         color = 0xFFFFFFFF.toInt()
     }
-    val badgeBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xA6000000.toInt() }
+    val badgeBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xB3000000.toInt() }
     val badgeText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
-        textSize = 10f * d
+        textSize = 9.5f * d
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    val durBadgeBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xBF101014.toInt() }
+    val durBadgeText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = palette.yellow.toArgb()
+        textSize = 9.5f * d
         typeface = Typeface.DEFAULT_BOLD
     }
     val handle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
     val handleIcon = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF222222.toInt() }
     val rulerText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF6D6D74.toInt()
+        color = palette.muted.toArgb()
         textSize = 11f * d
         textAlign = Paint.Align.CENTER
     }
-    val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF55555B.toInt() }
+    val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = palette.muted.copy(alpha = 0.65f).toArgb() }
     val head = Paint().apply { color = 0xFFFFFFFF.toInt() }
     val curText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFFFFF.toInt()
-        textSize = 12f * d
+        color = palette.text.toArgb()
+        textSize = 11.5f * d
         typeface = Typeface.create(Typeface.DEFAULT, 800, false)
         textAlign = Paint.Align.CENTER
     }
+    val clipDurText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = palette.infoText.toArgb()
+        textSize = 11f * d
+        typeface = Typeface.create(Typeface.DEFAULT, 600, false)
+        textAlign = Paint.Align.LEFT
+    }
     val totText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF9A9AA1.toInt()
-        textSize = 12f * d
+        color = palette.infoText.toArgb()
+        textSize = 11.5f * d
         typeface = Typeface.create(Typeface.DEFAULT, 600, false)
         textAlign = Paint.Align.RIGHT
+    }
+    val emptyHint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = palette.muted.copy(alpha = 0.75f).toArgb()
+        textSize = 12f * d
+        typeface = Typeface.create(Typeface.DEFAULT, 500, false)
+        textAlign = Paint.Align.CENTER
     }
 
     val rect = RectF()
@@ -171,12 +188,13 @@ private class FlingHolder {
     var lastTag: String = ""
 }
 
-/** Kotak timeline 150 dp: ruler, potongan + thumbnail, handle trim, playhead tetap di tengah. */
+/** Kotak timeline 150 dp: kosong di awal; saat video ada menampilkan ruler, potongan + label durasi, handle trim, playhead. */
 @Composable
 fun Timeline(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier = Modifier) {
     val density = LocalDensity.current
     val d = density.density
-    val paints = remember(d) { TlPaints(d) }
+    val theme = vm.appTheme
+    val paints = remember(d, theme) { TlPaints(d, paletteFor(theme)) }
     val scope = rememberCoroutineScope()
     val holder = remember { FlingHolder() }
 
@@ -190,7 +208,11 @@ fun Timeline(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier = Mod
             modifier = Modifier
                 .fillMaxSize()
                 .clipToBounds()
-                .pointerInput(Unit) { timelineGestures(vm, scope, holder) }
+                .pointerInput(vm.hasVideo) {
+                    if (vm.hasVideo) {
+                        timelineGestures(vm, scope, holder)
+                    }
+                }
         ) {
             val revision = vm.rev
             drawIntoCanvas { c ->
@@ -271,6 +293,7 @@ fun Timeline(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier = Mod
 private fun selEdges(vm: EditorViewModel, cx: Float, ppsPx: Double): FloatArray {
     val core = vm.core
     val segs = core.segs
+    if (segs.isEmpty()) return floatArrayOf(cx, cx)
     val i = core.sel.coerceIn(0, segs.size - 1)
     val g = segs[i]
     var left = cx + ((core.lay.off[i] - core.t) * ppsPx).toFloat()
@@ -290,6 +313,7 @@ private fun selEdges(vm: EditorViewModel, cx: Float, ppsPx: Double): FloatArray 
 
 /** 1 = handle kiri, 2 = handle kanan, 0 = bukan handle. */
 private fun hitHandle(vm: EditorViewModel, pos: Offset, w: Float, d: Float): Int {
+    if (!vm.hasVideo || vm.core.segs.isEmpty()) return 0
     val edges = selEdges(vm, w / 2f, vm.pps * d)
     val top = (HD_TOP - HIT_Y) * d
     val bottom = (HD_TOP + HD_H + HIT_Y) * d
@@ -324,10 +348,9 @@ private suspend fun PointerInputScope.timelineGestures(
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         holder.job?.cancel()
+        if (!vm.hasVideo || vm.core.segs.isEmpty()) return@awaitEachGesture
         val w = size.width.toFloat()
 
-        // 1) Cek apakah menyentuh handle trim kiri/kanan.
-        //    Jika jari kedua menyentuh layar saat sedang di handle, batalkan trim dan beralih ke pinch-zoom!
         val hit = hitHandle(vm, down.position, w, d)
         var switchedToPinch = false
         var pinchD0 = 0f
@@ -342,7 +365,6 @@ private suspend fun PointerInputScope.timelineGestures(
                     val ev = awaitPointerEvent()
                     val pressed = ev.changes.filter { it.pressed }
                     if (pressed.size >= 2) {
-                        // Jari kedua masuk: batalkan trim, beralih ke pinch zoom!
                         vm.trimCancel()
                         trimFinished = true
                         switchedToPinch = true
@@ -371,7 +393,6 @@ private suspend fun PointerInputScope.timelineGestures(
             }
         }
 
-        // 2) Geser (scrub), ketuk, atau cubit dua jari (pinch zoom in/out).
         var panning = false
         var panEnded = false
         var pinching = switchedToPinch
@@ -481,15 +502,25 @@ private fun drawTimeline(
     revision: Int
 ) {
     val d = p.d
+    // garis atas
+    cv.drawRect(0f, 0f, w, 1f * d, p.line)
+
     val core = vm.core
     val segs = core.segs
+
+    // Di awal (sebelum ada video): timeline preview kosong bersih!
+    if (!vm.hasVideo || segs.isEmpty()) {
+        val fm = p.emptyHint.fontMetrics
+        val hintY = (SEG_TOP + SEG_H / 2f) * d - (fm.ascent + fm.descent) / 2f
+        val centerAfterPlus = (88f * d + w) / 2f
+        cv.drawText("Timeline kosong", centerAfterPlus, hintY, p.emptyHint)
+        return
+    }
+
     val off = core.lay.off
     val t = core.t
     val ppsPx = vm.pps * d
     val cx = w / 2f
-
-    // garis atas
-    cv.drawRect(0f, 0f, w, 1f * d, p.line)
 
     drawRuler(cv, p, vm, w)
 
@@ -523,11 +554,19 @@ private fun drawTimeline(
     // playhead tetap di tengah
     cv.drawRect(cx - 1f * d, HEAD_TOP * d, cx + 1f * d, h - HEAD_BOTTOM_INSET * d, p.head)
 
-    // waktu saat ini (di bawah playhead) dan total (kanan)
+    // baris label durasi di bawah: kiri = durasi potongan aktif, tengah = posisi waktu, kanan = total durasi
     val fmCur = p.curText.fontMetrics
     val base = TIMES_TOP * d - fmCur.ascent
+    val selIdx = core.sel.coerceIn(0, segs.size - 1)
+    val activeSeg = if (trimSide != 0 && trimIdx == selIdx && trimSeg != null) trimSeg else segs[selIdx]
+    cv.drawText(
+        "Klip ${selIdx + 1}/${segs.size} · ${Fmt.durLabel(activeSeg.len)}",
+        14f * d,
+        base,
+        p.clipDurText
+    )
     cv.drawText(Fmt.time(t), cx, base, p.curText)
-    cv.drawText(Fmt.time(core.total), w - 14f * d, base, p.totText)
+    cv.drawText("Total " + Fmt.time(core.total), w - 14f * d, base, p.totText)
 }
 
 private fun drawRuler(cv: android.graphics.Canvas, p: TlPaints, vm: EditorViewModel, w: Float) {
@@ -594,7 +633,6 @@ private fun drawSegment(
 
     val tilePx = Rules.TILE * d
     if (tg.fz) {
-        // gambar beku: satu frame diulang memenuhi lebar potongan
         val n = max(1, ceil(tg.len * ppsPx / tilePx).toInt())
         val bmp = vm.thumbAt(tg.src, tg.a)
         val seed = Math.round(tg.a * 3.0).toInt() + tg.src * 7
@@ -609,7 +647,6 @@ private fun drawSegment(
             k++
         }
     } else {
-        // klip: tile 64 dp pada skala "px per detik sumber"
         val kRate = ppsPx / tg.sp
         val i0 = floor(tg.a * kRate / tilePx).toInt()
         val i1 = ceil(tg.b * kRate / tilePx).toInt()
@@ -629,26 +666,49 @@ private fun drawSegment(
     // pembatas 2 px di sisi kanan
     cv.drawRect(right - 2f * d, top, right, bottom, p.divider)
 
-    // lencana kecepatan / beku / terbalik / multi-video
-    val badge: String? = if (g.fz) {
-        "❄ " + Fmt.one(g.len) + "s" + (if (g.sp != 1.0) " · " + Fmt.one(g.sp) + "x" else "")
+    // 1) Lencana status di kiri atas potongan (beku / nomor sumber / mundur / loop / kecepatan)
+    val statusBadge: String? = if (g.fz) {
+        "❄ Beku" + (if (g.sp != 1.0) " · " + Fmt.one(g.sp) + "x" else "")
     } else {
         val parts = ArrayList<String>(3)
         if (vm.sourceCount > 1) parts.add("V" + (g.src + 1))
-        if (g.rev) parts.add("⏪")
+        if (g.revMode == Seg.REV_LOOP) {
+            parts.add("🔁 Loop")
+        } else if (g.rev) {
+            parts.add("⏪ Mundur")
+        }
         if (g.sp != 1.0) parts.add(Fmt.one(g.sp) + "x")
         if (parts.isEmpty()) null else parts.joinToString(" · ")
     }
-    if (badge != null) {
-        val tw = p.badgeText.measureText(badge)
+
+    val safeVisibleLeft = max(left + 4f * d, 84f * d)
+    if (statusBadge != null && right - left >= 28f * d) {
+        val tw = p.badgeText.measureText(statusBadge)
+        val pillW = tw + 8f * d
         val fm = p.badgeText.fontMetrics
-        val bl = left + 4f * d
+        val bx = min(max(left + 4f * d, safeVisibleLeft), max(left + 2f * d, right - pillW - 3f * d))
         val bt = top + 3f * d
         val bh = (fm.descent - fm.ascent) + 2f * d
-        p.rect2.set(bl, bt, bl + tw + 10f * d, bt + bh)
-        cv.drawRoundRect(p.rect2, 6f * d, 6f * d, p.badgeBg)
-        cv.drawText(badge, bl + 5f * d, bt + 1f * d - fm.ascent, p.badgeText)
+        p.rect2.set(bx, bt, bx + pillW, bt + bh)
+        cv.drawRoundRect(p.rect2, 5f * d, 5f * d, p.badgeBg)
+        cv.drawText(statusBadge, bx + 4f * d, bt + 1f * d - fm.ascent, p.badgeText)
     }
+
+    // 2) Label durasi pada setiap potongan di kiri bawah
+    val segWidth = right - left
+    if (segWidth >= 24f * d) {
+        val durStr = Fmt.durLabel(tg.len)
+        val dw = p.durBadgeText.measureText(durStr)
+        val pillW = dw + 8f * d
+        val fmD = p.durBadgeText.fontMetrics
+        val bh = (fmD.descent - fmD.ascent) + 2f * d
+        val bx = min(max(left + 4f * d, safeVisibleLeft), max(left + 2f * d, right - pillW - 3f * d))
+        val bt = bottom - bh - 3f * d
+        p.rect2.set(bx, bt, bx + pillW, bt + bh)
+        cv.drawRoundRect(p.rect2, 5f * d, 5f * d, p.durBadgeBg)
+        cv.drawText(durStr, bx + 4f * d, bt + 1f * d - fmD.ascent, p.durBadgeText)
+    }
+
     cv.restore()
 
     if (selected) {

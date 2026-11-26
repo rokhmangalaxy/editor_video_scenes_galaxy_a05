@@ -28,7 +28,7 @@ object Rules {
     const val SPEED_MIN = 0.1
     const val SPEED_MAX = 9.0
 
-    /** Durasi klip demo sebelum ada video yang diimpor. */
+    /** Durasi fallback bila diperlukan untuk metadata kosong. */
     const val DEMO_DUR = 12.2
 }
 
@@ -89,7 +89,8 @@ data class TextOverlayConfig(
 
 /**
  * Satu potongan di timeline.
- *  - klip   : {a, b, sp, rev, src, origSrc, origA, origB}
+ *  - klip   : {a, b, sp, rev, revMode, src, origSrc, origA, origB}
+ *             revMode: 0 = Normal, 1 = Mundur, 2 = Loop (Normal + Mundur)
  *  - beku   : {fz=true, a, d, sp, src}
  * Durasi di timeline = (b - a) / sp  atau  d / sp.
  */
@@ -100,6 +101,7 @@ data class Seg(
     val fz: Boolean = false,
     val d: Double = 0.0,
     val rev: Boolean = false,
+    val revMode: Int = 0,
     val src: Int = 0,
     val origSrc: Int = -1,
     val origA: Double = 0.0,
@@ -115,8 +117,12 @@ data class Seg(
     val maxSpeed: Double get() = min(Rules.SPEED_MAX, baseLen / Rules.MIN)
 
     companion object {
+        const val REV_NONE = 0
+        const val REV_MUNDUR = 1
+        const val REV_LOOP = 2
+
         fun freezeAt(time: Double, src: Int = 0): Seg =
-            Seg(a = time, b = time, sp = 1.0, fz = true, d = Rules.FZ_DUR, rev = false, src = src)
+            Seg(a = time, b = time, sp = 1.0, fz = true, d = Rules.FZ_DUR, rev = false, revMode = REV_NONE, src = src)
     }
 }
 
@@ -138,6 +144,7 @@ class SegLayout(val segs: List<Seg>) {
 
     /** Mencari potongan pada waktu timeline tt dan waktu sumber yang sesuai. */
     fun locate(tt: Double): Located {
+        if (segs.isEmpty()) return Located(0, 0.0, 0.0)
         for (i in segs.indices) {
             val g = segs[i]
             val l = g.len
@@ -167,6 +174,10 @@ object Fmt {
         val p = parts(s)
         return "${p[0]}:${if (p[1] < 10) "0" else ""}${p[1]}.${p[2]}"
     }
+
+    /** Label durasi ringkas pada tiap potongan di timeline: "4.2s" atau "1:05.2" bila >= 60s. */
+    fun durLabel(s: Double): String =
+        if (s >= 60.0) time(s) else one(max(0.0, s)) + "s"
 
     /** Label ruler: mm:ss.d bila langkah < 1 detik, selain itu mm:ss. */
     fun ruler(s: Double, decimals: Boolean): String {

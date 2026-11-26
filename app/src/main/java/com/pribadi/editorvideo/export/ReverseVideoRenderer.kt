@@ -19,16 +19,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Merender potongan video menjadi berkas MP4 baru dengan membalik urutan frame-nya
- * (dari akhir potongan mundur ke awal potongan).
- *
- * Strategi:
- *  1. Jalur cepat (Hardware GOP Decoder -> Encoder):
- *     Membaca GOP (Group of Pictures) dari belakang ke depan menggunakan MediaExtractor + MediaCodec,
- *     membalik urutan frame di dalam tiap GOP, lalu mengenkodekannya secara berurutan ke MP4.
- *  2. Jalur cadangan (MediaMetadataRetriever -> MediaCodec Encoder):
- *     Bila format sumber tidak mendukung akses YUV langsung (mis. HEVC 10-bit tertentu),
- *     mengambil frame dari detik akhir mundur ke detik awal lalu mengenkodekannya ke MP4.
+ * Merender potongan video menjadi berkas MP4 baru untuk fitur Membalikkan:
+ *  - Mode Mundur (includeForwardFirst = false): membalik urutan frame (akhir -> awal).
+ *  - Mode Loop   (includeForwardFirst = true) : menggabungkan video Normal (awal -> akhir)
+ *                                               diikuti video Mundur (akhir -> awal) menjadi satu klip utuh.
  */
 object ReverseVideoRenderer {
 
@@ -44,12 +38,13 @@ object ReverseVideoRenderer {
         val height: Int
     )
 
-    suspend fun renderReversedClip(
+    suspend fun renderClip(
         context: Context,
         srcUri: Uri,
         srcInfo: VideoInfo,
         startSec: Double,
         endSec: Double,
+        includeForwardFirst: Boolean,
         outFile: File,
         onProgress: (Float) -> Unit
     ) {
@@ -57,7 +52,16 @@ object ReverseVideoRenderer {
         if (outFile.exists()) outFile.delete()
 
         val okGop = try {
-            renderViaGopDecode(context, srcUri, srcInfo, startSec, endSec, outFile, onProgress)
+            renderViaGopDecode(
+                context = context,
+                srcUri = srcUri,
+                srcInfo = srcInfo,
+                startSec = startSec,
+                endSec = endSec,
+                includeForwardFirst = includeForwardFirst,
+                outFile = outFile,
+                onProgress = onProgress
+            )
         } catch (e: Throwable) {
             false
         }
@@ -67,13 +71,24 @@ object ReverseVideoRenderer {
         }
 
         if (outFile.exists()) outFile.delete()
-        renderViaRetriever(context, srcUri, srcInfo, startSec, endSec, outFile, onProgress)
+        renderViaRetriever(
+            context = context,
+            srcUri = srcUri,
+            srcInfo = srcInfo,
+            startSec = startSec,
+            endSec = endSec,
+            includeForwardFirst = includeForwardFirst,
+            outFile = outFile,
+            onProgress = onProgress
+        )
         onProgress(1f)
     }
 
     /**
-     * Jalur 1: Decode per-GOP menggunakan MediaExtractor + MediaCodec, balik urutan frame tiap GOP,
-     * dan tulis ke MediaCodec H.264 encoder + MediaMuxer.
+     * Jalur 1: Decode per-GOP menggunakan MediaExtractor + MediaCodec,
+     * lalu tulis ke MediaCodec H.264 encoder + MediaMuxer:
+     *  - bila includeForwardFirst == true (Loop): encode semua GOP secara maju dulu, lalu semua GOP secara mundur.
+     *  - bila includeForwardFirst == false (Mundur): encode semua GOP secara mundur.
      */
     private suspend fun renderViaGopDecode(
         context: Context,
@@ -81,6 +96,7 @@ object ReverseVideoRenderer {
         srcInfo: VideoInfo,
         startSec: Double,
         endSec: Double,
+        includeForwardFirst: Boolean,
         outFile: File,
         onProgress: (Float) -> Unit
     ): Boolean {
@@ -127,7 +143,6 @@ object ReverseVideoRenderer {
             }
             if (syncPoints.isEmpty()) return false
 
-            // Susun batas waktu tiap GOP [gopStart, gopEnd)
             val gopBounds = ArrayList<LongArray>(syncPoints.size)
             for (i in syncPoints.indices) {
                 val gs = syncPoints[i]
@@ -138,7 +153,6 @@ object ReverseVideoRenderer {
             }
             if (gopBounds.isEmpty()) return false
 
-            // Ukuran enkoder (kelipatan 16 supaya semua encoder H.264 perangkat kompatibel)
             val srcW = max(16, srcInfo.width)
             val srcH = max(16, srcInfo.height)
             val scale = min(1.0, MAX_LONG_SIDE.toDouble() / max(srcW, srcH).toDouble())
@@ -148,7 +162,6 @@ object ReverseVideoRenderer {
             val frameStepUs = 1_000_000L / targetFps
             val minSampleGapUs = (1_000_000.0 / (targetFps + 2.0)).toLong()
 
-            // Siapkan encoder H.264
             val encFormat = MediaFormat.createVideoFormat(MIME_AVC, encW, encH).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
@@ -163,7 +176,6 @@ object ReverseVideoRenderer {
             enc.configure(encFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             enc.start()
 
-            // Siapkan decoder untuk track sumber
             val srcMime = trackFormat.getString(MediaFormat.KEY_MIME) ?: return false
             trackFormat.setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
@@ -221,16 +233,9 @@ object ReverseVideoRenderer {
                 }
             }
 
-            // 2. Proses GOP dari BELAKANG ke DEPAN
-            val totalGops = gopBounds.size
-            for (gIdx in totalGops - 1 downTo 0) {
-                currentCoroutineContext().ensureActive()
-                val gs = gopBounds[gIdx][0]
-                val ge = gopBounds[gIdx][1]
-
+            suspend fun decodeSingleGop(gs: Long, ge: Long): ArrayList<YuvFrame> {
                 dec.flush()
                 extractor.seekTo(gs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-
                 val gopFrames = ArrayList<YuvFrame>()
                 var inputDone = false
                 var outputDone = false
@@ -276,7 +281,6 @@ object ReverseVideoRenderer {
                                 val copied = extractScaledYuv(img, encW, encH)
                                 if (copied != null) {
                                     if (gopFrames.size >= MAX_FRAMES_PER_CHUNK) {
-                                        // Jaga memori tetap ringan bila GOP sangat panjang
                                         gopFrames.removeAt(0)
                                     }
                                     gopFrames.add(copied)
@@ -293,37 +297,69 @@ object ReverseVideoRenderer {
                         outputDone = true
                     }
                 }
+                return gopFrames
+            }
 
-                // 3. Balik urutan frame di dalam GOP ini, lalu masukkan ke encoder H.264
-                for (fIdx in gopFrames.size - 1 downTo 0) {
-                    currentCoroutineContext().ensureActive()
-                    val frame = gopFrames[fIdx]
-                    var queued = false
-                    var tries = 0
-                    while (!queued && tries < 40) {
-                        drainEncoder(false)
-                        val inIdx = enc.dequeueInputBuffer(10_000L)
-                        if (inIdx >= 0) {
-                            val inImg = enc.getInputImage(inIdx)
-                            if (inImg != null) {
-                                fillInputImage(inImg, frame)
-                                inImg.close()
-                                enc.queueInputBuffer(
-                                    inIdx, 0, encW * encH * 3 / 2, outPtsUs, 0
-                                )
-                                outPtsUs += frameStepUs
-                                encodedFrames++
-                                queued = true
-                            } else {
-                                enc.queueInputBuffer(inIdx, 0, 0, outPtsUs, 0)
-                                break
-                            }
+            suspend fun queueFrameToEncoder(frame: YuvFrame) {
+                currentCoroutineContext().ensureActive()
+                var queued = false
+                var tries = 0
+                while (!queued && tries < 40) {
+                    drainEncoder(false)
+                    val inIdx = enc.dequeueInputBuffer(10_000L)
+                    if (inIdx >= 0) {
+                        val inImg = enc.getInputImage(inIdx)
+                        if (inImg != null) {
+                            fillInputImage(inImg, frame)
+                            inImg.close()
+                            enc.queueInputBuffer(
+                                inIdx, 0, encW * encH * 3 / 2, outPtsUs, 0
+                            )
+                            outPtsUs += frameStepUs
+                            encodedFrames++
+                            queued = true
+                        } else {
+                            enc.queueInputBuffer(inIdx, 0, 0, outPtsUs, 0)
+                            break
                         }
-                        tries++
                     }
+                    tries++
+                }
+            }
+
+            val totalGops = gopBounds.size
+            val totalPasses = if (includeForwardFirst) totalGops * 2 else totalGops
+            var doneSteps = 0
+
+            // Bagian A (Khusus Loop): encode video NORMAL (awal -> akhir) terlebih dahulu
+            if (includeForwardFirst) {
+                for (gIdx in 0 until totalGops) {
+                    currentCoroutineContext().ensureActive()
+                    val gopFrames = decodeSingleGop(gopBounds[gIdx][0], gopBounds[gIdx][1])
+                    for (fIdx in 0 until gopFrames.size) {
+                        queueFrameToEncoder(gopFrames[fIdx])
+                    }
+                    gopFrames.clear()
+                    doneSteps++
+                    onProgress((doneSteps.toFloat() / totalPasses.toFloat()).coerceIn(0.04f, 0.50f))
+                }
+            }
+
+            // Bagian B (Mundur & Loop): encode video MUNDUR (akhir -> awal)
+            for (gIdx in totalGops - 1 downTo 0) {
+                currentCoroutineContext().ensureActive()
+                val gopFrames = decodeSingleGop(gopBounds[gIdx][0], gopBounds[gIdx][1])
+                val startFrameIdx = if (includeForwardFirst && gIdx == totalGops - 1 && gopFrames.size > 1) {
+                    gopFrames.size - 2 // hindari duplikasi frame titik balik
+                } else {
+                    gopFrames.size - 1
+                }
+                for (fIdx in startFrameIdx downTo 0) {
+                    queueFrameToEncoder(gopFrames[fIdx])
                 }
                 gopFrames.clear()
-                onProgress(((totalGops - gIdx).toFloat() / totalGops.toFloat()).coerceIn(0.05f, 0.95f))
+                doneSteps++
+                onProgress((doneSteps.toFloat() / totalPasses.toFloat()).coerceIn(0.05f, 0.96f))
             }
 
             if (encodedFrames < 2) return false
@@ -362,8 +398,7 @@ object ReverseVideoRenderer {
     }
 
     /**
-     * Jalur 2 (Cadangan): Mengambil frame terbalik melalui MediaMetadataRetriever dari detik akhir
-     * mundur ke detik awal, lalu mengenkodekannya dengan MediaCodec + MediaMuxer.
+     * Jalur 2 (Cadangan): Mengambil frame melalui MediaMetadataRetriever lalu mengenkodekannya ke MP4.
      */
     private suspend fun renderViaRetriever(
         context: Context,
@@ -371,13 +406,14 @@ object ReverseVideoRenderer {
         srcInfo: VideoInfo,
         startSec: Double,
         endSec: Double,
+        includeForwardFirst: Boolean,
         outFile: File,
         onProgress: (Float) -> Unit
     ) {
         val dur = max(0.1, endSec - startSec)
         val fps = 15
-        val totalFrames = max(2, min(300, Math.round(dur * fps).toInt()))
-        val stepSec = dur / totalFrames.toDouble()
+        val oneWayFrames = max(2, min(240, Math.round(dur * fps).toInt()))
+        val stepSec = dur / oneWayFrames.toDouble()
         val frameStepUs = 1_000_000L / fps
 
         val dispW = max(16, srcInfo.dispW)
@@ -385,6 +421,18 @@ object ReverseVideoRenderer {
         val scale = min(1.0, 640.0 / max(dispW, dispH).toDouble())
         val encW = max(16, (Math.round(dispW * scale / 16.0).toInt() * 16))
         val encH = max(16, (Math.round(dispH * scale / 16.0).toInt() * 16))
+
+        // Susun daftar timestamp yang akan di-encode (Maju+Mundur untuk Loop, atau Mundur saja)
+        val timesSec = ArrayList<Double>(if (includeForwardFirst) oneWayFrames * 2 else oneWayFrames)
+        if (includeForwardFirst) {
+            for (i in 0 until oneWayFrames) {
+                timesSec.add(min(endSec, startSec + (i + 0.5) * stepSec))
+            }
+        }
+        val revStartIdx = if (includeForwardFirst && oneWayFrames > 1) 1 else 0
+        for (i in revStartIdx until oneWayFrames) {
+            timesSec.add(max(startSec, endSec - (i + 0.5) * stepSec))
+        }
 
         val retriever = MediaMetadataRetriever()
         var encoder: MediaCodec? = null
@@ -451,14 +499,21 @@ object ReverseVideoRenderer {
                 }
             }
 
-            for (i in 0 until totalFrames) {
+            val totalOut = timesSec.size
+            for (i in 0 until totalOut) {
                 currentCoroutineContext().ensureActive()
-                val revSec = max(startSec, endSec - (i + 0.5) * stepSec)
-                val us = Math.round(revSec * 1_000_000.0)
+                val us = Math.round(timesSec[i] * 1_000_000.0)
                 var raw = try {
-                    retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST)
+                    retriever.getScaledFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST, encW, encH)
                 } catch (e: Exception) {
                     null
+                }
+                if (raw == null) {
+                    raw = try {
+                        retriever.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST)
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
                 if (raw == null) {
                     raw = try {
@@ -468,12 +523,11 @@ object ReverseVideoRenderer {
                     }
                 }
                 if (raw != null) {
-                    val up = VideoFrames.upright(raw, srcInfo)
-                    val scaled = if (up.width == encW && up.height == encH) {
-                        up
+                    val scaled = if (raw.width == encW && raw.height == encH) {
+                        raw
                     } else {
-                        val s = Bitmap.createScaledBitmap(up, encW, encH, true)
-                        if (s !== up) up.recycle()
+                        val s = Bitmap.createScaledBitmap(raw, encW, encH, true)
+                        if (s !== raw) raw.recycle()
                         s
                     }
                     scaled.getPixels(argb, 0, encW, 0, 0, encW, encH)
@@ -501,7 +555,7 @@ object ReverseVideoRenderer {
                     }
                     tries++
                 }
-                onProgress(((i + 1).toFloat() / totalFrames.toFloat()).coerceIn(0.05f, 0.98f))
+                onProgress(((i + 1).toFloat() / totalOut.toFloat()).coerceIn(0.05f, 0.98f))
             }
 
             drain(true)

@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         setContent {
-            EditorTheme {
+            EditorTheme(theme = vm.appTheme) {
                 EditorScreen(
                     vm = vm,
                     onImport = { openPicker() },
