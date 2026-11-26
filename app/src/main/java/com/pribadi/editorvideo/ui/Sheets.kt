@@ -70,6 +70,7 @@ import com.pribadi.editorvideo.export.OverlayRenderer
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.vm.EditorViewModel
+import com.pribadi.editorvideo.vm.GridSortMode
 import com.pribadi.editorvideo.vm.NoteItem
 import com.pribadi.editorvideo.vm.NoteType
 import com.pribadi.editorvideo.vm.UpdateLogEntry
@@ -451,7 +452,7 @@ private fun ThemeMiniPreviewCard(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sheet Fitur AI (Sementara UI: Gambar Posisi Seek + Textarea Prompt + Tombol Generate)
+// Sheet Fitur AI (Presisi Tinggi 100% Identik Preview + Step Frame + Prompt + Generate)
 // ---------------------------------------------------------------------------------------------
 
 @Composable
@@ -476,38 +477,41 @@ fun AiSheet(vm: EditorViewModel, onClose: () -> Unit) {
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Ev.Ghost)
-                            .border(1.dp, Ev.Line, RoundedCornerShape(6.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "Preview UI",
-                            color = Ev.Yellow,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                    if (vm.hasVideo && seekBmp != null) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Ev.Accent.copy(alpha = 0.22f))
+                                .border(1.dp, Ev.Accent, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "✓ " + vm.aiCaptureSourceLabel,
+                                color = Ev.Yellow,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Gambar diambil otomatis sesuai posisi seek timeline saat ini.",
+                    text = "Gambar diambil sama persis dari frame Preview pada posisi seek untuk penyisipan presisi.",
                     color = Ev.Muted,
-                    fontSize = 11.5.sp
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp
                 )
             }
             SmallIconButton(R.drawable.ic_close, onClose)
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Kotak Gambar Frame sesuai posisi seek
+        // Kotak Gambar Frame yang 100% sama persis dengan Preview
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(190.dp)
+                .height(210.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color.Black)
                 .border(1.dp, Ev.Line, RoundedCornerShape(12.dp)),
@@ -529,7 +533,7 @@ fun AiSheet(vm: EditorViewModel, onClose: () -> Unit) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = if (vm.hasVideo) {
-                            "Mengambil gambar pada posisi seek…"
+                            "Menyinkronkan frame presisi dari Preview…"
                         } else {
                             "Belum ada video · Impor video untuk menampilkan frame posisi seek"
                         },
@@ -546,34 +550,51 @@ fun AiSheet(vm: EditorViewModel, onClose: () -> Unit) {
                         .align(Alignment.BottomStart)
                         .padding(8.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xCC000000))
-                        .padding(horizontal = 9.dp, vertical = 4.dp)
+                        .background(Color(0xD9000000))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = "Posisi Seek · " + Fmt.time(vm.aiSeekTimeSec),
+                        text = "Seek " + Fmt.preciseTime(vm.aiSeekTimeSec) +
+                            " · Klip #" + (vm.aiSeekClipIndex + 1) +
+                            " (" + Fmt.preciseTime(vm.aiSeekSourceSec) + ")",
                         color = Ev.Yellow,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
 
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
+                        .align(Alignment.TopEnd)
                         .padding(8.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xCC000000))
+                        .background(Color(0xD9000000))
                         .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
-                        .clickable { vm.captureAiSeekFrame() }
-                        .padding(horizontal = 9.dp, vertical = 4.dp)
+                        .clickable { vm.captureAiSeekFrame(waitSeekSettle = true) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = if (vm.aiFrameLoading) "Memuat…" else "Muat Ulang",
+                        text = if (vm.aiFrameLoading) "Sinkron…" else "↻ Sinkron",
                         color = Color.White,
-                        fontSize = 10.5.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
+            }
+        }
+
+        // Kontrol Geser Presisi Per-Frame (agar titik selip hasil AI sangat akurat)
+        if (vm.hasVideo) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AiStepBtn("⏮ -5f", Modifier.weight(1f)) { vm.stepAiFrame(-5) }
+                AiStepBtn("◀ -1 Frame", Modifier.weight(1.25f)) { vm.stepAiFrame(-1) }
+                AiStepBtn("+1 Frame ▶", Modifier.weight(1.25f)) { vm.stepAiFrame(1) }
+                AiStepBtn("+5f ⏭", Modifier.weight(1f)) { vm.stepAiFrame(5) }
             }
         }
 
@@ -613,7 +634,7 @@ fun AiSheet(vm: EditorViewModel, onClose: () -> Unit) {
             },
             placeholder = {
                 Text(
-                    text = "Tulis prompt AI untuk frame ini (misal: ubah pencahayaan dramatis, perhalus detail, gerakkan kamera perlahan…)",
+                    text = "Tulis prompt AI untuk frame presisi ini (hasil AI nantinya akan diselipkan tepat di posisi seek ini)…",
                     color = Ev.Muted,
                     fontSize = 13.sp
                 )
@@ -662,6 +683,270 @@ fun AiSheet(vm: EditorViewModel, onClose: () -> Unit) {
                 onClick = { vm.onAiGenerateClicked() }
             )
         }
+    }
+}
+
+@Composable
+private fun AiStepBtn(label: String, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Ev.Ghost)
+            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = Ev.Text,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sheet Tagging & Sheet Sort untuk Mode Grid
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    val _rev = vm.rev
+    var newTagInput by remember { mutableStateOf("") }
+    val targets = vm.targetTagSegmentIndices()
+    val segs = vm.core.segs
+    val targetTitle = when {
+        targets.size > 1 -> "${targets.size} Potongan Terpilih"
+        targets.size == 1 -> "Potongan #${targets.first() + 1}"
+        else -> "Belum ada potongan"
+    }
+
+    FloatingSheetPanel(onTapOutside = onClose) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Ico(R.drawable.ic_tag, Ev.Yellow, 20.dp)
+                    Text(
+                        text = "Kelola Tag · $targetTitle",
+                        color = Ev.Text,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.5.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Ketuk tag untuk memasang/melepas pada klip, lalu gunakan bar Filter & Sort di Grid.",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp
+                )
+            }
+            SmallIconButton(R.drawable.ic_close, onClose)
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Daftar Tag tersedia (grid 2 kolom rapi)
+        val rows = vm.availableTags.chunked(2)
+        for (pair in rows) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (tag in pair) {
+                    val activeCount = targets.count { idx ->
+                        idx in segs.indices && tag in segs[idx].tags
+                    }
+                    val allActive = targets.isNotEmpty() && activeCount == targets.size
+                    val partial = activeCount > 0 && !allActive
+                    val dotCol = tagColorFor(tag)
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(
+                                when {
+                                    allActive -> Ev.Accent.copy(alpha = 0.22f)
+                                    partial -> Ev.Ghost
+                                    else -> Ev.Bg
+                                }
+                            )
+                            .border(
+                                width = if (allActive) 2.dp else 1.dp,
+                                color = if (allActive) Ev.Accent else if (partial) Ev.Yellow else Ev.Line,
+                                shape = RoundedCornerShape(11.dp)
+                            )
+                            .clickable { vm.toggleTagForCurrentTarget(tag) }
+                            .padding(horizontal = 11.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(dotCol)
+                            )
+                            Text(
+                                text = tag,
+                                color = Ev.Text,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (allActive || partial) {
+                            Text(
+                                text = if (allActive) "✓" else "$activeCount/${targets.size}",
+                                color = if (allActive) Ev.Yellow else Ev.Muted,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                    }
+                }
+                if (pair.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Tambah Tag Baru Kustom
+        Text(
+            text = "BUAT TAG BARU",
+            color = Ev.Muted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = newTagInput,
+                onValueChange = { newTagInput = it },
+                placeholder = {
+                    Text("Nama tag baru (misal: Intro, Reaksi)…", color = Ev.Muted, fontSize = 12.5.sp)
+                },
+                minLines = 1,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            ActionButton(
+                text = "+ Tambah",
+                primary = true,
+                enabled = newTagInput.trim().isNotEmpty(),
+                onClick = {
+                    vm.addCustomTag(newTagInput)
+                    newTagInput = ""
+                }
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ActionButton(
+                text = "Bersihkan Tag",
+                primary = false,
+                modifier = Modifier.weight(1f),
+                onClick = { vm.clearTagsForCurrentTarget() }
+            )
+            ActionButton(
+                text = "Selesai",
+                primary = true,
+                modifier = Modifier.weight(1f),
+                onClick = onClose
+            )
+        }
+    }
+}
+
+@Composable
+fun GridSortSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    FloatingSheetPanel(onTapOutside = onClose) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Urutkan Mode Grid (Sort)",
+                    color = Ev.Text,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+                Text(
+                    text = "Pilih urutan tampilan klip pada Mode Grid.",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp
+                )
+            }
+            SmallIconButton(R.drawable.ic_close, onClose)
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        for (mode in GridSortMode.entries) {
+            val active = vm.gridSortMode == mode
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (active) Ev.Accent.copy(alpha = 0.18f) else Ev.Bg)
+                    .border(
+                        width = if (active) 2.dp else 1.dp,
+                        color = if (active) Ev.Accent else Ev.Line,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .clickable { vm.selectGridSortMode(mode) }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = mode.label,
+                    color = Ev.Text,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 14.sp
+                )
+                if (active) {
+                    Text(
+                        text = "✓ Aktif",
+                        color = Ev.Yellow,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        ActionButton("Tutup", false, Modifier.fillMaxWidth(), onClick = onClose)
     }
 }
 

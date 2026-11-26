@@ -362,7 +362,8 @@ class EditorCore {
             src = newSrcIdx,
             origSrc = if (g.origSrc >= 0) g.origSrc else g.src,
             origA = if (g.origSrc >= 0) g.origA else g.a,
-            origB = if (g.origSrc >= 0) g.origB else g.b
+            origB = if (g.origSrc >= 0) g.origB else g.b,
+            tags = g.tags
         )
         val n = ArrayList(segs)
         n[segIdx] = revSeg
@@ -393,7 +394,8 @@ class EditorCore {
             d = 0.0,
             rev = false,
             revMode = Seg.REV_NONE,
-            src = g.origSrc
+            src = g.origSrc,
+            tags = g.tags
         )
         val n = ArrayList(segs)
         n[segIdx] = restored
@@ -404,6 +406,104 @@ class EditorCore {
         push()
         build()
         return "Potongan dikembalikan ke video normal"
+    }
+
+    // ------------------------------------------------------------------ tagging & aksi multiseleksi grid
+
+    /** Menambah atau melepas [tag] pada kumpulan potongan [indices]. */
+    fun toggleTagOnSegments(indices: Set<Int>, tag: String): String {
+        val clean = tag.trim()
+        if (!hasVideo || segs.isEmpty() || clean.isEmpty()) return "Tag tidak valid"
+        val valid = indices.filter { it in segs.indices }
+        if (valid.isEmpty()) return "Pilih potongan terlebih dahulu"
+        val allHave = valid.all { clean in segs[it].tags }
+        val n = ArrayList(segs)
+        for (idx in valid) {
+            val g = n[idx]
+            val updated = if (allHave) {
+                g.tags.filterNot { it == clean }
+            } else {
+                if (clean in g.tags) g.tags else g.tags + clean
+            }
+            n[idx] = g.copy(tags = updated)
+        }
+        segs = n
+        push()
+        build()
+        return if (allHave) {
+            "Tag \"$clean\" dilepas dari ${valid.size} potongan"
+        } else {
+            "Tag \"$clean\" dipasang ke ${valid.size} potongan"
+        }
+    }
+
+    /** Menghapus semua tag dari kumpulan potongan [indices]. */
+    fun clearTagsOnSegments(indices: Set<Int>): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        val valid = indices.filter { it in segs.indices && segs[it].tags.isNotEmpty() }
+        if (valid.isEmpty()) return "Potongan terpilih belum memiliki tag"
+        val n = ArrayList(segs)
+        for (idx in valid) {
+            n[idx] = n[idx].copy(tags = emptyList())
+        }
+        segs = n
+        push()
+        build()
+        return "Tag dihapus dari ${valid.size} potongan"
+    }
+
+    /** Menghapus beberapa potongan sekaligus (menyisakan minimal 1 potongan di timeline). */
+    fun deleteSegments(indices: Set<Int>): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        if (segs.size < 2) return "Tidak bisa menghapus satu-satunya klip"
+        val valid = indices.filter { it in segs.indices }.sorted()
+        if (valid.isEmpty()) return "Tidak ada potongan dipilih"
+        onPause()
+        val toRemove = if (valid.size >= segs.size) {
+            valid.drop(1).toSet()
+        } else {
+            valid.toSet()
+        }
+        val n = ArrayList<Seg>(segs.size - toRemove.size)
+        for (i in segs.indices) {
+            if (i !in toRemove) n.add(segs[i])
+        }
+        segs = n
+        calc()
+        sel = sel.coerceIn(0, segs.size - 1)
+        t = lay.off[sel]
+        push()
+        build()
+        return "${toRemove.size} potongan dihapus"
+    }
+
+    /** Memecah potongan ke-[segIdx] menjadi [parts] bagian sama rata untuk memudahkan kelola di Mode Grid. */
+    fun splitIntoEqualParts(segIdx: Int, parts: Int): String {
+        if (!hasVideo || segIdx !in segs.indices) return "Impor video dulu"
+        val g = segs[segIdx]
+        if (g.fz) return "Potongan beku tidak bisa dipecah"
+        val targetParts = parts.coerceIn(2, 36)
+        val span = g.b - g.a
+        val step = span / targetParts.toDouble()
+        if (step < Rules.MIN) return "Durasi klip terlalu pendek untuk dibagi $targetParts bagian"
+        onPause()
+        val created = ArrayList<Seg>(targetParts)
+        for (k in 0 until targetParts) {
+            val sa = g.a + k * step
+            val sb = if (k == targetParts - 1) g.b else g.a + (k + 1) * step
+            created.add(g.copy(a = sa, b = sb))
+        }
+        val n = ArrayList<Seg>(segs.size - 1 + created.size)
+        for (i in segs.indices) {
+            if (i == segIdx) n.addAll(created) else n.add(segs[i])
+        }
+        segs = n
+        calc()
+        sel = segIdx.coerceIn(0, segs.size - 1)
+        t = lay.off[sel]
+        push()
+        build()
+        return "Klip dibagi menjadi $targetParts potongan di Grid"
     }
 
     // ------------------------------------------------------------------ kecepatan

@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.view.Choreographer
+import android.view.TextureView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -54,6 +55,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,6 +74,29 @@ enum class NoteType(val label: String) {
     BUG("Bug"),
     DEV("Pengembangan")
 }
+
+/** Opsi pengurutan pada Mode Grid. */
+enum class GridSortMode(val label: String, val shortLabel: String) {
+    TIMELINE_ASC("Urutan Awal (#1 → #N)", "#1→#N"),
+    TIMELINE_DESC("Urutan Akhir (#N → #1)", "#N→#1"),
+    DUR_DESC("Durasi Terpanjang", "Terpanjang"),
+    DUR_ASC("Durasi Terpendek", "Terpendek"),
+    TAG_AZ("Nama Tag (A → Z)", "Tag A–Z")
+}
+
+/** Spesifikasi satu klip untuk fitur Multiplayer Collage. */
+data class CollageClipItem(
+    val id: Int,
+    val label: String,
+    val uri: Uri,
+    val startMs: Long,
+    val endMs: Long,
+    val speed: Float,
+    val aspect: Float,
+    val rot: Int,
+    val flip: Boolean,
+    val freeze: Boolean = false
+)
 
 /** Satu item catatan bug / ide pengembangan di masa depan. */
 data class NoteItem(
@@ -107,8 +132,9 @@ data class ExportInfo(
 
 /**
  * Jembatan antara UI Compose, logika editor (EditorCore), pemutar pratinjau (ExoPlayer),
- * 10 tema aplikasi, Mode Grid 3 kolom, UI Fitur AI berbasis frame posisi seek,
- * detektor scene, perender Mundur & Loop, kustomisasi teks kaya, catatan, dan ekspor.
+ * 10 tema aplikasi, Mode Grid (3–9 kolom vertikal, Tagging, Sort, Filter, Hold Multiseleksi & Multiplayer Collage),
+ * UI Fitur AI dengan tangkapan frame 100% identik Preview, detektor scene, perender Mundur & Loop,
+ * kustomisasi teks kaya, catatan, dan ekspor.
  */
 class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -124,12 +150,27 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var appTheme by mutableStateOf(AppTheme.MEDIUM_MAROON)
         private set
 
-    /** Mode tampilan pratinjau: false = Tunggal, true = Mode Grid 3 Kolom. */
+    // --- State Mode Grid (3..9 kolom vertikal, Tagging, Sort, Filter, Multiseleksi, Multiplayer Collage) ---
     var gridMode by mutableStateOf(false)
         private set
-
-    /** Sub-mode pada Mode Grid: 0 = Otomatis, 1 = Per Potongan, 2 = 9 Bagian Waktu. */
     var gridSubMode by mutableIntStateOf(0)
+    var gridColumns by mutableIntStateOf(3)
+        private set
+    var gridSortMode by mutableStateOf(GridSortMode.TIMELINE_ASC)
+        private set
+    var gridFilter by mutableStateOf(GRID_FILTER_ALL)
+        private set
+    var availableTags by mutableStateOf(DEFAULT_TAGS)
+        private set
+    var gridMultiSelect by mutableStateOf(false)
+        private set
+    var gridSelectedKeys by mutableStateOf<List<Int>>(emptyList())
+        private set
+    var gridTagSheet by mutableStateOf(false)
+    var gridSortSheet by mutableStateOf(false)
+    var collageOpen by mutableStateOf(false)
+    var collageItems by mutableStateOf<List<CollageClipItem>>(emptyList())
+        private set
 
     var playing by mutableStateOf(false)
         private set
@@ -199,16 +240,27 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var exportSheet by mutableStateOf(false)
     var fullscreen by mutableStateOf(false)
 
-    // --- State UI Fitur AI (gambar sesuai posisi seek + prompt + tombol generate) ---
+    // --- State UI Fitur AI (gambar presisi tinggi 100% sama dengan Preview) ---
     var aiSeekBitmap by mutableStateOf<Bitmap?>(null)
         private set
     var aiFrameLoading by mutableStateOf(false)
         private set
     var aiSeekTimeSec by mutableDoubleStateOf(0.0)
         private set
+    var aiSeekSourceSec by mutableDoubleStateOf(0.0)
+        private set
+    var aiSeekClipIndex by mutableIntStateOf(0)
+        private set
+    var aiSeekFps by mutableFloatStateOf(30f)
+        private set
+    var aiCaptureSourceLabel by mutableStateOf("Identik Preview")
+        private set
     var aiPrompt by mutableStateOf("")
     var aiPreviewStatus by mutableStateOf<String?>(null)
     private var aiFrameJob: Job? = null
+
+    private var activeTextureViewRef: WeakReference<TextureView>? = null
+    private var renderedFrameSeq by mutableIntStateOf(0)
 
     // --- State Deteksi Scene + Grid Preview Deteksi ---
     var sceneScanning by mutableStateOf(false)
@@ -267,7 +319,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         core.onPause = { pause() }
         player.playWhenReady = false
         player.repeatMode = Player.REPEAT_MODE_OFF
+        player.setSeekParameters(SeekParameters.EXACT)
         player.addListener(object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                renderedFrameSeq++
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    renderedFrameSeq++
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 pause()
                 toast("Video tidak bisa diputar")
@@ -323,6 +386,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             null
         }
+        // Bersihkan indeks multiseleksi yang sudah tidak valid bila jumlah potongan berubah
+        if (gridSelectedKeys.isNotEmpty()) {
+            val filtered = gridSelectedKeys.filter { k ->
+                k >= SLICE_KEY_OFFSET || k in core.segs.indices
+            }
+            if (filtered.size != gridSelectedKeys.size) {
+                gridSelectedKeys = filtered
+                if (filtered.isEmpty()) gridMultiSelect = false
+            }
+        }
     }
 
     /** Aspect ratio tampilan untuk sumber ke-[srcIdx] (sudah memperhitungkan rotasi global). */
@@ -345,7 +418,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ------------------------------------------------------------------ 10 tema & mode grid 3 kolom
+    // ------------------------------------------------------------------ 10 tema & mode grid (3..9 kolom, tag, sort, filter, collage)
 
     fun selectTheme(theme: AppTheme) {
         appTheme = theme
@@ -358,58 +431,418 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleGridMode() {
         gridMode = !gridMode
         if (!gridMode) {
+            clearGridMultiSelect()
             refreshFrame()
         }
-        toast(if (gridMode) "Mode Grid 3 Kolom aktif" else "Mode Pratinjau Tunggal")
+        toast(if (gridMode) "Mode Grid (${gridColumns} Kolom) aktif" else "Mode Pratinjau Tunggal")
     }
 
-    // ------------------------------------------------------------------ UI Fitur AI (berdasarkan posisi seek)
+    fun setGridColumns(cols: Int) {
+        val c = cols.coerceIn(3, 9)
+        if (c == gridColumns) return
+        gridColumns = c
+        prefs.edit().putInt(KEY_GRID_COLS, c).apply()
+        bump()
+    }
+
+    fun selectGridSortMode(mode: GridSortMode) {
+        gridSortMode = mode
+        gridSortSheet = false
+        bump()
+        toast("Urutan Grid: ${mode.label}")
+    }
+
+    fun cycleGridSortMode() {
+        val all = GridSortMode.entries
+        val next = all[(all.indexOf(gridSortMode) + 1) % all.size]
+        gridSortMode = next
+        bump()
+        toast("Urutan: ${next.label}")
+    }
+
+    fun selectGridFilter(filterKey: String) {
+        gridFilter = filterKey
+        bump()
+    }
+
+    fun addCustomTag(rawName: String) {
+        val cleaned = rawName.trim().take(24)
+        if (cleaned.isEmpty()) return
+        if (availableTags.none { it.equals(cleaned, ignoreCase = true) }) {
+            val next = availableTags + cleaned
+            availableTags = next
+            saveCustomTags(next)
+        }
+        toggleTagForCurrentTarget(cleaned)
+    }
+
+    private fun saveCustomTags(tags: List<String>) {
+        try {
+            val arr = JSONArray()
+            for (t in tags) arr.put(t)
+            prefs.edit().putString(KEY_CUSTOM_TAGS, arr.toString()).apply()
+        } catch (e: Exception) {
+            // diabaikan
+        }
+    }
+
+    /** Memulai multiseleksi saat item di-hold (long-press) pada Mode Grid. */
+    fun startGridMultiSelect(itemKey: Int) {
+        pause()
+        gridMultiSelect = true
+        if (itemKey !in gridSelectedKeys) {
+            gridSelectedKeys = gridSelectedKeys + itemKey
+        }
+        bump()
+    }
+
+    /** Menambah / melepas item pada Mode Multiseleksi Grid (mempertahankan urutan pilih). */
+    fun toggleGridSelectKey(itemKey: Int) {
+        if (!gridMultiSelect) {
+            gridMultiSelect = true
+        }
+        gridSelectedKeys = if (itemKey in gridSelectedKeys) {
+            gridSelectedKeys.filterNot { it == itemKey }
+        } else {
+            gridSelectedKeys + itemKey
+        }
+        if (gridSelectedKeys.isEmpty()) {
+            gridMultiSelect = false
+        }
+        bump()
+    }
+
+    fun selectAllGridKeys(keys: List<Int>) {
+        if (keys.isEmpty()) return
+        gridMultiSelect = true
+        gridSelectedKeys = if (gridSelectedKeys.containsAll(keys)) {
+            emptyList()
+        } else {
+            keys.distinct()
+        }
+        if (gridSelectedKeys.isEmpty()) gridMultiSelect = false
+        bump()
+    }
+
+    fun clearGridMultiSelect() {
+        gridMultiSelect = false
+        gridSelectedKeys = emptyList()
+        bump()
+    }
+
+    /** Indeks potongan (Seg) yang menjadi target pemberian Tag (multiseleksi atau potongan aktif). */
+    fun targetTagSegmentIndices(): Set<Int> {
+        val fromMulti = gridSelectedKeys.filter { it in core.segs.indices }.toSet()
+        if (fromMulti.isNotEmpty()) return fromMulti
+        return if (selIndex in core.segs.indices) setOf(selIndex) else emptySet()
+    }
+
+    fun openGridTagManager() {
+        if (!hasVideo || core.segs.isEmpty()) {
+            toast("Impor video terlebih dahulu")
+            return
+        }
+        // Bila masih mode 9 Bagian Waktu pada 1 klip utuh, beri tahu atau tag klip #1
+        pause()
+        gridTagSheet = true
+    }
+
+    fun toggleTagForCurrentTarget(tag: String) {
+        val targets = targetTagSegmentIndices()
+        if (targets.isEmpty()) {
+            toast("Pilih potongan terlebih dahulu")
+            return
+        }
+        val msg = core.toggleTagOnSegments(targets, tag)
+        refreshDerived()
+        bump()
+        toast(msg)
+    }
+
+    fun clearTagsForCurrentTarget() {
+        val targets = targetTagSegmentIndices()
+        if (targets.isEmpty()) return
+        val msg = core.clearTagsOnSegments(targets)
+        refreshDerived()
+        bump()
+        toast(msg)
+    }
+
+    fun deleteGridSelectedSegments() {
+        val segTargets = gridSelectedKeys.filter { it in core.segs.indices }.toSet()
+        if (segTargets.isEmpty()) {
+            toast("Pilih potongan klip untuk dihapus")
+            return
+        }
+        val msg = core.deleteSegments(segTargets)
+        clearGridMultiSelect()
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit(forceExact = true)
+        bump()
+        toast(msg)
+    }
+
+    fun splitCurrentClipForGrid(parts: Int) {
+        if (!hasVideo || core.segs.isEmpty()) return
+        val idx = selIndex.coerceIn(0, core.segs.size - 1)
+        val msg = core.splitIntoEqualParts(idx, parts)
+        gridSubMode = 1
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit(forceExact = true)
+        bump()
+        toast(msg)
+    }
+
+    /** Membuka Multiplayer Collage dari item-item yang dipilih lewat Hold Multiseleksi. */
+    fun openMultiplayerCollage() {
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
+            toast("Impor video terlebih dahulu")
+            return
+        }
+        val keys = gridSelectedKeys
+        if (keys.isEmpty()) {
+            toast("Hold item pada Grid untuk memilih klip Collage")
+            return
+        }
+        pause()
+        val total = core.total.coerceAtLeast(0.1)
+        val sliceCount = max(9, gridColumns * 3)
+        val sliceDur = total / sliceCount.toDouble()
+
+        val built = ArrayList<CollageClipItem>()
+        for ((orderIdx, key) in keys.withIndex()) {
+            if (built.size >= MAX_COLLAGE_TILES) break
+            if (key >= SLICE_KEY_OFFSET) {
+                val sIdx = key - SLICE_KEY_OFFSET
+                val tStart = (sIdx * sliceDur).coerceIn(0.0, max(0.0, total - 0.05))
+                val tEnd = ((sIdx + 1) * sliceDur).coerceIn(tStart + 0.05, total)
+                val locStart = core.locate(tStart)
+                val g = core.segs.getOrElse(locStart.i) { core.segs.first() }
+                val src = sources.getOrElse(g.src) { sources.first() }
+                val srcStartMs = Math.round(max(0.0, locStart.s) * 1000.0)
+                val durSrcMs = Math.round((tEnd - tStart) * g.sp * 1000.0).coerceAtLeast(150L)
+                val srcEndMs = (srcStartMs + durSrcMs).coerceAtMost(max(srcStartMs + 100L, src.info.durationMs))
+                built.add(
+                    CollageClipItem(
+                        id = orderIdx,
+                        label = "Bagian #${sIdx + 1}",
+                        uri = src.uri,
+                        startMs = srcStartMs,
+                        endMs = srcEndMs,
+                        speed = g.sp.toFloat().coerceIn(0.2f, 4f),
+                        aspect = aspectOfSource(g.src),
+                        rot = rot,
+                        flip = flip,
+                        freeze = g.fz
+                    )
+                )
+            } else if (key in core.segs.indices) {
+                val g = core.segs[key]
+                val src = sources.getOrElse(g.src) { sources.first() }
+                val startMs = Math.round(max(0.0, g.a) * 1000.0)
+                val endMs = if (g.fz) {
+                    (startMs + 200L).coerceAtMost(max(startMs + 50L, src.info.durationMs))
+                } else {
+                    Math.round(max(g.a + 0.05, g.b) * 1000.0)
+                        .coerceAtMost(max(startMs + 100L, src.info.durationMs))
+                }
+                built.add(
+                    CollageClipItem(
+                        id = orderIdx,
+                        label = "Klip #${key + 1}",
+                        uri = src.uri,
+                        startMs = startMs,
+                        endMs = endMs,
+                        speed = g.sp.toFloat().coerceIn(0.2f, 4f),
+                        aspect = aspectOfSource(g.src),
+                        rot = rot,
+                        flip = flip,
+                        freeze = g.fz
+                    )
+                )
+            }
+        }
+
+        if (built.isEmpty()) {
+            toast("Pilih minimal 1 klip untuk Multiplayer Collage")
+            return
+        }
+        collageItems = built
+        collageOpen = true
+        if (keys.size > MAX_COLLAGE_TILES) {
+            toast("Menampilkan $MAX_COLLAGE_TILES klip pertama secara bersamaan")
+        }
+    }
+
+    fun closeMultiplayerCollage() {
+        collageOpen = false
+        collageItems = emptyList()
+        refreshFrame()
+    }
+
+    // ------------------------------------------------------------------ Registrasi TextureView & UI Fitur AI Presisi Tinggi
+
+    fun attachPreviewTextureView(tv: TextureView) {
+        activeTextureViewRef = WeakReference(tv)
+    }
+
+    fun detachPreviewTextureView(tv: TextureView) {
+        if (activeTextureViewRef?.get() === tv) {
+            activeTextureViewRef = null
+        }
+    }
+
+    private fun transformPreviewBitmap(raw: Bitmap, curRot: Int, curFlip: Boolean): Bitmap {
+        val normRot = ((curRot % 360) + 360) % 360
+        if (normRot == 0 && !curFlip) return raw
+        val m = Matrix()
+        if (normRot != 0) m.postRotate(normRot.toFloat())
+        if (curFlip) m.postScale(-1f, 1f)
+        val out = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
+        if (out !== raw) raw.recycle()
+        return out
+    }
+
+    /**
+     * Mengambil bitmap langsung dari buffer GPU TextureView Preview yang sedang tampil di layar.
+     * Ini menjamin gambar 100% IDENTIK pixel-per-pixel dengan yang terlihat di Preview.
+     */
+    private fun grabLivePreviewBitmap(): Bitmap? {
+        val tv = activeTextureViewRef?.get() ?: return null
+        if (!tv.isAvailable || tv.width <= 4 || tv.height <= 4) return null
+        return try {
+            val raw = tv.bitmap ?: return null
+            transformPreviewBitmap(raw, rot, flip)
+        } catch (e: Throwable) {
+            null
+        }
+    }
 
     fun openAiPanel() {
-        pause()
+        pause() // pause() juga menyinkronkan core.t tepat ke milidetik posisi frame di Preview
         aiPreviewStatus = null
-        aiSeekTimeSec = core.t
         aiSheet = true
-        captureAiSeekFrame()
+        captureAiSeekFrame(waitSeekSettle = false)
     }
 
-    fun captureAiSeekFrame() {
+    /** Menggeser posisi seek maju/mundur per frame video secara presisi dari dalam panel AI. */
+    fun stepAiFrame(deltaFrames: Int) {
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) return
+        pause()
+        val loc = core.locate(core.t)
+        val seg = core.segs[loc.i]
+        val src = sources.getOrElse(seg.src) { sources.first() }
+        val fps = (if (src.info.fps > 1f) src.info.fps else 30f).toDouble()
+        val oneFrameTimelineSec = (1.0 / fps) / max(0.1, seg.sp)
+        val nextT = clampD(core.t + deltaFrames * oneFrameTimelineSec, 0.0, core.total)
+        setSeekFast(false)
+        core.setTime(nextT)
+        seekVideoToEdit(forceExact = true)
+        refreshDerived()
+        bump()
+        captureAiSeekFrame(waitSeekSettle = true)
+    }
+
+    /**
+     * Menangkap frame pada posisi seek saat ini dengan akurasi maksimal:
+     *  1. Memastikan ExoPlayer berada pada mode SeekParameters.EXACT tepat di waktu sumber.
+     *  2. Membaca langsung buffer TextureView Preview (100% identik dengan tampilan Preview).
+     *  3. Bila sedang di Mode Grid sel kecil (lebar < 280px) atau TextureView belum tersedia,
+     *     melakukan decode presisi mikrodetik via MediaCodec (VideoFrames.grabExactFrame).
+     */
+    fun captureAiSeekFrame(waitSeekSettle: Boolean = false) {
         aiFrameJob?.cancel()
         if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
             aiSeekBitmap = null
             aiFrameLoading = false
             aiSeekTimeSec = 0.0
+            aiSeekSourceSec = 0.0
+            aiSeekClipIndex = 0
             return
         }
+
         val loc = core.locate(core.t)
         val seg = core.segs[loc.i]
         val src = sources.getOrElse(seg.src) { sources.first() }
-        aiSeekTimeSec = core.t
-        // Tampilkan thumbnail instan dulu selagi frame resolusi penuh diambil
-        aiSeekBitmap = thumbAt(seg.src, loc.s)
-        aiFrameLoading = true
+        val targetMs = Math.round(max(0.0, loc.s) * 1000.0)
+        val targetUs = Math.round(max(0.0, loc.s) * 1_000_000.0)
 
-        val curRot = rot
-        val curFlip = flip
-        aiFrameJob = viewModelScope.launch {
-            val ctx = getApplication<Application>()
-            val bmp = withContext(Dispatchers.IO) {
-                val ms = Math.round(max(0.0, loc.s) * 1000.0)
-                val grabbed = VideoFrames.grabFrame(ctx, src.uri, ms, src.info) ?: return@withContext null
-                val sized = VideoFrames.limitLongSide(grabbed, 960)
-                if (curRot % 360 == 0 && !curFlip) {
-                    sized
-                } else {
-                    val m = Matrix()
-                    if (curRot % 360 != 0) m.postRotate(curRot.toFloat())
-                    if (curFlip) m.postScale(-1f, 1f)
-                    val transformed = Bitmap.createBitmap(sized, 0, 0, sized.width, sized.height, m, true)
-                    if (transformed !== sized) sized.recycle()
-                    transformed
+        aiSeekTimeSec = core.t
+        aiSeekSourceSec = loc.s
+        aiSeekClipIndex = loc.i
+        aiSeekFps = if (src.info.fps > 1f) src.info.fps else 30f
+
+        // Pastikan player di-seek EXACT bila posisinya meleset lebih dari 10ms
+        val needExactSeek = waitSeekSettle ||
+            player.currentMediaItemIndex != seg.src.coerceIn(0, sources.size - 1) ||
+            abs(player.currentPosition - targetMs) > 10L ||
+            player.playbackState == Player.STATE_BUFFERING
+
+        if (needExactSeek) {
+            setSeekFast(false)
+            seekVideoToEdit(forceExact = true)
+        } else {
+            // Langsung ambil dari TextureView Preview saat ini (0ms, 100% sama persis dengan Preview!)
+            val instantLive = grabLivePreviewBitmap()
+            if (instantLive != null) {
+                aiSeekBitmap = instantLive
+                aiCaptureSourceLabel = "Identik Preview"
+                val tvW = activeTextureViewRef?.get()?.width ?: 0
+                if (!gridMode && tvW >= 260) {
+                    aiFrameLoading = false
+                    return
                 }
             }
-            if (bmp != null) {
-                aiSeekBitmap = bmp
+        }
+
+        aiFrameLoading = true
+        val curRot = rot
+        val curFlip = flip
+        val startSeq = renderedFrameSeq
+
+        aiFrameJob = viewModelScope.launch {
+            if (needExactSeek) {
+                // Tunggu sampai ExoPlayer selesai merender frame EXACT baru ke TextureView (maks ~420ms)
+                var waited = 0
+                while (waited < 420) {
+                    if (player.playbackState == Player.STATE_READY &&
+                        !player.isLoading &&
+                        renderedFrameSeq > startSeq
+                    ) {
+                        delay(24) // beri 1 vsync agar buffer SurfaceTexture terbarui penuh
+                        break
+                    }
+                    delay(20)
+                    waited += 20
+                }
+            }
+
+            // Ambil lagi dari TextureView setelah frame EXACT ter-render di Preview
+            val liveAfterSettle = grabLivePreviewBitmap()
+            val tvWidth = activeTextureViewRef?.get()?.width ?: 0
+            if (liveAfterSettle != null) {
+                aiSeekBitmap = liveAfterSettle
+                aiCaptureSourceLabel = "Identik Preview"
+                if (!gridMode && tvWidth >= 260) {
+                    aiFrameLoading = false
+                    return@launch
+                }
+            }
+
+            // Fallback / peningkatan resolusi bila di Mode Grid sel kecil atau TextureView belum siap:
+            // Decode tepat pada PTS mikrodetik menggunakan MediaCodec (bukan keyframe jauh!)
+            val ctx = getApplication<Application>()
+            val exactDecoded = withContext(Dispatchers.IO) {
+                val rawExact = VideoFrames.grabExactFrame(ctx, src.uri, targetUs, src.info)
+                    ?: return@withContext null
+                val sized = VideoFrames.limitLongSide(rawExact, 1080)
+                transformPreviewBitmap(sized, curRot, curFlip)
+            }
+            if (exactDecoded != null) {
+                aiSeekBitmap = exactDecoded
+                aiCaptureSourceLabel = if (liveAfterSettle != null) "Presisi Frame HD" else "Presisi PTS"
             }
             aiFrameLoading = false
         }
@@ -421,16 +854,21 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             toast("Masukkan prompt terlebih dahulu")
             return
         }
-        aiPreviewStatus = "Prompt siap pada frame ${Fmt.time(aiSeekTimeSec)} — fitur pemrosesan AI segera hadir."
-        toast("UI AI: Prompt dicatat untuk frame ${Fmt.time(aiSeekTimeSec)}")
+        aiPreviewStatus = "Prompt siap diselipkan tepat di posisi seek ${Fmt.preciseTime(aiSeekTimeSec)} (Klip #${aiSeekClipIndex + 1}) — pemrosesan backend AI segera hadir."
+        toast("UI AI siap di posisi ${Fmt.preciseTime(aiSeekTimeSec)}")
     }
 
     // ------------------------------------------------------------------ pemutar
 
-    private fun seekPlayerTo(srcIdx: Int, sec: Double, tol: Double) {
+    private fun seekPlayerTo(srcIdx: Int, sec: Double, tol: Double, forceExact: Boolean = false) {
         if (!hasVideo || sources.isEmpty()) return
         val validSrc = srcIdx.coerceIn(0, sources.size - 1)
         val targetMs = Math.round(max(0.0, sec) * 1000.0)
+        if (forceExact) {
+            player.setSeekParameters(SeekParameters.EXACT)
+            player.seekTo(validSrc, targetMs)
+            return
+        }
         if (player.currentMediaItemIndex != validSrc) {
             player.seekTo(validSrc, targetMs)
         } else {
@@ -439,12 +877,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun seekVideoToEdit() {
+    private fun seekVideoToEdit(forceExact: Boolean = false) {
         if (!hasVideo || core.segs.isEmpty()) return
         val l = core.locate(core.t)
         curSeg = l.i
         val g = core.segs.getOrNull(l.i) ?: return
-        seekPlayerTo(g.src, l.s, 0.03)
+        seekPlayerTo(g.src, l.s, 0.015, forceExact = forceExact)
     }
 
     private fun setSeekFast(fast: Boolean) {
@@ -454,7 +892,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshFrame() {
         if (hasVideo && !playing) {
             try {
-                player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                player.setSeekParameters(SeekParameters.EXACT)
+                seekVideoToEdit(forceExact = true)
             } catch (e: Exception) {
                 // diabaikan
             }
@@ -477,7 +916,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         curSeg = l.i
         playing = true
         setSeekFast(false)
-        seekPlayerTo(g.src, l.s, 0.03)
+        seekPlayerTo(g.src, l.s, 0.02, forceExact = true)
         if (g.fz) {
             player.pause()
         } else {
@@ -494,9 +933,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (!playing) return
         playing = false
         choreographer.removeFrameCallback(frameCallback)
-        if (hasVideo) {
+        if (hasVideo && core.segs.isNotEmpty()) {
             setSeekFast(false)
             player.pause()
+            // Sinkronkan core.t tepat ke frame yang berhenti di ExoPlayer agar 100% sama dengan Preview
+            val idx = curSeg.coerceIn(0, core.segs.size - 1)
+            val g = core.segs[idx]
+            if (!g.fz && player.currentMediaItemIndex == g.src) {
+                val s = player.currentPosition / 1000.0
+                val clampedS = clampD(s, g.a, g.b)
+                core.t = core.lay.off[idx] + (clampedS - g.a) / g.sp
+                core.sync()
+                refreshDerived()
+            }
         }
         bump()
     }
@@ -521,12 +970,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (g.fz) {
             setSeekFast(false)
             player.pause()
-            seekPlayerTo(g.src, g.a, 0.03)
+            seekPlayerTo(g.src, g.a, 0.02, forceExact = true)
             return
         }
         setSeekFast(false)
         player.setPlaybackSpeed(g.sp.toFloat())
-        seekPlayerTo(g.src, g.a, 0.08)
+        seekPlayerTo(g.src, g.a, 0.05, forceExact = true)
         player.play()
     }
 
@@ -549,7 +998,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             if (core.t >= core.lay.off[curSeg] + g.len - 1e-6) adv = true
         } else {
             if (player.currentMediaItemIndex != g.src) {
-                seekPlayerTo(g.src, g.a, 0.02)
+                seekPlayerTo(g.src, g.a, 0.02, forceExact = true)
             }
             val s = player.currentPosition / 1000.0
             if (s >= g.b - 0.03 || player.playbackState == Player.STATE_ENDED) {
@@ -585,7 +1034,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun scrubBy(dtSeconds: Double) {
         if (!hasVideo || core.segs.isEmpty()) return
         core.setTime(core.t + dtSeconds)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = false)
         refreshDerived()
         bump()
     }
@@ -593,7 +1042,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun scrubEnd() {
         if (!hasVideo || core.segs.isEmpty()) return
         setSeekFast(false)
-        seekVideoToEdit()
+        // Wajib forceExact = true supaya setelah CLOSEST_SYNC selesai, ExoPlayer me-render frame EXACT!
+        seekVideoToEdit(forceExact = true)
         refreshDerived()
         bump()
     }
@@ -604,12 +1054,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         pause()
         setSeekFast(false)
         core.setTime(tt)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = true)
         refreshDerived()
         bump()
     }
 
-    /** Memilih potongan ke-[segIdx] dari Mode Grid 3 Kolom dan melompat ke awal potongan tersebut. */
+    /** Memilih potongan ke-[segIdx] dari Mode Grid dan melompat ke awal potongan tersebut secara presisi. */
     fun selectSegmentFromGrid(segIdx: Int) {
         if (!hasVideo || segIdx !in core.segs.indices) return
         val startT = core.lay.off[segIdx]
@@ -617,7 +1067,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         setSeekFast(false)
         core.sel = segIdx
         core.setTime(startT + 0.001)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = true)
         refreshDerived()
         bump()
     }
@@ -672,7 +1122,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val g = core.trimSeg
         if (g != null && !g.fz) {
             val targetSec = if (core.trimmingSide == 1) g.a else max(g.b - 0.05, g.a)
-            seekPlayerTo(g.src, targetSec, 0.02)
+            seekPlayerTo(g.src, targetSec, 0.02, forceExact = false)
         }
         bump()
     }
@@ -687,7 +1137,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun trimEnd() {
         core.trimEnd()
         setSeekFast(false)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = true)
         refreshDerived()
         bump()
     }
@@ -705,7 +1155,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun afterHistory() {
         refreshDerived()
         setSeekFast(false)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = true)
         bump()
     }
 
@@ -757,7 +1207,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val msg = core.delete()
                 refreshDerived()
                 setSeekFast(false)
-                seekVideoToEdit()
+                seekVideoToEdit(forceExact = true)
                 bump()
                 if (msg != null) toast(msg)
             }
@@ -780,7 +1230,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val msg = core.freezeFrame()
                 refreshDerived()
                 setSeekFast(false)
-                seekVideoToEdit()
+                seekVideoToEdit(forceExact = true)
                 bump()
                 if (msg != null) toast(msg)
             }
@@ -914,7 +1364,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         sceneDetectSheet = false
         refreshDerived()
         setSeekFast(false)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = true)
         bump()
         toast(msg)
     }
@@ -953,7 +1403,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val msg = core.restoreFromReverse(segIdx)
             refreshDerived()
             setSeekFast(false)
-            seekVideoToEdit()
+            seekVideoToEdit(forceExact = true)
             bump()
             toast(msg)
             return
@@ -1012,7 +1462,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 player.setMediaItems(sources.map { MediaItem.fromUri(it.uri) })
                 player.prepare()
                 player.pause()
-                seekVideoToEdit()
+                seekVideoToEdit(forceExact = true)
                 refreshDerived()
                 reverseRendering = false
                 bump()
@@ -1063,7 +1513,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         confirmText = null
         refreshDerived()
         setSeekFast(false)
-        seekVideoToEdit()
+        seekVideoToEdit(forceExact = true)
         bump()
         toast(msg)
     }
@@ -1110,13 +1560,22 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.5 (Terbaru)",
+            version = "v1.0.6 (Terbaru)",
             date = "27/11/2026",
-            title = "Mode Grid 3 Kolom, UI Fitur AI & 10 Pilihan Tema Mini Preview",
+            title = "Presisi Frame AI 100% Identik Preview & Mode Grid (3–9 Kolom, Tag/Sort/Filter, Multiplayer Collage)",
             items = listOf(
-                "✓ [Pengembangan] Mode Grid menampilkan video ke dalam Grid 3 Kolom interaktif (mendukung tampilan per potongan maupun 9 bagian waktu, lengkap dengan pemutaran langsung di sel aktif).",
-                "✓ [Pengembangan] Menu Fitur AI baru (UI): menampilkan frame gambar sesuai posisi seek saat ini, kolom textarea prompt, dan tombol Generate.",
-                "✓ [Pengembangan] 10 pilihan tema warna aplikasi yang ditampilkan dalam Grid 2 Kolom lengkap dengan Mini Preview UI."
+                "✓ [Bug Fixed] Gambar di panel AI kini 100% sama persis dengan tampilan Preview (mengambil langsung dari buffer TextureView Preview + sinkronisasi seek presisi milidetik/PTS MediaCodec + tombol step ±1 frame).",
+                "✓ [Pengembangan] Opsi range vertikal 3 sampai 9 kolom pada Mode Grid untuk mengatur kepadatan kolom secara instan.",
+                "✓ [Pengembangan] Fitur Tagging, Sort (Urutan Awal/Akhir, Durasi, Tag), dan Filter per Tag langsung di Mode Grid.",
+                "✓ [Pengembangan] Hold (tekan tahan) pada item Grid untuk Multiseleksi lengkap dengan pemutar serentak Multiplayer Collage."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.5",
+            date = "27/11/2026",
+            title = "Mode Grid, UI Fitur AI & 10 Pilihan Tema Mini Preview",
+            items = listOf(
+                "✓ Mode Grid interaktif, menu Fitur AI (UI), serta 10 pilihan tema dengan Grid 2 Kolom Mini Preview."
             )
         ),
         UpdateLogEntry(
@@ -1128,15 +1587,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 "✓ Seluruh panel floating dibatasi max-height 80% + scroll-y.",
                 "✓ Opsi Mundur & Loop (Normal + Mundur), serta Deteksi Ulang Scene dengan nilai min 0.1."
             )
-        ),
-        UpdateLogEntry(
-            version = "v1.0.3",
-            date = "26/11/2026",
-            title = "Deteksi Scene Grid, Kustomisasi Teks Kaya & Update Timpa APK",
-            items = listOf(
-                "✓ Update APK langsung menimpa versi lama tanpa uninstall.",
-                "✓ Split Pendeteksi Scene dengan Grid Preview Deteksi & kustomisasi teks kaya."
-            )
         )
     )
 
@@ -1144,6 +1594,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val savedThemeId = prefs.getString(KEY_APP_THEME, AppTheme.MEDIUM_MAROON.id)
         appTheme = AppTheme.fromId(savedThemeId)
         Ev.activeTheme = appTheme
+
+        gridColumns = prefs.getInt(KEY_GRID_COLS, 3).coerceIn(3, 9)
+
+        val savedTagsJson = prefs.getString(KEY_CUSTOM_TAGS, null)
+        if (!savedTagsJson.isNullOrEmpty()) {
+            try {
+                val arr = JSONArray(savedTagsJson)
+                val loaded = ArrayList<String>()
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i, "").trim()
+                    if (s.isNotEmpty() && s !in loaded) loaded.add(s)
+                }
+                if (loaded.isNotEmpty()) availableTags = loaded
+            } catch (e: Exception) {
+                // diabaikan
+            }
+        }
 
         sceneSensitivity = prefs.getFloat(KEY_SCENE_SENS, 0.55f).coerceIn(0.1f, 1.0f)
         sceneMinDur = ((prefs.getFloat(KEY_SCENE_MINDUR, 0.5f).toDouble() * 10.0).roundToInt() / 10.0)
@@ -1274,6 +1741,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 core.loadVideos(newDurs)
                 pps = Rules.PPS0
                 resetPreviewZoom()
+                clearGridMultiSelect()
+                gridFilter = GRID_FILTER_ALL
                 curSeg = 0
                 currentScanResult = null
             } else {
@@ -1292,7 +1761,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             player.setMediaItems(sources.map { MediaItem.fromUri(it.uri) })
             player.prepare()
             player.pause()
-            seekVideoToEdit()
+            seekVideoToEdit(forceExact = true)
             bump()
 
             val count = probed.size
@@ -1316,6 +1785,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         sceneScanning = false
         currentScanResult = null
         aiSeekBitmap = null
+        collageOpen = false
+        collageItems = emptyList()
+        clearGridMultiSelect()
+        gridFilter = GRID_FILTER_ALL
         sources.clear()
         sourceThumbs.clear()
         sourceThumbReady.clear()
@@ -1484,9 +1957,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val THUMB_W = 128
         const val THUMB_H = 96
+        const val SLICE_KEY_OFFSET = 10_000
+        const val MAX_COLLAGE_TILES = 9
+        const val GRID_FILTER_ALL = "__ALL__"
+        const val GRID_FILTER_TAGGED = "__TAGGED__"
+        const val GRID_FILTER_UNTAGGED = "__UNTAGGED__"
+
+        val DEFAULT_TAGS = listOf("Favorit", "Utama", "Highlight", "B-Roll", "Simpan")
+
         private const val PREFS_NAME = "editor_video_notes"
         private const val KEY_NOTES_JSON = "notes_json"
         private const val KEY_APP_THEME = "app_theme"
+        private const val KEY_GRID_COLS = "grid_columns"
+        private const val KEY_CUSTOM_TAGS = "custom_tags_json"
         private const val KEY_SCENE_SENS = "scene_sensitivity"
         private const val KEY_SCENE_MINDUR = "scene_min_dur"
     }

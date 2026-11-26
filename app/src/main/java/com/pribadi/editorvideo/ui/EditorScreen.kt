@@ -66,12 +66,15 @@ import com.pribadi.editorvideo.vm.Tool
 @Composable
 fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () -> Unit) {
     BackHandler(
-        enabled = vm.confirmText != null || vm.themeSheet || vm.aiSheet || vm.speedSheet ||
-            vm.reverseSheet || vm.textSheet || vm.sceneDetectSheet || vm.noteSheet ||
-            vm.exportSheet || vm.fullscreen
+        enabled = vm.collageOpen || vm.confirmText != null || vm.gridTagSheet || vm.gridSortSheet ||
+            vm.themeSheet || vm.aiSheet || vm.speedSheet || vm.reverseSheet || vm.textSheet ||
+            vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen || vm.gridMultiSelect
     ) {
         when {
+            vm.collageOpen -> vm.closeMultiplayerCollage()
             vm.confirmText != null -> vm.confirmText = null
+            vm.gridTagSheet -> vm.gridTagSheet = false
+            vm.gridSortSheet -> vm.gridSortSheet = false
             vm.themeSheet -> vm.themeSheet = false
             vm.aiSheet -> vm.aiSheet = false
             vm.reverseSheet -> vm.reverseSheet = false
@@ -81,9 +84,10 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
             vm.noteSheet -> vm.noteSheet = false
             vm.exportSheet -> vm.closeExport()
             vm.fullscreen -> vm.fullscreen = false
+            vm.gridMultiSelect -> vm.clearGridMultiSelect()
         }
     }
-    FullscreenBars(vm.fullscreen)
+    FullscreenBars(vm.fullscreen || vm.collageOpen)
 
     Box(
         modifier = Modifier
@@ -121,6 +125,21 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
 
             if (vm.aiSheet) {
                 AiSheet(vm) { vm.aiSheet = false }
+            }
+
+            if (vm.gridTagSheet) {
+                GridTagSheet(vm) { vm.gridTagSheet = false }
+            }
+
+            if (vm.gridSortSheet) {
+                GridSortSheet(vm) { vm.gridSortSheet = false }
+            }
+
+            if (vm.collageOpen && vm.collageItems.isNotEmpty()) {
+                MultiplayerCollageOverlay(
+                    items = vm.collageItems,
+                    onClose = { vm.closeMultiplayerCollage() }
+                )
             }
 
             if (vm.speedSheet) {
@@ -474,7 +493,7 @@ private fun Controls(vm: EditorViewModel) {
                         size = 16.dp
                     )
                     Text(
-                        text = "Grid",
+                        text = if (vm.gridMode) "Grid ${vm.gridColumns}" else "Grid",
                         color = if (vm.gridMode) Color.White else Ev.Text,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold

@@ -105,7 +105,8 @@ data class Seg(
     val src: Int = 0,
     val origSrc: Int = -1,
     val origA: Double = 0.0,
-    val origB: Double = 0.0
+    val origB: Double = 0.0,
+    val tags: List<String> = emptyList()
 ) {
     /** Durasi dasar (sebelum dibagi kecepatan). */
     val baseLen: Double get() = if (fz) d else b - a
@@ -173,6 +174,15 @@ object Fmt {
     fun time(s: Double): String {
         val p = parts(s)
         return "${p[0]}:${if (p[1] < 10) "0" else ""}${p[1]}.${p[2]}"
+    }
+
+    /** Format waktu presisi milidetik untuk posisi seek AI: m:ss.mmm */
+    fun preciseTime(s: Double): String {
+        val msTotal = max(0L, Math.round(s * 1000.0))
+        val m = msTotal / 60000L
+        val sec = (msTotal % 60000L) / 1000L
+        val ms = msTotal % 1000L
+        return String.format(Locale.US, "%d:%02d.%03d", m, sec, ms)
     }
 
     /** Label durasi ringkas pada tiap potongan di timeline: "4.2s" atau "1:05.2" bila >= 60s. */

@@ -19,11 +19,12 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
 4. **Kustomisasi Overlay Teks yang Kaya (Default Kosong):**
    - Mendukung 2 layer teks multi-baris (default kosong).
    - Pilihan gaya huruf (*Font*), perataan (Kiri/Tengah/Kanan), ukuran huruf (`40%`–`220%`), palet warna isi teks, warna & ketebalan *outline*, kotak latar belakang (*background pill*), bayangan (*shadow*), serta geser (*drag*) posisi langsung di layar pratinjau.
-5. **Mode Grid 3 Kolom Interaktif:**
-   - Beralih antara pratinjau tunggal dan **Mode Grid 3 Kolom** lewat tombol **`Grid`** di baris kontrol.
-   - Mendukung tampilan **Per Potongan** maupun **9 Bagian Waktu** dalam susunan 3 kolom, di mana sel aktif memutar video secara langsung (*live playback*) dan sel lain dapat diketuk untuk melompat seketika.
-6. **Fitur AI (Preview UI Berbasis Posisi Seek):**
-   - Menu **AI** di toolbar bawah menampilkan panel floating berisi **gambar frame otomatis sesuai posisi seek** saat ini, **textarea prompt** lengkap dengan placeholder, serta tombol **Generate**.
+5. **Mode Grid Lengkap (3–9 Kolom, Tagging, Sort, Filter & Multiplayer Collage):**
+   - **Range Vertikal 3–9 Kolom:** Atur kepadatan kolom Grid dari **3 sampai 9 kolom** secara instan lewat penggeser range vertikal di sisi kanan Grid.
+   - **Tagging, Sort & Filter:** Pasang berbagai Tag (*Favorit*, *Utama*, *Highlight*, *B-Roll*, *Simpan*, maupun tag kustom baru), urutkan (*Sort*) berdasarkan urutan timeline, durasi, atau abjad tag, serta saring (*Filter*) tampilan per tag.
+   - **Hold Multiseleksi & Multiplayer Collage:** Tekan tahan (*hold*) sel Grid untuk memilih banyak klip sekaligus, memberi tag massal, atau memutar seluruh klip terpilih secara serentak dalam kanvas **Multiplayer Collage**.
+6. **Fitur AI (Frame 100% Identik Preview + Step Per-Frame):**
+   - Menu **AI** di toolbar bawah menangkap langsung buffer tampilan *Preview* (`TextureView`) yang tersinkronisasi penuh ke posisi *seek* (disertai *fallback* decode PTS presisi mikrodetik via `MediaCodec` dan tombol geser `±1 Frame` / `±5 Frame`), kolom **textarea prompt**, serta tombol **Generate** untuk persiapan penyisipan hasil AI secara presisi di posisi *seek*.
 7. **10 Pilihan Tema dengan Grid 2 Kolom Mini Preview:**
    - Tersedia **10 tema warna** (*Medium Maroon*, *Gelap Standar*, *Midnight Ocean*, *Emerald Forest*, *Royal Purple*, *Sunset Amber*, *Rose Gold*, *Cyber Teal*, *Crimson Gold*, dan *Slate Mocha*) yang ditampilkan dalam **Grid 2 Kolom lengkap dengan Mini Preview UI**.
 8. **Pinch untuk Zoom In/Out:**
