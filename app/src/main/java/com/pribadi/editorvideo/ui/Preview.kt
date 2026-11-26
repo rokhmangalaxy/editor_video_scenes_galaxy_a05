@@ -634,7 +634,7 @@ fun VideoGridStage(
         // Sisi kanan: Input Range Vertikal 3 sampai 9 Kolom
         VerticalGridColumnsRange(
             columns = cols,
-            onColumnsChange = { vm.setGridColumns(it) }
+            onColumnsChange = { vm.updateGridColumns(it) }
         )
     }
 }

@@ -437,7 +437,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast(if (gridMode) "Mode Grid (${gridColumns} Kolom) aktif" else "Mode Pratinjau Tunggal")
     }
 
-    fun setGridColumns(cols: Int) {
+    fun updateGridColumns(cols: Int) {
         val c = cols.coerceIn(3, 9)
         if (c == gridColumns) return
         gridColumns = c
@@ -1560,7 +1560,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.7 (Terbaru)",
+            version = "v1.0.8 (Terbaru)",
             date = "27/11/2026",
             title = "Presisi Frame AI 100% Identik Preview & Mode Grid (3–9 Kolom, Tag/Sort/Filter, Multiplayer Collage)",
             items = listOf(
