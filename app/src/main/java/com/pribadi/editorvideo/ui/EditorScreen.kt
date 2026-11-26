@@ -68,7 +68,8 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
     BackHandler(
         enabled = vm.collageOpen || vm.confirmText != null || vm.gridTagSheet || vm.gridSortSheet ||
             vm.themeSheet || vm.aiSheet || vm.speedSheet || vm.reverseSheet || vm.textSheet ||
-            vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen || vm.gridMultiSelect
+            vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen ||
+            vm.gridColSliderOpen || vm.gridMultiSelect
     ) {
         when {
             vm.collageOpen -> vm.closeMultiplayerCollage()
@@ -84,6 +85,7 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
             vm.noteSheet -> vm.noteSheet = false
             vm.exportSheet -> vm.closeExport()
             vm.fullscreen -> vm.fullscreen = false
+            vm.gridColSliderOpen -> vm.gridColSliderOpen = false
             vm.gridMultiSelect -> vm.clearGridMultiSelect()
         }
     }

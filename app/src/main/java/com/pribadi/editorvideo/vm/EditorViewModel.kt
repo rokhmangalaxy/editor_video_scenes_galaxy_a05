@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -83,6 +84,20 @@ enum class GridSortMode(val label: String, val shortLabel: String) {
     DUR_ASC("Durasi Terpendek", "Terpendek"),
     TAG_AZ("Nama Tag (A → Z)", "Tag A–Z")
 }
+
+/** Satu pilihan warna dari 12 opsi warna untuk Custom Tag pada Mode Grid. */
+data class TagColorOption(
+    val index: Int,
+    val name: String,
+    val color: Color
+)
+
+/** Kunci cache varian rotasi/cermin untuk thumbnail frame pertama Mode Grid. */
+private data class GridTransformKey(
+    val baseKey: Long,
+    val rot: Int,
+    val flip: Boolean
+)
 
 /** Spesifikasi satu klip untuk fitur Multiplayer Collage. */
 data class CollageClipItem(
@@ -156,11 +171,24 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var gridSubMode by mutableIntStateOf(0)
     var gridColumns by mutableIntStateOf(3)
         private set
+    /** Toggle panel floating input range vertikal kolom (3..9) agar tidak memakan ruang Grid. */
+    var gridColSliderOpen by mutableStateOf(false)
     var gridSortMode by mutableStateOf(GridSortMode.TIMELINE_ASC)
         private set
     var gridFilter by mutableStateOf(GRID_FILTER_ALL)
         private set
     var availableTags by mutableStateOf(listOf("Favorit", "Utama", "Highlight", "B-Roll", "Simpan"))
+        private set
+    /** Peta nama tag (lowercase) -> indeks warna 0..11 pada TAG_COLOR_PALETTE. */
+    var tagColorMap by mutableStateOf<Map<String, Int>>(
+        mapOf(
+            "favorit" to 0,
+            "utama" to 1,
+            "highlight" to 2,
+            "b-roll" to 3,
+            "simpan" to 4
+        )
+    )
         private set
     var gridMultiSelect by mutableStateOf(false)
         private set
@@ -310,6 +338,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val sourceThumbs = ArrayList<Array<Bitmap?>>()
     private val sourceThumbReady = ArrayList<Int>()
 
+    // Cache khusus Mode Grid: frame pertama tiap klip secara utuh (tanpa crop) agar 100% sesuai autoplay
+    private val gridCacheLock = Any()
+    private val gridBaseFrameCache = LinkedHashMap<Long, Bitmap>(64, 0.75f, true)
+    private val gridTransformedCache = LinkedHashMap<GridTransformKey, Bitmap>(64, 0.75f, true)
+    private val pendingGridFrames = LinkedHashSet<Pair<Int, Long>>()
+    private var gridThumbWorkerJob: Job? = null
+
     private val choreographer: Choreographer = Choreographer.getInstance()
     private val frameCallback = Choreographer.FrameCallback { ts -> tick(ts) }
 
@@ -352,10 +387,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         choreographer.removeFrameCallback(frameCallback)
         thumbJob?.cancel()
+        gridThumbWorkerJob?.cancel()
         importJob?.cancel()
         sceneScanJob?.cancel()
         reverseJob?.cancel()
         aiFrameJob?.cancel()
+        clearGridFrameCaches()
         try {
             player.release()
         } catch (e: Exception) {
@@ -431,10 +468,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleGridMode() {
         gridMode = !gridMode
         if (!gridMode) {
+            gridColSliderOpen = false
             clearGridMultiSelect()
             refreshFrame()
         }
         toast(if (gridMode) "Mode Grid (${gridColumns} Kolom) aktif" else "Mode Pratinjau Tunggal")
+    }
+
+    fun toggleGridColSlider() {
+        gridColSliderOpen = !gridColSliderOpen
     }
 
     fun updateGridColumns(cols: Int) {
@@ -465,15 +507,47 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         bump()
     }
 
-    fun addCustomTag(rawName: String) {
+    /** Indeks warna (0..11) untuk sebuah nama tag. */
+    fun tagColorIndex(tag: String): Int {
+        val key = tag.trim().lowercase(Locale.ROOT)
+        val stored = tagColorMap[key]
+        if (stored != null) return stored.coerceIn(0, TAG_COLOR_PALETTE.lastIndex)
+        return (key.hashCode() and 0x7FFFFFFF) % TAG_COLOR_PALETTE.size
+    }
+
+    /** Warna dari 12 opsi warna untuk sebuah nama tag. */
+    fun tagColor(tag: String): Color =
+        TAG_COLOR_PALETTE[tagColorIndex(tag)].color
+
+    /** Mengubah warna salah satu tag ke salah satu dari 12 opsi warna dan menyimpannya. */
+    fun assignTagColor(tag: String, colorIdx: Int) {
+        val key = tag.trim().lowercase(Locale.ROOT)
+        if (key.isEmpty()) return
+        val safeIdx = colorIdx.coerceIn(0, TAG_COLOR_PALETTE.lastIndex)
+        val updated = LinkedHashMap(tagColorMap)
+        updated[key] = safeIdx
+        tagColorMap = updated
+        saveTagColors(updated)
+        bump()
+        toast("Warna tag \"$tag\": ${TAG_COLOR_PALETTE[safeIdx].name}")
+    }
+
+    fun addCustomTag(rawName: String, colorIdx: Int = 0) {
         val cleaned = rawName.trim().take(24)
         if (cleaned.isEmpty()) return
-        if (availableTags.none { it.equals(cleaned, ignoreCase = true) }) {
-            val next = availableTags + cleaned
+        val safeColorIdx = colorIdx.coerceIn(0, TAG_COLOR_PALETTE.lastIndex)
+        val existing = availableTags.firstOrNull { it.equals(cleaned, ignoreCase = true) }
+        val finalTag = existing ?: cleaned
+        if (existing == null) {
+            val next = availableTags + finalTag
             availableTags = next
             saveCustomTags(next)
         }
-        toggleTagForCurrentTarget(cleaned)
+        val updatedColors = LinkedHashMap(tagColorMap)
+        updatedColors[finalTag.lowercase(Locale.ROOT)] = safeColorIdx
+        tagColorMap = updatedColors
+        saveTagColors(updatedColors)
+        toggleTagForCurrentTarget(finalTag)
     }
 
     private fun saveCustomTags(tags: List<String>) {
@@ -481,6 +555,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val arr = JSONArray()
             for (t in tags) arr.put(t)
             prefs.edit().putString(KEY_CUSTOM_TAGS, arr.toString()).apply()
+        } catch (e: Exception) {
+            // diabaikan
+        }
+    }
+
+    private fun saveTagColors(map: Map<String, Int>) {
+        try {
+            val obj = JSONObject()
+            for ((k, v) in map) {
+                obj.put(k, v)
+            }
+            prefs.edit().putString(KEY_TAG_COLORS_JSON, obj.toString()).apply()
         } catch (e: Exception) {
             // diabaikan
         }
@@ -1059,8 +1145,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         bump()
     }
 
-    /** Memilih potongan ke-[segIdx] dari Mode Grid dan melompat ke awal potongan tersebut secara presisi. */
-    fun selectSegmentFromGrid(segIdx: Int) {
+    /** Memilih potongan ke-[segIdx] dari Mode Grid, melompat ke frame pertama, dan langsung memutarnya (autoplay). */
+    fun selectSegmentFromGrid(segIdx: Int, autoPlay: Boolean = true) {
         if (!hasVideo || segIdx !in core.segs.indices) return
         val startT = core.lay.off[segIdx]
         pause()
@@ -1069,7 +1155,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         core.setTime(startT + 0.001)
         seekVideoToEdit(forceExact = true)
         refreshDerived()
-        bump()
+        if (autoPlay && !core.segs[segIdx].fz) {
+            play()
+        } else {
+            bump()
+        }
+    }
+
+    /** Memilih bagian waktu pada Mode Grid dan langsung memutar mulai dari frame pertamanya. */
+    fun selectSliceFromGrid(startT: Double) {
+        if (!hasVideo || core.segs.isEmpty()) return
+        val clampedT = clampD(startT + 0.001, 0.0, core.total)
+        pause()
+        setSeekFast(false)
+        core.setTime(clampedT)
+        seekVideoToEdit(forceExact = true)
+        refreshDerived()
+        play()
     }
 
     fun setZoom(p: Double) {
@@ -1560,14 +1662,22 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.8 (Terbaru)",
+            version = "v1.0.9 (Terbaru)",
+            date = "27/11/2026",
+            title = "Frame Pertama Utuh di Mode Grid, Floating Range Kolom & 12 Warna Custom Tag Transparan",
+            items = listOf(
+                "✓ [Bug Fixed] Thumbnail setiap item di Mode Grid kini menampilkan frame pertama klip secara utuh (tanpa terpotong/crop dan konsisten rasio/rotasi/cermin dengan tampilan autoplay saat diklik).",
+                "✓ [Pengembangan] Input range vertikal kolom (3–9) kini tampil sebagai panel floating saat simbol kostum kolom di-toggle, sehingga tidak memakan ruang Grid.",
+                "✓ [Pengembangan] Custom Tag dilengkapi 12 opsi warna yang dapat dipilih/diubah kapan saja, serta seluruh label pada item Grid diberi efek transparansi."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.8",
             date = "27/11/2026",
             title = "Presisi Frame AI 100% Identik Preview & Mode Grid (3–9 Kolom, Tag/Sort/Filter, Multiplayer Collage)",
             items = listOf(
-                "✓ [Bug Fixed] Gambar di panel AI kini 100% sama persis dengan tampilan Preview (mengambil langsung dari buffer TextureView Preview + sinkronisasi seek presisi milidetik/PTS MediaCodec + tombol step ±1 frame).",
-                "✓ [Pengembangan] Opsi range vertikal 3 sampai 9 kolom pada Mode Grid untuk mengatur kepadatan kolom secara instan.",
-                "✓ [Pengembangan] Fitur Tagging, Sort (Urutan Awal/Akhir, Durasi, Tag), dan Filter per Tag langsung di Mode Grid.",
-                "✓ [Pengembangan] Hold (tekan tahan) pada item Grid untuk Multiseleksi lengkap dengan pemutar serentak Multiplayer Collage."
+                "✓ [Bug Fixed] Gambar di panel AI 100% sama persis dengan tampilan Preview + step ±1 frame.",
+                "✓ [Pengembangan] Opsi range vertikal 3–9 kolom, Tagging, Sort, Filter, serta Hold Multiseleksi & Multiplayer Collage."
             )
         ),
         UpdateLogEntry(
@@ -1576,16 +1686,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             title = "Mode Grid, UI Fitur AI & 10 Pilihan Tema Mini Preview",
             items = listOf(
                 "✓ Mode Grid interaktif, menu Fitur AI (UI), serta 10 pilihan tema dengan Grid 2 Kolom Mini Preview."
-            )
-        ),
-        UpdateLogEntry(
-            version = "v1.0.4",
-            date = "26/11/2026",
-            title = "Tema Medium Maroon, Loop Video, Label Durasi & Deteksi Ulang Scene",
-            items = listOf(
-                "✓ Tema Medium Maroon, timeline awal kosong bersih, dan label durasi di tiap potongan.",
-                "✓ Seluruh panel floating dibatasi max-height 80% + scroll-y.",
-                "✓ Opsi Mundur & Loop (Normal + Mundur), serta Deteksi Ulang Scene dengan nilai min 0.1."
             )
         )
     )
@@ -1607,6 +1707,24 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     if (s.isNotEmpty() && s !in loaded) loaded.add(s)
                 }
                 if (loaded.isNotEmpty()) availableTags = loaded
+            } catch (e: Exception) {
+                // diabaikan
+            }
+        }
+
+        val savedTagColors = prefs.getString(KEY_TAG_COLORS_JSON, null)
+        if (!savedTagColors.isNullOrEmpty()) {
+            try {
+                val obj = JSONObject(savedTagColors)
+                val merged = LinkedHashMap(tagColorMap)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next().trim().lowercase(Locale.ROOT)
+                    if (k.isNotEmpty()) {
+                        merged[k] = obj.optInt(k, 0).coerceIn(0, TAG_COLOR_PALETTE.lastIndex)
+                    }
+                }
+                tagColorMap = merged
             } catch (e: Exception) {
                 // diabaikan
             }
@@ -1728,6 +1846,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val newDurs = probed.map { it.info.durationMs / 1000.0 }
 
             if (wasEmpty) {
+                gridThumbWorkerJob?.cancel()
+                clearGridFrameCaches()
                 sources.clear()
                 sourceThumbs.clear()
                 sourceThumbReady.clear()
@@ -1777,14 +1897,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun resetMedia() {
         pause()
         thumbJob?.cancel()
+        gridThumbWorkerJob?.cancel()
         importJob?.cancel()
         sceneScanJob?.cancel()
         reverseJob?.cancel()
         aiFrameJob?.cancel()
+        clearGridFrameCaches()
         reverseRendering = false
         sceneScanning = false
         currentScanResult = null
         aiSeekBitmap = null
+        gridColSliderOpen = false
         collageOpen = false
         collageItems = emptyList()
         clearGridMultiSelect()
@@ -1881,6 +2004,177 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
+    // ------------------------------------------------------------------ thumbnail frame pertama utuh khusus Mode Grid
+
+    private fun clearGridFrameCaches() {
+        synchronized(gridCacheLock) {
+            pendingGridFrames.clear()
+            gridTransformedCache.clear()
+            gridBaseFrameCache.clear()
+        }
+    }
+
+    private fun copyWithTransform(srcBmp: Bitmap, normRot: Int, curFlip: Boolean): Bitmap {
+        if (normRot == 0 && !curFlip) return srcBmp
+        val m = Matrix()
+        if (normRot != 0) m.postRotate(normRot.toFloat())
+        if (curFlip) m.postScale(-1f, 1f)
+        return Bitmap.createBitmap(srcBmp, 0, 0, srcBmp.width, srcBmp.height, m, true)
+    }
+
+    /**
+     * Mengembalikan bitmap frame pertama klip secara utuh (tanpa crop, sudah mengikuti rotasi & cermin)
+     * agar tampilan thumbnail di Mode Grid 100% sesuai dengan tampilan video saat autoplay.
+     */
+    fun gridFirstFrameAt(src: Int, firstFrameSec: Double): Bitmap? {
+        if (!hasVideo || src !in sources.indices) return null
+        val bucket10ms = Math.round(max(0.0, firstFrameSec) * 1000.0) / 10L
+        val baseKey = (src.toLong() shl 40) or (bucket10ms and 0xFFFFFFFFFFL)
+        val normRot = ((rot % 360) + 360) % 360
+        val curFlip = flip
+
+        synchronized(gridCacheLock) {
+            val base = gridBaseFrameCache[baseKey]
+            if (base == null || base.isRecycled) return null
+            if (normRot == 0 && !curFlip) return base
+
+            val tKey = GridTransformKey(baseKey, normRot, curFlip)
+            val cachedT = gridTransformedCache[tKey]
+            if (cachedT != null && !cachedT.isRecycled) return cachedT
+
+            val transformed = copyWithTransform(base, normRot, curFlip)
+            gridTransformedCache[tKey] = transformed
+            while (gridTransformedCache.size > MAX_GRID_FRAME_CACHE) {
+                val eldestKey = gridTransformedCache.entries.firstOrNull()?.key ?: break
+                gridTransformedCache.remove(eldestKey)
+            }
+            return transformed
+        }
+    }
+
+    /** Meminta decode asinkron frame pertama utuh pada [firstFrameSec] bila belum ada di cache. */
+    fun ensureGridFirstFrame(src: Int, firstFrameSec: Double) {
+        if (!hasVideo || src !in sources.indices) return
+        val bucket10ms = Math.round(max(0.0, firstFrameSec) * 1000.0) / 10L
+        val baseKey = (src.toLong() shl 40) or (bucket10ms and 0xFFFFFFFFFFL)
+        val needDecode = synchronized(gridCacheLock) {
+            val existing = gridBaseFrameCache[baseKey]
+            if (existing != null && !existing.isRecycled) {
+                false
+            } else {
+                pendingGridFrames.add(src to bucket10ms)
+                true
+            }
+        }
+        if (needDecode) {
+            launchGridThumbWorkerIfNeeded()
+        }
+    }
+
+    private fun launchGridThumbWorkerIfNeeded() {
+        if (gridThumbWorkerJob?.isActive == true) return
+        gridThumbWorkerJob = viewModelScope.launch(Dispatchers.IO) {
+            var decodedSinceBump = 0
+            while (true) {
+                while (true) {
+                    ensureActive()
+                    val batch: Pair<Int, List<Long>>? = synchronized(gridCacheLock) {
+                        val first = pendingGridFrames.firstOrNull() ?: return@synchronized null
+                        val targetSrc = first.first
+                        val sameSrc = pendingGridFrames.filter { it.first == targetSrc }.take(16)
+                        pendingGridFrames.removeAll(sameSrc.toSet())
+                        targetSrc to sameSrc.map { it.second }
+                    }
+                    if (batch == null) break
+
+                    val (srcIdx, buckets) = batch
+                    val mediaSrc = withContext(Dispatchers.Main) {
+                        sources.getOrNull(srcIdx)
+                    } ?: continue
+
+                    val app = getApplication<Application>()
+                    val retriever = MediaMetadataRetriever()
+                    var retrieverReady = false
+                    try {
+                        retriever.setDataSource(app, mediaSrc.uri)
+                        retrieverReady = true
+                    } catch (e: Exception) {
+                        retrieverReady = false
+                    }
+
+                    try {
+                        for (bucket in buckets) {
+                            ensureActive()
+                            val baseKey = (srcIdx.toLong() shl 40) or (bucket and 0xFFFFFFFFFFL)
+                            val already = synchronized(gridCacheLock) {
+                                gridBaseFrameCache[baseKey]?.isRecycled == false
+                            }
+                            if (already) continue
+
+                            val maxUs = max(0L, (mediaSrc.info.durationMs - 1L) * 1000L)
+                            val targetUs = (bucket * 10_000L).coerceIn(0L, maxUs)
+
+                            var decodedBmp: Bitmap? = null
+                            if (retrieverReady) {
+                                try {
+                                    val raw = retriever.getFrameAtTime(
+                                        targetUs,
+                                        MediaMetadataRetriever.OPTION_CLOSEST
+                                    )
+                                    if (raw != null) {
+                                        val up = VideoFrames.upright(raw, mediaSrc.info)
+                                        decodedBmp = VideoFrames.limitLongSide(up, GRID_FIRST_FRAME_MAX_SIDE)
+                                    }
+                                } catch (e: Exception) {
+                                    decodedBmp = null
+                                }
+                            }
+
+                            if (decodedBmp == null) {
+                                decodedBmp = try {
+                                    val exact = VideoFrames.grabExactFrame(app, mediaSrc.uri, targetUs, mediaSrc.info)
+                                    if (exact != null) VideoFrames.limitLongSide(exact, GRID_FIRST_FRAME_MAX_SIDE) else null
+                                } catch (e: Throwable) {
+                                    null
+                                }
+                            }
+
+                            if (decodedBmp != null) {
+                                synchronized(gridCacheLock) {
+                                    gridBaseFrameCache[baseKey] = decodedBmp
+                                    while (gridBaseFrameCache.size > MAX_GRID_FRAME_CACHE) {
+                                        val eldestKey = gridBaseFrameCache.entries.firstOrNull()?.key ?: break
+                                        gridBaseFrameCache.remove(eldestKey)
+                                    }
+                                }
+                                decodedSinceBump++
+                                if (decodedSinceBump >= 2) {
+                                    decodedSinceBump = 0
+                                    withContext(Dispatchers.Main) { bump() }
+                                }
+                            }
+                        }
+                    } finally {
+                        try {
+                            retriever.release()
+                        } catch (e: Exception) {
+                            // diabaikan
+                        }
+                    }
+                }
+
+                val moreArrived = withContext(Dispatchers.Main) {
+                    if (decodedSinceBump > 0) {
+                        decodedSinceBump = 0
+                        bump()
+                    }
+                    synchronized(gridCacheLock) { pendingGridFrames.isNotEmpty() }
+                }
+                if (!moreArrived) break
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ layar penuh
 
     fun toggleFullscreen() {
@@ -1957,6 +2251,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val THUMB_W = 128
         const val THUMB_H = 96
+        const val GRID_FIRST_FRAME_MAX_SIDE = 384
+        const val MAX_GRID_FRAME_CACHE = 96
         const val SLICE_KEY_OFFSET = 10_000
         const val MAX_COLLAGE_TILES = 9
         const val GRID_FILTER_ALL = "__ALL__"
@@ -1965,11 +2261,28 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
         val DEFAULT_TAGS = listOf("Favorit", "Utama", "Highlight", "B-Roll", "Simpan")
 
+        /** 12 opsi warna kontras untuk Custom Tag pada Mode Grid. */
+        val TAG_COLOR_PALETTE: List<TagColorOption> = listOf(
+            TagColorOption(0, "Kuning", Color(0xFFFACC15)),
+            TagColorOption(1, "Merah", Color(0xFFF43F5E)),
+            TagColorOption(2, "Oranye", Color(0xFFF97316)),
+            TagColorOption(3, "Biru Muda", Color(0xFF38BDF8)),
+            TagColorOption(4, "Hijau", Color(0xFF10B981)),
+            TagColorOption(5, "Ungu", Color(0xFFA855F7)),
+            TagColorOption(6, "Pink", Color(0xFFEC4899)),
+            TagColorOption(7, "Toska", Color(0xFF14B8A6)),
+            TagColorOption(8, "Lime", Color(0xFF84CC16)),
+            TagColorOption(9, "Indigo", Color(0xFF6366F1)),
+            TagColorOption(10, "Amber", Color(0xFFF59E0B)),
+            TagColorOption(11, "Putih", Color(0xFFE2E8F0))
+        )
+
         private const val PREFS_NAME = "editor_video_notes"
         private const val KEY_NOTES_JSON = "notes_json"
         private const val KEY_APP_THEME = "app_theme"
         private const val KEY_GRID_COLS = "grid_columns"
         private const val KEY_CUSTOM_TAGS = "custom_tags_json"
+        private const val KEY_TAG_COLORS_JSON = "custom_tag_colors_json"
         private const val KEY_SCENE_SENS = "scene_sensitivity"
         private const val KEY_SCENE_MINDUR = "scene_min_dur"
     }

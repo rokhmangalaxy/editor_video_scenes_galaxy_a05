@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -43,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -179,9 +181,10 @@ fun PreviewBox(
 
 /**
  * Mode Grid Lengkap:
- *  - Input range vertikal di sisi kanan untuk mengatur 3 sampai 9 kolom secara instan.
- *  - Fitur Tagging, Sort (Urutkan), dan Filter per Tag.
- *  - Hold (tekan tahan) pada item Grid untuk Multiseleksi + tombol Multiplayer Collage (Collase).
+ *  - Grid menggunakan 100% lebar penuh (tidak terpotong oleh kontrol kolom).
+ *  - Simbol kostum kolom men-toggle panel floating input range vertikal (3–9 kolom).
+ *  - Fitur Tagging (12 opsi warna), Sort, Filter, serta Hold Multiseleksi & Multiplayer Collage.
+ *  - Thumbnail menampilkan frame pertama klip secara utuh sesuai rasio/orientasi video.
  */
 @Composable
 fun VideoGridStage(
@@ -192,156 +195,168 @@ fun VideoGridStage(
     val _rev = vm.rev
     val cols = vm.gridColumns.coerceIn(3, 9)
 
-    Row(
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .padding(start = 8.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        // Area utama kiri: Toolbar Grid + Filter Tag + Multiseleksi + Daftar Grid
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-        ) {
-            if (!vm.hasVideo || vm.core.segs.isEmpty()) {
+        if (!vm.hasVideo || vm.core.segs.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 EmptyGridState(cols = cols, onImport = onImport)
-            } else {
-                val segs = vm.core.segs
-                val useSegGrid = when (vm.gridSubMode) {
-                    1 -> true
-                    2 -> false
-                    else -> segs.size >= 2
-                }
+                GridColToggleSymbol(
+                    cols = cols,
+                    active = vm.gridColSliderOpen,
+                    onClick = { vm.toggleGridColSlider() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                )
+            }
+        } else {
+            val segs = vm.core.segs
+            val useSegGrid = when (vm.gridSubMode) {
+                1 -> true
+                2 -> false
+                else -> segs.size >= 2
+            }
 
-                // Hitung daftar indeks potongan setelah Filter & Sort
-                val filteredSegIndices: List<Int> = if (useSegGrid) {
-                    val base = segs.indices.filter { idx ->
-                        val g = segs[idx]
-                        when (vm.gridFilter) {
-                            EditorViewModel.GRID_FILTER_ALL -> true
-                            EditorViewModel.GRID_FILTER_TAGGED -> g.tags.isNotEmpty()
-                            EditorViewModel.GRID_FILTER_UNTAGGED -> g.tags.isEmpty()
-                            else -> vm.gridFilter in g.tags
+            // Hitung daftar indeks potongan setelah Filter & Sort
+            val filteredSegIndices: List<Int> = if (useSegGrid) {
+                val base = segs.indices.filter { idx ->
+                    val g = segs[idx]
+                    when (vm.gridFilter) {
+                        EditorViewModel.GRID_FILTER_ALL -> true
+                        EditorViewModel.GRID_FILTER_TAGGED -> g.tags.isNotEmpty()
+                        EditorViewModel.GRID_FILTER_UNTAGGED -> g.tags.isEmpty()
+                        else -> vm.gridFilter in g.tags
+                    }
+                }
+                when (vm.gridSortMode) {
+                    GridSortMode.TIMELINE_ASC -> base
+                    GridSortMode.TIMELINE_DESC -> base.reversed()
+                    GridSortMode.DUR_DESC -> base.sortedByDescending { segs[it].len }
+                    GridSortMode.DUR_ASC -> base.sortedBy { segs[it].len }
+                    GridSortMode.TAG_AZ -> base.sortedWith(
+                        Comparator { a, b ->
+                            val emptyA = segs[a].tags.isEmpty()
+                            val emptyB = segs[b].tags.isEmpty()
+                            if (emptyA != emptyB) {
+                                if (emptyA) 1 else -1
+                            } else {
+                                val tagA = segs[a].tags.firstOrNull()?.lowercase() ?: ""
+                                val tagB = segs[b].tags.firstOrNull()?.lowercase() ?: ""
+                                val cmp = tagA.compareTo(tagB)
+                                if (cmp != 0) cmp else a.compareTo(b)
+                            }
                         }
-                    }
-                    when (vm.gridSortMode) {
-                        GridSortMode.TIMELINE_ASC -> base
-                        GridSortMode.TIMELINE_DESC -> base.reversed()
-                        GridSortMode.DUR_DESC -> base.sortedByDescending { segs[it].len }
-                        GridSortMode.DUR_ASC -> base.sortedBy { segs[it].len }
-                        GridSortMode.TAG_AZ -> base.sortedWith(
-                            Comparator { a, b ->
-                                val emptyA = segs[a].tags.isEmpty()
-                                val emptyB = segs[b].tags.isEmpty()
-                                if (emptyA != emptyB) {
-                                    if (emptyA) 1 else -1
-                                } else {
-                                    val tagA = segs[a].tags.firstOrNull()?.lowercase() ?: ""
-                                    val tagB = segs[b].tags.firstOrNull()?.lowercase() ?: ""
-                                    val cmp = tagA.compareTo(tagB)
-                                    if (cmp != 0) cmp else a.compareTo(b)
-                                }
-                            }
-                        )
-                    }
-                } else {
-                    emptyList()
+                    )
                 }
+            } else {
+                emptyList()
+            }
 
-                val sliceCount = max(9, cols * 3)
-                val allVisibleKeys: List<Int> = if (useSegGrid) {
-                    filteredSegIndices
-                } else {
-                    (0 until sliceCount).map { EditorViewModel.SLICE_KEY_OFFSET + it }
-                }
+            val sliceCount = max(9, cols * 3)
+            val allVisibleKeys: List<Int> = if (useSegGrid) {
+                filteredSegIndices
+            } else {
+                (0 until sliceCount).map { EditorViewModel.SLICE_KEY_OFFSET + it }
+            }
 
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Baris 1: Mode, Tagging & Sort
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Baris 1: Mode, Tagging, Sort (kiri) + Simbol Toggle Kostum Kolom Floating (kanan)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Row(
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .weight(1f)
+                            .horizontalScroll(rememberScrollState())
                     ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        GridFilterPill(
+                            label = "Klip (${segs.size})",
+                            active = useSegGrid
                         ) {
-                            GridFilterPill(
-                                label = "Klip (${segs.size})",
-                                active = useSegGrid
+                            vm.clearGridMultiSelect()
+                            vm.gridSubMode = 1
+                        }
+                        GridFilterPill(
+                            label = "Waktu ($sliceCount)",
+                            active = !useSegGrid
+                        ) {
+                            vm.clearGridMultiSelect()
+                            vm.gridSubMode = 2
+                        }
+                        // Tombol Tagging
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Ev.Ghost)
+                                .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                                .clickable { vm.openGridTagManager() }
+                                .padding(horizontal = 8.dp, vertical = 3.5.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                vm.clearGridMultiSelect()
-                                vm.gridSubMode = 1
+                                Ico(R.drawable.ic_tag, Ev.Yellow, 12.dp)
+                                Text(
+                                    text = "Tag",
+                                    color = Ev.Text,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
-                            GridFilterPill(
-                                label = "Waktu ($sliceCount)",
-                                active = !useSegGrid
-                            ) {
-                                vm.clearGridMultiSelect()
-                                vm.gridSubMode = 2
-                            }
-                            // Tombol Tagging
+                        }
+                        // Tombol Sort (Urutkan)
+                        if (useSegGrid) {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(Ev.Ghost)
-                                    .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
-                                    .clickable { vm.openGridTagManager() }
+                                    .background(
+                                        if (vm.gridSortMode != GridSortMode.TIMELINE_ASC) {
+                                            Ev.Accent.copy(alpha = 0.22f)
+                                        } else {
+                                            Ev.Ghost
+                                        }
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (vm.gridSortMode != GridSortMode.TIMELINE_ASC) Ev.Accent else Ev.Line,
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable { vm.gridSortSheet = true }
                                     .padding(horizontal = 8.dp, vertical = 3.5.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Ico(R.drawable.ic_tag, Ev.Yellow, 12.dp)
+                                    Ico(R.drawable.ic_sort, Ev.InfoText, 12.dp)
                                     Text(
-                                        text = "Tag",
+                                        text = vm.gridSortMode.shortLabel,
                                         color = Ev.Text,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }
-                            // Tombol Sort (Urutkan)
-                            if (useSegGrid) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(
-                                            if (vm.gridSortMode != GridSortMode.TIMELINE_ASC) {
-                                                Ev.Accent.copy(alpha = 0.22f)
-                                            } else {
-                                                Ev.Ghost
-                                            }
-                                        )
-                                        .border(
-                                            1.dp,
-                                            if (vm.gridSortMode != GridSortMode.TIMELINE_ASC) Ev.Accent else Ev.Line,
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                        .clickable { vm.gridSortSheet = true }
-                                        .padding(horizontal = 8.dp, vertical = 3.5.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Ico(R.drawable.ic_sort, Ev.InfoText, 12.dp)
-                                        Text(
-                                            text = vm.gridSortMode.shortLabel,
-                                            color = Ev.Text,
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-                            }
                         }
                     }
+
+                    // Simbol Kostum Kolom (toggle panel floating range vertikal 3..9)
+                    GridColToggleSymbol(
+                        cols = cols,
+                        active = vm.gridColSliderOpen,
+                        onClick = { vm.toggleGridColSlider() }
+                    )
+                }
 
                     // Baris 2: Filter per Tag + Aksi cepat bagi klip bila masih 1 klip
                     Row(
@@ -393,16 +408,16 @@ fun VideoGridStage(
                                 ) { vm.selectGridFilter(EditorViewModel.GRID_FILTER_UNTAGGED) }
                             }
 
-                            for (tag in vm.availableTags) {
-                                val cnt = segs.count { tag in it.tags }
-                                if (cnt > 0 || vm.gridFilter == tag) {
-                                    FilterTagChip(
-                                        label = "$tag ($cnt)",
-                                        active = vm.gridFilter == tag,
-                                        dotColor = tagColorFor(tag)
-                                    ) { vm.selectGridFilter(tag) }
-                                }
+                        for (tag in vm.availableTags) {
+                            val cnt = segs.count { tag in it.tags }
+                            if (cnt > 0 || vm.gridFilter == tag) {
+                                FilterTagChip(
+                                    label = "$tag ($cnt)",
+                                    active = vm.gridFilter == tag,
+                                    dotColor = vm.tagColor(tag)
+                                ) { vm.selectGridFilter(tag) }
                             }
+                        }
                         } else {
                             Text(
                                 text = "Tips: Hold (tekan tahan) sel untuk Multiseleksi & Multiplayer Collage",
@@ -517,6 +532,7 @@ fun VideoGridStage(
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(gapDp)
                         ) {
+                            val rowCellAspect = vm.aspectOfSource(0).coerceIn(0.45f, 2.25f)
                             if (useSegGrid) {
                                 val rows = filteredSegIndices.chunked(cols)
                                 for (rowIndices in rows) {
@@ -528,8 +544,8 @@ fun VideoGridStage(
                                             val g = segs[idx]
                                             val isActive = !vm.gridMultiSelect && idx == vm.selIndex
                                             val selOrder = vm.gridSelectedKeys.indexOf(idx)
-                                            val midSrcTime = if (g.fz) g.a else (g.a + g.b) * 0.5
-                                            val cellAspect = vm.aspectOfSource(g.src).coerceIn(0.68f, 1.35f)
+                                            // Gunakan tepat frame pertama (g.a) dari setiap klip!
+                                            val firstSrcTime = g.a
                                             val statusPrefix = when {
                                                 cols >= 6 -> ""
                                                 g.fz -> "❄"
@@ -544,11 +560,11 @@ fun VideoGridStage(
                                                 isActive = isActive,
                                                 selectionOrder = selOrder,
                                                 srcIndex = g.src,
-                                                thumbTimeSec = midSrcTime,
+                                                thumbTimeSec = firstSrcTime,
                                                 topBadge = "$statusPrefix#${idx + 1}",
                                                 bottomBadge = Fmt.durLabel(g.len),
                                                 tags = g.tags,
-                                                cellAspect = cellAspect,
+                                                cellAspect = rowCellAspect,
                                                 modifier = Modifier.weight(1f),
                                                 onTap = {
                                                     if (vm.gridMultiSelect) {
@@ -556,7 +572,7 @@ fun VideoGridStage(
                                                     } else if (idx == vm.selIndex) {
                                                         vm.togglePlay()
                                                     } else {
-                                                        vm.selectSegmentFromGrid(idx)
+                                                        vm.selectSegmentFromGrid(idx, autoPlay = true)
                                                     }
                                                 },
                                                 onHold = {
@@ -573,7 +589,6 @@ fun VideoGridStage(
                                 val total = vm.core.total.coerceAtLeast(0.1)
                                 val sliceDur = total / sliceCount.toDouble()
                                 val activeSlice = ((vm.core.t / sliceDur).toInt()).coerceIn(0, sliceCount - 1)
-                                val cellAspect = vm.aspectOfSource(0).coerceIn(0.68f, 1.35f)
                                 val rows = (0 until sliceCount).toList().chunked(cols)
                                 for (rowSlices in rows) {
                                     Row(
@@ -583,9 +598,9 @@ fun VideoGridStage(
                                         for (sIdx in rowSlices) {
                                             val key = EditorViewModel.SLICE_KEY_OFFSET + sIdx
                                             val startT = sIdx * sliceDur
-                                            val midT = min(total, startT + sliceDur * 0.5)
-                                            val loc = vm.core.locate(midT)
-                                            val g = segs.getOrElse(loc.i) { segs.first() }
+                                            // Gunakan frame pertama (startT) dari setiap bagian waktu!
+                                            val locStart = vm.core.locate(startT)
+                                            val g = segs.getOrElse(locStart.i) { segs.first() }
                                             val isActive = !vm.gridMultiSelect && sIdx == activeSlice
                                             val selOrder = vm.gridSelectedKeys.indexOf(key)
                                             GridVideoCell(
@@ -595,11 +610,11 @@ fun VideoGridStage(
                                                 isActive = isActive,
                                                 selectionOrder = selOrder,
                                                 srcIndex = g.src,
-                                                thumbTimeSec = loc.s,
+                                                thumbTimeSec = locStart.s,
                                                 topBadge = "#${sIdx + 1}",
                                                 bottomBadge = Fmt.time(startT),
                                                 tags = g.tags,
-                                                cellAspect = cellAspect,
+                                                cellAspect = rowCellAspect,
                                                 modifier = Modifier.weight(1f),
                                                 onTap = {
                                                     if (vm.gridMultiSelect) {
@@ -607,7 +622,7 @@ fun VideoGridStage(
                                                     } else if (sIdx == activeSlice) {
                                                         vm.togglePlay()
                                                     } else {
-                                                        vm.tapAt(startT + 0.001)
+                                                        vm.selectSliceFromGrid(startT)
                                                     }
                                                 },
                                                 onHold = {
@@ -629,33 +644,83 @@ fun VideoGridStage(
                     ReverseProgressOverlay(vm)
                 }
             }
-        }
 
-        // Sisi kanan: Input Range Vertikal 3 sampai 9 Kolom
-        VerticalGridColumnsRange(
-            columns = cols,
-            onColumnsChange = { vm.updateGridColumns(it) }
-        )
+        // Overlay Floating Input Range Vertikal 3..9 Kolom (tampil saat simbol kostum kolom di-toggle)
+        if (vm.gridColSliderOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures { vm.gridColSliderOpen = false }
+                    }
+            )
+            VerticalGridColumnsRange(
+                columns = cols,
+                onColumnsChange = { vm.updateGridColumns(it) },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 31.dp, end = 2.dp, bottom = 6.dp)
+            )
+        }
+    }
+}
+
+/** Simbol tombol toggle kostum kolom pada toolbar Mode Grid. */
+@Composable
+private fun GridColToggleSymbol(
+    cols: Int,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (active) Ev.Accent else Ev.Ghost)
+            .border(1.dp, if (active) Ev.Yellow else Ev.Line, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 3.5.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Ico(
+                id = R.drawable.ic_grid_cols,
+                tint = if (active) Color.White else Ev.Yellow,
+                size = 13.dp
+            )
+            Text(
+                text = "${cols}×",
+                color = if (active) Color.White else Ev.Text,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
 }
 
 /**
- * Kontrol Input Range Vertikal untuk mengatur jumlah kolom Grid dari 3 sampai 9 kolom.
- * Mendukung seret vertikal (vertical drag), ketuk langsung di sepanjang rel, serta tombol - / +.
+ * Kontrol Input Range Vertikal Floating untuk mengatur jumlah kolom Grid dari 3 sampai 9 kolom.
+ * Tampil mengambang di atas Grid ketika simbol kostum kolom di-toggle tanpa memakan ruang Grid.
  */
 @Composable
 private fun VerticalGridColumnsRange(
     columns: Int,
-    onColumnsChange: (Int) -> Unit
+    onColumnsChange: (Int) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = Modifier
-            .width(34.dp)
-            .fillMaxHeight()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Ev.Panel)
-            .border(1.dp, Ev.Line, RoundedCornerShape(14.dp))
-            .padding(vertical = 6.dp, horizontal = 3.dp),
+        modifier = modifier
+            .width(38.dp)
+            .fillMaxHeight(0.84f)
+            .heightIn(min = 175.dp, max = 265.dp)
+            .shadow(12.dp, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(Ev.Panel.copy(alpha = 0.94f))
+            .border(1.5.dp, Ev.Accent.copy(alpha = 0.85f), RoundedCornerShape(16.dp))
+            .pointerInput(Unit) { detectTapGestures { } }
+            .padding(vertical = 7.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
@@ -997,6 +1062,32 @@ private fun GridVideoCell(
     ) {
         val cellW = maxWidth
         val cellH = maxHeight
+        val firstFrameBucket = Math.round(max(0.0, thumbTimeSec) * 1000.0) / 10L
+        LaunchedEffect(srcIndex, firstFrameBucket, vm.rot, vm.flip) {
+            vm.ensureGridFirstFrame(srcIndex, thumbTimeSec)
+        }
+
+        val firstBmp = vm.gridFirstFrameAt(srcIndex, thumbTimeSec)
+        if (firstBmp != null && !firstBmp.isRecycled) {
+            Image(
+                bitmap = firstBmp.asImageBitmap(),
+                contentDescription = topBadge,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else if (!isActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Ev.Panel),
+                contentAlignment = Alignment.Center
+            ) {
+                if (cols <= 6) {
+                    Text(text = topBadge, color = Ev.Muted, fontSize = 9.sp)
+                }
+            }
+        }
+
         if (isActive) {
             val videoAr = vm.aspectOfSource(srcIndex)
             var vw = cellW
@@ -1012,30 +1103,9 @@ private fun GridVideoCell(
             Box(modifier = Modifier.size(vw, vh)) {
                 VideoSurface(vm, vw, vh)
             }
-        } else {
-            val bmp = vm.thumbAt(srcIndex, thumbTimeSec)
-            if (bmp != null && !bmp.isRecycled) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = topBadge,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Ev.Panel),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (cols <= 6) {
-                        Text(text = topBadge, color = Ev.Muted, fontSize = 9.sp)
-                    }
-                }
-            }
         }
 
-        // Lencana kiri atas (# nomor klip)
+        // Lencana kiri atas (# nomor klip) — diberi transparansi agar gambar frame pertama tetap terlihat
         val padEdge = if (cols >= 7) 2.dp else 3.5.dp
         val badgeFont = when {
             cols <= 4 -> 9.sp
@@ -1047,12 +1117,18 @@ private fun GridVideoCell(
                 .align(Alignment.TopStart)
                 .padding(padEdge)
                 .clip(RoundedCornerShape(4.dp))
-                .background(if (isActive) Ev.Accent else Color(0xB3000000))
+                .background(
+                    if (isActive) {
+                        Ev.Accent.copy(alpha = 0.48f)
+                    } else {
+                        Color.Black.copy(alpha = 0.36f)
+                    }
+                )
                 .padding(horizontal = if (cols >= 7) 3.dp else 4.5.dp, vertical = 1.dp)
         ) {
             Text(
                 text = topBadge,
-                color = Color.White,
+                color = Color.White.copy(alpha = 0.92f),
                 fontSize = badgeFont,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -1060,7 +1136,7 @@ private fun GridVideoCell(
             )
         }
 
-        // Indikator Multiseleksi (kanan atas) atau titik warna Tag
+        // Indikator Multiseleksi (kanan atas) atau Label Tag transparan dengan warna dari 12 opsi warna
         if (isSelected) {
             Box(
                 modifier = Modifier
@@ -1068,8 +1144,8 @@ private fun GridVideoCell(
                     .padding(padEdge)
                     .size(if (cols >= 7) 14.dp else 18.dp)
                     .clip(CircleShape)
-                    .background(Ev.Yellow)
-                    .border(1.dp, Color.Black, CircleShape),
+                    .background(Ev.Yellow.copy(alpha = 0.74f))
+                    .border(1.dp, Color.Black.copy(alpha = 0.45f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -1080,24 +1156,38 @@ private fun GridVideoCell(
                 )
             }
         } else if (tags.isNotEmpty()) {
-            if (cols <= 4) {
+            if (cols <= 5) {
                 val firstTag = tags.first()
+                val tagCol = vm.tagColor(firstTag)
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(padEdge)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(tagColorFor(firstTag).copy(alpha = 0.92f))
-                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                        .background(Color.Black.copy(alpha = 0.28f))
+                        .background(tagCol.copy(alpha = 0.36f))
+                        .border(0.8.dp, tagCol.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.5.dp, vertical = 1.dp)
                 ) {
-                    Text(
-                        text = if (tags.size > 1) "$firstTag +${tags.size - 1}" else firstTag,
-                        color = Color.Black,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(tagCol.copy(alpha = 0.92f))
+                        )
+                        Text(
+                            text = if (tags.size > 1) "$firstTag +${tags.size - 1}" else firstTag,
+                            color = Color.White.copy(alpha = 0.94f),
+                            fontSize = if (cols == 5) 7.5.sp else 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             } else {
                 Row(
@@ -1107,31 +1197,32 @@ private fun GridVideoCell(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     for (t in tags.take(2)) {
+                        val tagCol = vm.tagColor(t)
                         Box(
                             modifier = Modifier
                                 .size(if (cols >= 7) 5.5.dp else 7.dp)
                                 .clip(CircleShape)
-                                .background(tagColorFor(t))
-                                .border(0.5.dp, Color.Black, CircleShape)
+                                .background(tagCol.copy(alpha = 0.68f))
+                                .border(0.5.dp, Color.Black.copy(alpha = 0.35f), CircleShape)
                         )
                     }
                 }
             }
         }
 
-        // Lencana durasi/waktu kanan bawah (disembunyikan pada 8-9 kolom agar gambar tetap bersih)
+        // Lencana durasi/waktu kanan bawah transparan (disembunyikan pada 8-9 kolom agar gambar tetap bersih)
         if (cols <= 7) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(padEdge)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xBF000000))
+                    .background(Color.Black.copy(alpha = 0.36f))
                     .padding(horizontal = if (cols >= 6) 3.dp else 4.5.dp, vertical = 1.dp)
             ) {
                 Text(
                     text = bottomBadge,
-                    color = Ev.Yellow,
+                    color = Ev.Yellow.copy(alpha = 0.92f),
                     fontSize = badgeFont,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1

@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -715,6 +716,9 @@ private fun AiStepBtn(label: String, modifier: Modifier, onClick: () -> Unit) {
 fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
     val _rev = vm.rev
     var newTagInput by remember { mutableStateOf("") }
+    var selectedColorIdx by remember { mutableIntStateOf(5) } // default Ungu untuk tag kustom pertama
+    val palette = EditorViewModel.TAG_COLOR_PALETTE
+    val selectedOpt = palette.getOrElse(selectedColorIdx) { palette.first() }
     val targets = vm.targetTagSegmentIndices()
     val segs = vm.core.segs
     val targetTitle = when {
@@ -744,7 +748,7 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Ketuk tag untuk memasang/melepas pada klip, lalu gunakan bar Filter & Sort di Grid.",
+                    text = "Ketuk kartu untuk pasang/lepas tag. Ketuk titik warna pada kartu untuk mengganti warnanya.",
                     color = Ev.Muted,
                     fontSize = 11.5.sp
                 )
@@ -769,25 +773,25 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
                     }
                     val allActive = targets.isNotEmpty() && activeCount == targets.size
                     val partial = activeCount > 0 && !allActive
-                    val dotCol = tagColorFor(tag)
+                    val dotCol = vm.tagColor(tag)
                     Row(
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(11.dp))
                             .background(
                                 when {
-                                    allActive -> Ev.Accent.copy(alpha = 0.22f)
+                                    allActive -> dotCol.copy(alpha = 0.20f)
                                     partial -> Ev.Ghost
                                     else -> Ev.Bg
                                 }
                             )
                             .border(
                                 width = if (allActive) 2.dp else 1.dp,
-                                color = if (allActive) Ev.Accent else if (partial) Ev.Yellow else Ev.Line,
+                                color = if (allActive) dotCol else if (partial) Ev.Yellow else Ev.Line,
                                 shape = RoundedCornerShape(11.dp)
                             )
                             .clickable { vm.toggleTagForCurrentTarget(tag) }
-                            .padding(horizontal = 11.dp, vertical = 10.dp),
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -796,11 +800,14 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
                             horizontalArrangement = Arrangement.spacedBy(7.dp),
                             modifier = Modifier.weight(1f)
                         ) {
+                            // Titik warna: ketuk untuk menerapkan warna terpilih dari 12 opsi warna
                             Box(
                                 modifier = Modifier
-                                    .size(10.dp)
+                                    .size(16.dp)
                                     .clip(CircleShape)
                                     .background(dotCol)
+                                    .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
+                                    .clickable { vm.assignTagColor(tag, selectedColorIdx) }
                             )
                             Text(
                                 text = tag,
@@ -827,19 +834,96 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Tambah Tag Baru Kustom
-        Text(
-            text = "BUAT TAG BARU",
-            color = Ev.Muted,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-        )
+        // Header + Pratinjau Label Transparan dari 12 Opsi Warna Custom Tag
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "BUAT CUSTOM TAG · 12 OPSI WARNA",
+                color = Ev.Muted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+            // Mini preview tampilan label transparan di item Grid
+            val previewLabel = newTagInput.trim().ifEmpty { selectedOpt.name }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(Color.Black.copy(alpha = 0.30f))
+                    .background(selectedOpt.color.copy(alpha = 0.36f))
+                    .border(1.dp, selectedOpt.color.copy(alpha = 0.78f), RoundedCornerShape(5.dp))
+                    .padding(horizontal = 7.dp, vertical = 2.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(selectedOpt.color)
+                    )
+                    Text(
+                        text = previewLabel,
+                        color = Color.White.copy(alpha = 0.95f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Palet 12 Opsi Warna (2 Baris × 6 Kolom)
+        val colorRows = palette.chunked(6)
+        for (cRow in colorRows) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (opt in cRow) {
+                    val isChosen = opt.index == selectedColorIdx
+                    val useDarkCheck = opt.index == 0 || opt.index == 8 || opt.index == 10 || opt.index == 11
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(30.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(opt.color.copy(alpha = if (isChosen) 0.95f else 0.75f))
+                            .border(
+                                width = if (isChosen) 2.5.dp else 1.dp,
+                                color = if (isChosen) Color.White else Color.Black.copy(alpha = 0.35f),
+                                shape = RoundedCornerShape(9.dp)
+                            )
+                            .clickable { selectedColorIdx = opt.index },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isChosen) {
+                            Text(
+                                text = "✓",
+                                color = if (useDarkCheck) Color.Black else Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 6.dp, bottom = 12.dp),
+                .padding(top = 4.dp, bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -847,7 +931,7 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
                 value = newTagInput,
                 onValueChange = { newTagInput = it },
                 placeholder = {
-                    Text("Nama tag baru (misal: Intro, Reaksi)…", color = Ev.Muted, fontSize = 12.5.sp)
+                    Text("Nama custom tag (${selectedOpt.name})…", color = Ev.Muted, fontSize = 12.5.sp)
                 },
                 minLines = 1,
                 maxLines = 1,
@@ -858,8 +942,9 @@ fun GridTagSheet(vm: EditorViewModel, onClose: () -> Unit) {
                 primary = true,
                 enabled = newTagInput.trim().isNotEmpty(),
                 onClick = {
-                    vm.addCustomTag(newTagInput)
+                    vm.addCustomTag(newTagInput, selectedColorIdx)
                     newTagInput = ""
+                    selectedColorIdx = (selectedColorIdx + 1) % palette.size
                 }
             )
         }

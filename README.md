@@ -19,9 +19,10 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
 4. **Kustomisasi Overlay Teks yang Kaya (Default Kosong):**
    - Mendukung 2 layer teks multi-baris (default kosong).
    - Pilihan gaya huruf (*Font*), perataan (Kiri/Tengah/Kanan), ukuran huruf (`40%`–`220%`), palet warna isi teks, warna & ketebalan *outline*, kotak latar belakang (*background pill*), bayangan (*shadow*), serta geser (*drag*) posisi langsung di layar pratinjau.
-5. **Mode Grid Lengkap (3–9 Kolom, Tagging, Sort, Filter & Multiplayer Collage):**
-   - **Range Vertikal 3–9 Kolom:** Atur kepadatan kolom Grid dari **3 sampai 9 kolom** secara instan lewat penggeser range vertikal di sisi kanan Grid.
-   - **Tagging, Sort & Filter:** Pasang berbagai Tag (*Favorit*, *Utama*, *Highlight*, *B-Roll*, *Simpan*, maupun tag kustom baru), urutkan (*Sort*) berdasarkan urutan timeline, durasi, atau abjad tag, serta saring (*Filter*) tampilan per tag.
+5. **Mode Grid Lengkap (Floating 3–9 Kolom, 12 Warna Custom Tag Transparan, Sort, Filter & Multiplayer Collage):**
+   - **Floating Range Vertikal 3–9 Kolom:** Grid menggunakan lebar penuh 100%, sedangkan penggeser range vertikal **3 sampai 9 kolom** tampil mengambang (*floating*) saat simbol kostum kolom di-toggle.
+   - **Preview Frame Pertama Utuh:** Setiap item Grid menampilkan **frame pertama klip secara utuh** (tanpa terpotong/*crop*), selaras penuh dengan tampilan *autoplay* saat diklik.
+   - **Tagging (12 Opsi Warna), Label Transparan, Sort & Filter:** Buat *Custom Tag* dengan **12 pilihan warna** (label pada item Grid diberi efek transparansi), urutkan (*Sort*) berdasarkan urutan timeline, durasi, atau abjad tag, serta saring (*Filter*) tampilan per tag.
    - **Hold Multiseleksi & Multiplayer Collage:** Tekan tahan (*hold*) sel Grid untuk memilih banyak klip sekaligus, memberi tag massal, atau memutar seluruh klip terpilih secara serentak dalam kanvas **Multiplayer Collage**.
 6. **Fitur AI (Frame 100% Identik Preview + Step Per-Frame):**
    - Menu **AI** di toolbar bawah menangkap langsung buffer tampilan *Preview* (`TextureView`) yang tersinkronisasi penuh ke posisi *seek* (disertai *fallback* decode PTS presisi mikrodetik via `MediaCodec` dan tombol geser `±1 Frame` / `±5 Frame`), kolom **textarea prompt**, serta tombol **Generate** untuk persiapan penyisipan hasil AI secara presisi di posisi *seek*.
