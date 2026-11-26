@@ -317,6 +317,11 @@ jobs:
             fi
             printf '%s\n' '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$LOG" ]; then
+            grep -E '^e: |error:|AAPT|Manifest merger|Execution failed|What went wrong' "$LOG" | head -n 12 | while IFS= read -r l; do
+              echo "::error title=Gradle::$l"
+            done
+          fi
           exit 0
 
       - name: Simpan log Gradle (hanya bila gagal)

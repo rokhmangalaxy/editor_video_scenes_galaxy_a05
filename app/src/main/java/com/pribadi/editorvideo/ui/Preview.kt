@@ -4,17 +4,16 @@ import android.view.Gravity
 import android.view.TextureView
 import android.widget.FrameLayout
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +38,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,7 +57,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -232,9 +231,18 @@ fun VideoGridStage(
                         GridSortMode.DUR_DESC -> base.sortedByDescending { segs[it].len }
                         GridSortMode.DUR_ASC -> base.sortedBy { segs[it].len }
                         GridSortMode.TAG_AZ -> base.sortedWith(
-                            compareBy<Int> { segs[it].tags.isEmpty() }
-                                .thenBy { segs[it].tags.firstOrNull()?.lowercase() ?: "" }
-                                .thenBy { it }
+                            Comparator { a, b ->
+                                val emptyA = segs[a].tags.isEmpty()
+                                val emptyB = segs[b].tags.isEmpty()
+                                if (emptyA != emptyB) {
+                                    if (emptyA) 1 else -1
+                                } else {
+                                    val tagA = segs[a].tags.firstOrNull()?.lowercase() ?: ""
+                                    val tagB = segs[b].tags.firstOrNull()?.lowercase() ?: ""
+                                    val cmp = tagA.compareTo(tagB)
+                                    if (cmp != 0) cmp else a.compareTo(b)
+                                }
+                            }
                         )
                     }
                 } else {
@@ -716,13 +724,10 @@ private fun VerticalGridColumnsRange(
                 },
             contentAlignment = Alignment.TopCenter
         ) {
-            val density = LocalDensity.current
-            val trackHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
             val thumbSize = 18.dp
-            val thumbPx = with(density) { thumbSize.toPx() }
-            val usablePx = (trackHeightPx - thumbPx).coerceAtLeast(0f)
+            val usableH = (maxHeight - thumbSize).coerceAtLeast(0.dp)
             val frac = ((columns - 3).toFloat() / 6f).coerceIn(0f, 1f)
-            val thumbOffsetY = (frac * usablePx).roundToInt()
+            val thumbOffsetDp = usableH * frac
 
             // Garis rel tengah
             Box(
@@ -735,7 +740,7 @@ private fun VerticalGridColumnsRange(
             )
 
             // Bagian aktif rel dari atas ke posisi thumb
-            val activeHeightDp = with(density) { (thumbOffsetY + thumbPx * 0.5f).toDp() }
+            val activeHeightDp = thumbOffsetDp + (thumbSize * 0.5f)
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -766,7 +771,7 @@ private fun VerticalGridColumnsRange(
             // Kenop geser (thumb)
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(0, thumbOffsetY) }
+                    .offset(y = thumbOffsetDp)
                     .size(thumbSize)
                     .clip(CircleShape)
                     .background(Ev.Yellow)
@@ -940,7 +945,6 @@ private fun MultiBarBtn(label: String, primary: Boolean, onClick: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GridVideoCell(
     vm: EditorViewModel,
@@ -959,6 +963,8 @@ private fun GridVideoCell(
     onHold: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
+    val latestTap = rememberUpdatedState(onTap)
+    val latestHold = rememberUpdatedState(onHold)
     val isSelected = selectionOrder >= 0
     val corner = when {
         cols <= 4 -> 8.dp
@@ -978,13 +984,15 @@ private fun GridVideoCell(
             .clip(RoundedCornerShape(corner))
             .background(Color.Black)
             .border(borderW, borderCol, RoundedCornerShape(corner))
-            .combinedClickable(
-                onClick = onTap,
-                onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onHold()
-                }
-            ),
+            .pointerInput(cellKey) {
+                detectTapGestures(
+                    onTap = { latestTap.value() },
+                    onLongPress = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        latestHold.value()
+                    }
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         val cellW = maxWidth

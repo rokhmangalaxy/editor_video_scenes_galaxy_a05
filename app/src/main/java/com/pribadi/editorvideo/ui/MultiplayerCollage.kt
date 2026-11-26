@@ -79,9 +79,10 @@ fun MultiplayerCollageOverlay(
         items.mapIndexed { idx, clip ->
             val renderers = DefaultRenderersFactory(context).setEnableDecoderFallback(true)
             val loadControl = DefaultLoadControl.Builder()
-                .setBufferDurationsMs(500, 1600, 200, 400)
+                .setBufferDurationsMs(1000, 2500, 250, 500)
                 .build()
-            ExoPlayer.Builder(context, renderers)
+            ExoPlayer.Builder(context)
+                .setRenderersFactory(renderers)
                 .setLoadControl(loadControl)
                 .build()
                 .apply {
@@ -327,7 +328,7 @@ fun MultiplayerCollageOverlay(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Ev.Panel)
-                    .border(1.dp, Ev.Line)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(0.dp))
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically

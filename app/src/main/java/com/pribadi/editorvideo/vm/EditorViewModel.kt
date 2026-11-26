@@ -160,7 +160,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var gridFilter by mutableStateOf(GRID_FILTER_ALL)
         private set
-    var availableTags by mutableStateOf(DEFAULT_TAGS)
+    var availableTags by mutableStateOf(listOf("Favorit", "Utama", "Highlight", "B-Roll", "Simpan"))
         private set
     var gridMultiSelect by mutableStateOf(false)
         private set
@@ -1560,7 +1560,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.6 (Terbaru)",
+            version = "v1.0.7 (Terbaru)",
             date = "27/11/2026",
             title = "Presisi Frame AI 100% Identik Preview & Mode Grid (3–9 Kolom, Tag/Sort/Filter, Multiplayer Collage)",
             items = listOf(
