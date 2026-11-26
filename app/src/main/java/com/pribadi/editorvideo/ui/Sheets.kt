@@ -3,10 +3,12 @@ package com.pribadi.editorvideo.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,18 +25,17 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,32 +45,35 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pribadi.editorvideo.R
+import com.pribadi.editorvideo.export.DetectedScene
 import com.pribadi.editorvideo.export.ExportMath
 import com.pribadi.editorvideo.export.ExportMode
 import com.pribadi.editorvideo.export.ExportState
+import com.pribadi.editorvideo.export.OverlayRenderer
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.vm.EditorViewModel
 import com.pribadi.editorvideo.vm.NoteItem
 import com.pribadi.editorvideo.vm.NoteType
-import kotlinx.coroutines.delay
+import com.pribadi.editorvideo.vm.UpdateLogEntry
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 // ---------------------------------------------------------------------------------------------
 // Bagian kecil yang dipakai bersama
@@ -91,7 +96,13 @@ fun ActionButton(
             .padding(13.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text = text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text(
+            text = text,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -242,14 +253,14 @@ fun SpeedSheet(vm: EditorViewModel, onClose: () -> Unit) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp)
+                    .padding(top = 12.dp)
             ) {
                 ActionButton("Terapkan ke semua potongan", false, Modifier.weight(1f)) { vm.askApplyAll() }
             }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp)
+                    .padding(top = 12.dp)
             ) {
                 ActionButton("Selesai", true, Modifier.weight(1f), onClick = onClose)
             }
@@ -258,147 +269,15 @@ fun SpeedSheet(vm: EditorViewModel, onClose: () -> Unit) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sheet teks overlay (default kosong, bisa ditambah/diubah/dikosongkan)
+// Sheet Split Pendeteksi Scene + Grid Preview Deteksi
 // ---------------------------------------------------------------------------------------------
+
+private val MIN_SCENE_DUR_OPTIONS = listOf(0.5, 1.0, 1.5, 2.0, 3.0)
 
 @Composable
-fun OverlayTextSheet(vm: EditorViewModel, onClose: () -> Unit) {
-    var topText by remember { mutableStateOf(vm.text1) }
-    var bottomText by remember { mutableStateOf(vm.text2) }
-
-    Scrim(onTap = onClose, alignment = Alignment.BottomCenter) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxHeight * 0.9f)
-                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                .background(Ev.Panel)
-                .absorbTaps()
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Overlay Teks",
-                    color = Ev.Text,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
-                )
-                SmallIconButton(R.drawable.ic_close, onClose)
-            }
-
-            Text(
-                text = "Biarkan kosong bila tidak ingin menampilkan teks. Anda juga bisa mengetuk teks langsung di pratinjau.",
-                color = Ev.Muted,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "TEKS ATAS",
-                    color = Ev.Yellow,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                if (topText.isNotEmpty()) {
-                    Text(
-                        text = "Kosongkan",
-                        color = Ev.Accent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.clickable { topText = "" }
-                    )
-                }
-            }
-            OutlinedTextField(
-                value = topText,
-                onValueChange = { topText = it },
-                placeholder = { Text("Kosong (contoh: Judul / Hook atas)", color = Ev.Muted) },
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp, bottom = 14.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "TEKS BAWAH",
-                    color = Ev.Text,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                if (bottomText.isNotEmpty()) {
-                    Text(
-                        text = "Kosongkan",
-                        color = Ev.Accent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.clickable { bottomText = "" }
-                    )
-                }
-            }
-            OutlinedTextField(
-                value = bottomText,
-                onValueChange = { bottomText = it },
-                placeholder = { Text("Kosong (contoh: @watermark / subjudul)", color = Ev.Muted) },
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp, bottom = 16.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                ActionButton("Hapus Semua", false, Modifier.weight(1f)) {
-                    topText = ""
-                    bottomText = ""
-                    vm.applyBothTexts("", "")
-                    vm.toast("Overlay teks dikosongkan")
-                    onClose()
-                }
-                ActionButton("Simpan Teks", true, Modifier.weight(1f)) {
-                    vm.applyBothTexts(topText, bottomText)
-                    vm.toast(
-                        if (topText.trim().isEmpty() && bottomText.trim().isEmpty()) {
-                            "Overlay teks dikosongkan"
-                        } else {
-                            "Overlay teks diperbarui"
-                        }
-                    )
-                    onClose()
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Sheet Catatan (Note untuk Bug & Pengembangan Masa Depan)
-// ---------------------------------------------------------------------------------------------
-
-@Composable
-fun NotesSheet(vm: EditorViewModel, onClose: () -> Unit) {
-    val ctx = LocalContext.current
-    var selectedType by remember { mutableStateOf(NoteType.BUG) }
-    var inputText by remember { mutableStateOf("") }
-    var editingId by remember { mutableStateOf<Long?>(null) }
+fun SceneDetectSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    val scenes = vm.detectedScenes
+    val selectedCount = scenes.count { it.selected }
 
     Scrim(onTap = onClose, alignment = Alignment.BottomCenter) {
         Column(
@@ -419,13 +298,13 @@ fun NotesSheet(vm: EditorViewModel, onClose: () -> Unit) {
             ) {
                 Column {
                     Text(
-                        text = "Catatan Bug & Pengembangan",
+                        text = "Deteksi Scene · Potongan " + (vm.selIndex + 1),
                         color = Ev.Text,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
                     Text(
-                        text = "Tersimpan otomatis di perangkat untuk catatan bug & ide fitur baru.",
+                        text = "Mendeteksi pergantian adegan otomatis & menampilkan Grid Preview.",
                         color = Ev.Muted,
                         fontSize = 11.5.sp
                     )
@@ -435,157 +314,1158 @@ fun NotesSheet(vm: EditorViewModel, onClose: () -> Unit) {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Pilihan kategori: Bug vs Pengembangan
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                for (t in NoteType.entries) {
-                    val active = selectedType == t
-                    val badgeColor = if (t == NoteType.BUG) Ev.Accent else Ev.Yellow
-                    val textColor = if (active && t == NoteType.DEV) Color.Black else Color.White
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (active) badgeColor else Ev.Ghost)
-                            .border(
-                                1.dp,
-                                if (active) badgeColor else Ev.Line,
-                                RoundedCornerShape(10.dp)
-                            )
-                            .clickable { selectedType = t }
-                            .padding(vertical = 9.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (t == NoteType.BUG) "🐞 Laporan Bug" else "💡 Ide Pengembangan",
-                            color = if (active) textColor else Ev.Text,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-            }
-
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
-                placeholder = {
-                    Text(
-                        text = if (selectedType == NoteType.BUG) {
-                            "Tulis detail bug yang ditemukan..."
-                        } else {
-                            "Tulis ide fitur atau pengembangan di masa depan..."
-                        },
-                        color = Ev.Muted
-                    )
-                },
-                minLines = 2,
-                maxLines = 4,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp, bottom = 10.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (editingId != null) {
-                    ActionButton("Batal Edit", false, Modifier.weight(1f)) {
-                        editingId = null
-                        inputText = ""
-                    }
-                }
-                ActionButton(
-                    text = if (editingId != null) "Simpan Perubahan" else "+ Tambah Catatan",
-                    primary = true,
-                    modifier = Modifier.weight(1f),
-                    enabled = inputText.trim().isNotEmpty()
-                ) {
-                    val id = editingId
-                    if (id != null) {
-                        vm.updateNote(id, selectedType, inputText)
-                        editingId = null
-                    } else {
-                        vm.addNote(selectedType, inputText)
-                    }
-                    inputText = ""
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Daftar catatan
+            // Kontrol Sensitivitas
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "DAFTAR CATATAN (" + vm.notes.size + ")",
+                    text = "SENSITIVITAS DETEKSI",
                     color = Ev.Muted,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${(vm.sceneSensitivity * 100f).roundToInt()}%",
+                    color = Ev.Yellow,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
-                if (vm.notes.isNotEmpty()) {
-                    Text(
-                        text = "Salin Semua",
-                        color = Ev.Yellow,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.clickable {
-                            copyNotesToClipboard(ctx, vm.notes)
-                            vm.toast("Semua catatan disalin ke clipboard")
-                        }
-                    )
-                }
             }
+            Slider(
+                value = vm.sceneSensitivity,
+                onValueChange = { vm.updateSceneSettings(it, vm.sceneMinDur) },
+                enabled = !vm.sceneScanning,
+                valueRange = 0.1f..0.9f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Ev.Accent,
+                    activeTrackColor = Ev.Accent,
+                    inactiveTrackColor = Ev.Line
+                )
+            )
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            if (vm.notes.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Ev.Bg)
-                        .padding(18.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Belum ada catatan bug atau rencana pengembangan.",
-                        color = Ev.Muted,
-                        fontSize = 13.sp,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (item in vm.notes) {
-                        NoteRow(
-                            item = item,
-                            onToggleDone = { vm.toggleNoteDone(item.id) },
-                            onEdit = {
-                                editingId = item.id
-                                selectedType = item.type
-                                inputText = item.text
-                            },
-                            onDelete = {
-                                if (editingId == item.id) {
-                                    editingId = null
-                                    inputText = ""
-                                }
-                                vm.deleteNote(item.id)
-                            }
-                        )
+            // Kontrol Durasi Minimal Scene
+            Text(
+                text = "DURASI MINIMAL TIAP SCENE",
+                color = Ev.Muted,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp, bottom = 6.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (dOpt in MIN_SCENE_DUR_OPTIONS) {
+                    val active = abs(vm.sceneMinDur - dOpt) < 0.05
+                    Chip(
+                        on = active,
+                        enabled = !vm.sceneScanning,
+                        label = "${Fmt.one(dOpt)} dtk"
+                    ) {
+                        vm.updateSceneSettings(vm.sceneSensitivity, dOpt)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
+
+            if (vm.sceneScanning) {
+                val pct = (vm.sceneScanProgress * 100f).roundToInt().coerceIn(0, 100)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Ev.Bg)
+                        .padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Memindai frame untuk deteksi scene… $pct%",
+                        color = Ev.Text,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    LinearProgressIndicator(
+                        progress = { vm.sceneScanProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = Ev.Accent,
+                        trackColor = Ev.Ghost
+                    )
+                }
+            } else {
+                // Header Grid Preview Deteksi
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "GRID PREVIEW DETEKSI (${scenes.size} SCENE)",
+                        color = Ev.Text,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (scenes.isNotEmpty()) {
+                        val allSelected = selectedCount == scenes.size
+                        Text(
+                            text = if (allSelected) "Batal Pilih Semua" else "Pilih Semua",
+                            color = Ev.Yellow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable { vm.selectAllDetectedScenes(!allSelected) }
+                        )
+                    }
+                }
+                Text(
+                    text = "Ketuk gambar untuk melompat ke scene di pratinjau. Ketuk tanda centang untuk memilih bagian yang ingin disertakan.",
+                    color = Ev.Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 10.dp)
+                )
+
+                // Grid 2 Kolom
+                if (scenes.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Ev.Bg)
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Belum ada scene terdeteksi.",
+                            color = Ev.Muted,
+                            fontSize = 13.sp
+                        )
+                    }
+                } else {
+                    val rows = scenes.chunked(2)
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        for (rowItems in rows) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                for (sc in rowItems) {
+                                    DetectedSceneGridCard(
+                                        scene = sc,
+                                        modifier = Modifier.weight(1f),
+                                        onPreview = { vm.previewDetectedScene(sc) },
+                                        onToggleSelect = { vm.toggleDetectedScene(sc.index) }
+                                    )
+                                }
+                                if (rowItems.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ActionButton("Batal", false, Modifier.weight(1f), onClick = onClose)
+                    ActionButton(
+                        text = "Split Scene ($selectedCount)",
+                        primary = true,
+                        modifier = Modifier.weight(1.4f),
+                        enabled = selectedCount > 0
+                    ) {
+                        vm.applyDetectedScenes(onlySelected = true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetectedSceneGridCard(
+    scene: DetectedScene,
+    modifier: Modifier = Modifier,
+    onPreview: () -> Unit,
+    onToggleSelect: () -> Unit
+) {
+    val borderCol = if (scene.selected) Ev.Accent else Ev.Line
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ev.Bg)
+            .border(1.5.dp, borderCol, RoundedCornerShape(12.dp))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 10f)
+                .background(Color(0xFF222228))
+                .clickable(onClick = onPreview)
+        ) {
+            val bmp = scene.thumb
+            if (bmp != null && !bmp.isRecycled) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Scene ${scene.index + 1}",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "Scene #${scene.index + 1}",
+                        color = Ev.Muted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+
+            // Badge nomor scene di kiri atas
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xBF000000))
+                    .padding(horizontal = 7.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "#${scene.index + 1}",
+                    color = Color.White,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Checkbox pilih scene di kanan atas
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(if (scene.selected) Ev.Accent else Color(0x99000000))
+                    .border(1.5.dp, Color.White, CircleShape)
+                    .clickable(onClick = onToggleSelect),
+                contentAlignment = Alignment.Center
+            ) {
+                if (scene.selected) {
+                    Text(
+                        text = "✓",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+
+            // Durasi di kanan bawah
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xBF000000))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = Fmt.one(scene.durationSec) + "s",
+                    color = Ev.Yellow,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onPreview)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${Fmt.time(scene.startSec)} – ${Fmt.time(scene.endSec)}",
+                color = if (scene.selected) Ev.Text else Ev.Muted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sheet Teks Overlay dengan Kustomisasi Kaya
+// ---------------------------------------------------------------------------------------------
+
+private val TEXT_FILL_COLORS: List<Int> = listOf(
+    0xFFFFFFFF.toInt(), // Putih
+    0xFFFFE45C.toInt(), // Kuning Emas
+    0xFFFF3B5C.toInt(), // Merah Muda Accent
+    0xFF38BDF8.toInt(), // Biru Langit
+    0xFF4ADE80.toInt(), // Hijau Neon
+    0xFFFB923C.toInt(), // Oranye
+    0xFFC084FC.toInt(), // Ungu Muda
+    0xFFF43F5E.toInt(), // Merah Cerah
+    0xFF2DD4BF.toInt(), // Toska
+    0xFF111114.toInt()  // Hitam
+)
+
+private val TEXT_STROKE_COLORS: List<Int> = listOf(
+    0x00000000,         // Tanpa Outline
+    0xFF000000.toInt(), // Hitam
+    0xFF4A2FB0.toInt(), // Ungu Klasik
+    0xFFFFFFFF.toInt(), // Putih
+    0xFFF2C22A.toInt(), // Emas
+    0xFFFF3B5C.toInt(), // Merah Accent
+    0xFF1E3A8A.toInt(), // Biru Tua
+    0xFF065F46.toInt()  // Hijau Tua
+)
+
+private val TEXT_BG_COLORS: List<Int> = listOf(
+    0x00000000,         // Tanpa Kotak Latar
+    0xB3000000.toInt(), // Hitam Semi-Transparan
+    0xEB141418.toInt(), // Hitam Pekat
+    0xD9FF3B5C.toInt(), // Kotak Merah Accent
+    0xD94A2FB0.toInt(), // Kotak Ungu
+    0xD9FFE45C.toInt(), // Kotak Kuning
+    0xD9FFFFFF.toInt()  // Kotak Putih
+)
+
+private val ALIGN_LABELS = listOf("Kiri", "Tengah", "Kanan")
+
+@Composable
+fun OverlayTextSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    val tab = vm.activeTextTab
+    val layerNum = if (tab == 1) 2 else 1
+    val cfg = if (layerNum == 1) vm.style1 else vm.style2
+
+    Scrim(onTap = onClose, alignment = Alignment.BottomCenter) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight * 0.92f)
+                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .background(Ev.Panel)
+                .absorbTaps()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Kustomisasi Teks Overlay",
+                        color = Ev.Text,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                    Text(
+                        text = "Teks juga dapat digeser langsung (drag) di layar pratinjau.",
+                        color = Ev.Muted,
+                        fontSize = 11.5.sp
+                    )
+                }
+                SmallIconButton(R.drawable.ic_close, onClose)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Pilihan Layer: Teks 1 (Atas) vs Teks 2 (Bawah)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LayerTabButton(
+                    title = "Teks 1 (Utama)",
+                    hasContent = vm.style1.isNotEmpty,
+                    active = tab == 0,
+                    modifier = Modifier.weight(1f)
+                ) { vm.activeTextTab = 0 }
+                LayerTabButton(
+                    title = "Teks 2 (Subjudul)",
+                    hasContent = vm.style2.isNotEmpty,
+                    active = tab == 1,
+                    modifier = Modifier.weight(1f)
+                ) { vm.activeTextTab = 1 }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Input Teks (mendukung multi-baris, default kosong)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (layerNum == 1) "ISI TEKS 1" else "ISI TEKS 2",
+                    color = Ev.Yellow,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                if (cfg.text.isNotEmpty()) {
+                    Text(
+                        text = "Kosongkan Layer Ini",
+                        color = Ev.Accent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable {
+                            vm.updateTextConfig(layerNum, cfg.copy(text = ""))
+                        }
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = cfg.text,
+                onValueChange = { vm.updateTextConfig(layerNum, cfg.copy(text = it)) },
+                placeholder = {
+                    Text(
+                        text = "Kosong (ketik teks, bisa lebih dari 1 baris)",
+                        color = Ev.Muted
+                    )
+                },
+                minLines = 1,
+                maxLines = 3,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, bottom = 12.dp)
+            )
+
+            // Gaya Huruf (Font)
+            SmallSectionTitle("GAYA HURUF (FONT)")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (i in OverlayRenderer.FONT_LABELS.indices) {
+                    Chip(
+                        on = cfg.fontIndex == i,
+                        enabled = true,
+                        label = OverlayRenderer.FONT_LABELS[i]
+                    ) {
+                        vm.updateTextConfig(layerNum, cfg.copy(fontIndex = i))
+                    }
+                }
+            }
+
+            // Perataan & Bayangan
+            SmallSectionTitle("PERATAAN & EFEK")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (i in ALIGN_LABELS.indices) {
+                    Chip(
+                        on = cfg.alignIndex == i,
+                        enabled = true,
+                        label = "Rata " + ALIGN_LABELS[i]
+                    ) {
+                        vm.updateTextConfig(layerNum, cfg.copy(alignIndex = i))
+                    }
+                }
+                Chip(
+                    on = cfg.shadow,
+                    enabled = true,
+                    label = if (cfg.shadow) "Bayangan: Aktif" else "Bayangan: Mati"
+                ) {
+                    vm.updateTextConfig(layerNum, cfg.copy(shadow = !cfg.shadow))
+                }
+            }
+
+            // Ukuran Teks
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "UKURAN TEKS (${(cfg.sizeScale * 100f).roundToInt()}%)",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Reset 100%",
+                    color = Ev.InfoText,
+                    fontSize = 11.5.sp,
+                    modifier = Modifier.clickable {
+                        vm.updateTextConfig(layerNum, cfg.copy(sizeScale = 1.0f))
+                    }
+                )
+            }
+            Slider(
+                value = cfg.sizeScale.coerceIn(0.4f, 2.2f),
+                onValueChange = { vm.updateTextConfig(layerNum, cfg.copy(sizeScale = it)) },
+                valueRange = 0.4f..2.2f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Ev.Accent,
+                    activeTrackColor = Ev.Accent,
+                    inactiveTrackColor = Ev.Line
+                )
+            )
+
+            // Warna Isi Teks
+            SmallSectionTitle("WARNA TEKS")
+            ColorPaletteRow(
+                colors = TEXT_FILL_COLORS,
+                selectedColor = cfg.fillColor,
+                onSelect = { vm.updateTextConfig(layerNum, cfg.copy(fillColor = it)) }
+            )
+
+            // Warna & Ketebalan Outline
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "OUTLINE / GARIS TEPI",
+                    color = Ev.Muted,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (cfg.strokeColor == 0 || cfg.strokeScale <= 0.02f) {
+                        "Tanpa Outline"
+                    } else {
+                        "Tebal ${(cfg.strokeScale * 100f).roundToInt()}%"
+                    },
+                    color = Ev.InfoText,
+                    fontSize = 11.5.sp
+                )
+            }
+            ColorPaletteRow(
+                colors = TEXT_STROKE_COLORS,
+                selectedColor = cfg.strokeColor,
+                onSelect = { chosen ->
+                    val nextScale = if (chosen != 0 && cfg.strokeScale <= 0.05f) 1.0f else cfg.strokeScale
+                    vm.updateTextConfig(layerNum, cfg.copy(strokeColor = chosen, strokeScale = nextScale))
+                }
+            )
+            if (cfg.strokeColor != 0) {
+                Slider(
+                    value = cfg.strokeScale.coerceIn(0f, 2.0f),
+                    onValueChange = { vm.updateTextConfig(layerNum, cfg.copy(strokeScale = it)) },
+                    valueRange = 0f..2.0f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Ev.Accent,
+                        activeTrackColor = Ev.Accent,
+                        inactiveTrackColor = Ev.Line
+                    )
+                )
+            }
+
+            // Warna Kotak Latar Belakang
+            SmallSectionTitle("KOTAK LATAR BELAKANG")
+            ColorPaletteRow(
+                colors = TEXT_BG_COLORS,
+                selectedColor = cfg.bgColor,
+                onSelect = { vm.updateTextConfig(layerNum, cfg.copy(bgColor = it)) }
+            )
+
+            // Posisi Cepat & Slider X/Y
+            SmallSectionTitle("POSISI TEKS (ATAU SERET DI PRATINJAU)")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Chip(
+                    on = abs(cfg.posY - 0.12f) < 0.04f && abs(cfg.posX - 0.5f) < 0.04f,
+                    enabled = true,
+                    label = "Atas"
+                ) {
+                    vm.updateTextConfig(layerNum, cfg.copy(posX = 0.5f, posY = 0.12f))
+                }
+                Chip(
+                    on = abs(cfg.posY - 0.50f) < 0.04f && abs(cfg.posX - 0.5f) < 0.04f,
+                    enabled = true,
+                    label = "Tengah"
+                ) {
+                    vm.updateTextConfig(layerNum, cfg.copy(posX = 0.5f, posY = 0.50f))
+                }
+                Chip(
+                    on = abs(cfg.posY - 0.88f) < 0.04f && abs(cfg.posX - 0.5f) < 0.04f,
+                    enabled = true,
+                    label = "Bawah"
+                ) {
+                    vm.updateTextConfig(layerNum, cfg.copy(posX = 0.5f, posY = 0.88f))
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("X", color = Ev.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Slider(
+                    value = cfg.posX.coerceIn(0.06f, 0.94f),
+                    onValueChange = { vm.updateTextConfig(layerNum, cfg.copy(posX = it)) },
+                    valueRange = 0.06f..0.94f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Ev.Accent,
+                        activeTrackColor = Ev.Accent,
+                        inactiveTrackColor = Ev.Line
+                    )
+                )
+                Text("Y", color = Ev.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Slider(
+                    value = cfg.posY.coerceIn(0.06f, 0.94f),
+                    onValueChange = { vm.updateTextConfig(layerNum, cfg.copy(posY = it)) },
+                    valueRange = 0.06f..0.94f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Ev.Accent,
+                        activeTrackColor = Ev.Accent,
+                        inactiveTrackColor = Ev.Line
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ActionButton("Reset Semua", false, Modifier.weight(1f)) {
+                    vm.clearAllTexts()
+                    vm.toast("Semua overlay teks dikosongkan")
+                }
+                ActionButton("Selesai", true, Modifier.weight(1f), onClick = onClose)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmallSectionTitle(text: String) {
+    Text(
+        text = text,
+        color = Ev.Muted,
+        fontSize = 11.5.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
+    )
+}
+
+@Composable
+private fun LayerTabButton(
+    title: String,
+    hasContent: Boolean,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (active) Ev.Accent else Ev.Ghost)
+            .border(1.dp, if (active) Ev.Accent else Ev.Line, RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 9.dp, horizontal = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp
+        )
+        if (hasContent) {
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .background(if (active) Ev.Yellow else Ev.Accent, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ColorPaletteRow(
+    colors: List<Int>,
+    selectedColor: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        for (c in colors) {
+            val isNone = c == 0
+            val selected = selectedColor == c
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(if (isNone) Ev.Bg else Color(c))
+                    .border(
+                        width = if (selected) 2.5.dp else 1.dp,
+                        color = if (selected) Ev.Yellow else Color(0x55FFFFFF),
+                        shape = CircleShape
+                    )
+                    .clickable { onSelect(c) },
+                contentAlignment = Alignment.Center
+            ) {
+                if (isNone) {
+                    Text(
+                        text = "∅",
+                        color = Ev.Muted,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sheet Catatan (Tab 1: Catatan Bug & Pengembangan | Tab 2: Updated & Readme)
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun NotesSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    var selectedType by remember { mutableStateOf(NoteType.BUG) }
+    var inputText by remember { mutableStateOf("") }
+    var editingId by remember { mutableStateOf<Long?>(null) }
+    val currentTab = vm.noteTab
+
+    Scrim(onTap = onClose, alignment = Alignment.BottomCenter) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight * 0.92f)
+                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .background(Ev.Panel)
+                .absorbTaps()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Catatan & Pembaruan Aplikasi",
+                        color = Ev.Text,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                    Text(
+                        text = "Catatan bug/pengembangan serta info Updated & Readme aplikasi.",
+                        color = Ev.Muted,
+                        fontSize = 11.5.sp
+                    )
+                }
+                SmallIconButton(R.drawable.ic_close, onClose)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Tab Utama di dalam Catatan: [Catatan] vs [Updated]
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (currentTab == 0) Ev.Accent else Ev.Ghost)
+                        .border(1.dp, if (currentTab == 0) Ev.Accent else Ev.Line, RoundedCornerShape(10.dp))
+                        .clickable { vm.noteTab = 0 }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "📝 Catatan (${vm.notes.size})",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (currentTab == 1) Ev.Accent else Ev.Ghost)
+                        .border(1.dp, if (currentTab == 1) Ev.Accent else Ev.Line, RoundedCornerShape(10.dp))
+                        .clickable { vm.noteTab = 1 }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "🚀 Updated (Readme)",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            if (currentTab == 0) {
+                // ---------------- TAB 1: CATATAN BUG & PENGEMBANGAN ----------------
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    for (t in NoteType.entries) {
+                        val active = selectedType == t
+                        val badgeColor = if (t == NoteType.BUG) Ev.Accent else Ev.Yellow
+                        val textColor = if (active && t == NoteType.DEV) Color.Black else Color.White
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (active) badgeColor else Ev.Ghost)
+                                .border(
+                                    1.dp,
+                                    if (active) badgeColor else Ev.Line,
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable { selectedType = t }
+                                .padding(vertical = 9.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (t == NoteType.BUG) "🐞 Laporan Bug" else "💡 Pengembangan",
+                                color = if (active) textColor else Ev.Text,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.5.sp
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    placeholder = {
+                        Text(
+                            text = if (selectedType == NoteType.BUG) {
+                                "Tulis detail bug yang ditemukan..."
+                            } else {
+                                "Tulis ide fitur atau pengembangan di masa depan..."
+                            },
+                            color = Ev.Muted
+                        )
+                    },
+                    minLines = 2,
+                    maxLines = 4,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, bottom = 10.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (editingId != null) {
+                        ActionButton("Batal Edit", false, Modifier.weight(1f)) {
+                            editingId = null
+                            inputText = ""
+                        }
+                    }
+                    ActionButton(
+                        text = if (editingId != null) "Simpan Perubahan" else "+ Tambah Catatan",
+                        primary = true,
+                        modifier = Modifier.weight(1f),
+                        enabled = inputText.trim().isNotEmpty()
+                    ) {
+                        val id = editingId
+                        if (id != null) {
+                            vm.updateNote(id, selectedType, inputText)
+                            editingId = null
+                        } else {
+                            vm.addNote(selectedType, inputText)
+                        }
+                        inputText = ""
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "DAFTAR CATATAN (" + vm.notes.size + ")",
+                        color = Ev.Muted,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (vm.notes.isNotEmpty()) {
+                        Text(
+                            text = "Salin Semua",
+                            color = Ev.Yellow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable {
+                                copyNotesToClipboard(ctx, vm.notes)
+                                vm.toast("Semua catatan disalin ke clipboard")
+                            }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (vm.notes.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Ev.Bg)
+                            .padding(18.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Belum ada catatan bug atau rencana pengembangan.",
+                            color = Ev.Muted,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (item in vm.notes) {
+                            NoteRow(
+                                item = item,
+                                onToggleDone = { vm.toggleNoteDone(item.id) },
+                                onEdit = {
+                                    editingId = item.id
+                                    selectedType = item.type
+                                    inputText = item.text
+                                },
+                                onDelete = {
+                                    if (editingId == item.id) {
+                                        editingId = null
+                                        inputText = ""
+                                    }
+                                    vm.deleteNote(item.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            } else {
+                // ---------------- TAB 2: UPDATED & README ----------------
+                UpdatedAndReadmeSection(updateHistory = vm.updateHistory)
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
             ActionButton("Tutup", false, Modifier.fillMaxWidth(), onClick = onClose)
+        }
+    }
+}
+
+@Composable
+private fun UpdatedAndReadmeSection(updateHistory: List<UpdateLogEntry>) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "RIWAYAT UPDATED",
+            color = Ev.Yellow,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        for (entry in updateHistory) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Ev.Bg)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Ev.Accent.copy(alpha = 0.2f))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = entry.version,
+                            color = Ev.Accent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = entry.date,
+                        color = Ev.Muted,
+                        fontSize = 11.sp
+                    )
+                }
+                Text(
+                    text = entry.title,
+                    color = Ev.Text,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                for (line in entry.items) {
+                    Text(
+                        text = line,
+                        color = Ev.InfoText,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = "README & PANDUAN FITUR",
+            color = Ev.Yellow,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Editor Video · Pemecah Bagian (Scenes)",
+                color = Ev.Text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Aplikasi editor video untuk memecah video menjadi beberapa bagian (potongan/scenes) secara manual maupun deteksi otomatis, mengedit tiap potongan, dan mengekspornya sekaligus atau terpisah.",
+                color = Ev.InfoText,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+            ReadmeBullet(
+                num = "1",
+                title = "Impor & Multiseleksi (+)",
+                desc = "Ketuk tombol + untuk memilih 1 atau beberapa video sekaligus ke dalam timeline."
+            )
+            ReadmeBullet(
+                num = "2",
+                title = "Potong Manual & Deteksi Scene Otomatis",
+                desc = "Ketuk Potong untuk membelah di posisi playhead, atau ketuk Scene untuk memindai pergantian adegan otomatis lengkap dengan Grid Preview Deteksi."
+            )
+            ReadmeBullet(
+                num = "3",
+                title = "Membalikkan Urutan Frame (Reverse)",
+                desc = "Ketuk Membalikkan untuk merender potongan terpilih menjadi klip video dengan urutan frame dari belakang ke depan."
+            )
+            ReadmeBullet(
+                num = "4",
+                title = "Kustomisasi Overlay Teks Kaya",
+                desc = "Atur font, ukuran, warna isi, warna & ketebalan outline, kotak latar, bayangan, serta geser langsung posisi teks di layar pratinjau."
+            )
+            ReadmeBullet(
+                num = "5",
+                title = "Pinch untuk Zoom In/Out",
+                desc = "Cubit 2 jari di Timeline untuk zoom rentang waktu, atau di Pratinjau untuk memperbesar tampilan video."
+            )
+            ReadmeBullet(
+                num = "6",
+                title = "Ekspor Fleksibel",
+                desc = "Simpan sebagai 1 Video Utuh, Semua Potongan (berkas MP4 terpisah per bagian), atau Potongan Saat Ini."
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReadmeBullet(num: String, title: String, desc: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 1.dp)
+                .size(18.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(Ev.Line),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = num,
+                color = Ev.Yellow,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Ev.Text,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = desc,
+                color = Ev.Muted,
+                fontSize = 11.sp,
+                lineHeight = 15.5.sp
+            )
         }
     }
 }
@@ -687,56 +1567,6 @@ private fun copyNotesToClipboard(context: Context, notes: List<NoteItem>) {
         cm.setPrimaryClip(ClipData.newPlainText("Catatan Editor Video", sb.toString().trim()))
     } catch (e: Exception) {
         // diabaikan
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Sheet Readme / Panduan (ketika tombol ? di bar atas diketuk)
-// ---------------------------------------------------------------------------------------------
-
-@Composable
-fun ReadmeSheet(vm: EditorViewModel, onImport: () -> Unit, onClose: () -> Unit) {
-    Scrim(onTap = onClose, alignment = Alignment.BottomCenter) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxHeight * 0.9f)
-                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                .background(Ev.Panel)
-                .absorbTaps()
-                .navigationBarsPadding()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Panduan & Readme Aplikasi",
-                    color = Ev.Text,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
-                )
-                SmallIconButton(R.drawable.ic_close, onClose)
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(380.dp)
-                    .padding(top = 10.dp)
-            ) {
-                EmptyPreviewReadme(
-                    vm = vm,
-                    onImport = {
-                        onClose()
-                        onImport()
-                    }
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            ActionButton("Tutup", true, Modifier.fillMaxWidth(), onClick = onClose)
-        }
     }
 }
 
@@ -1039,56 +1869,4 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
             }
         }
     }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Dialog ubah teks overlay langsung saat diketuk di pratinjau
-// ---------------------------------------------------------------------------------------------
-
-@Composable
-fun TextEditDialog(
-    title: String = "Ubah teks",
-    initial: String,
-    onSave: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var tf by remember { mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length))) }
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(150)
-        try {
-            focus.requestFocus()
-        } catch (e: Exception) {
-            // diabaikan
-        }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(
-                    value = tf,
-                    onValueChange = { tf = it },
-                    placeholder = { Text("Kosong", color = Ev.Muted) },
-                    singleLine = true,
-                    modifier = Modifier.focusRequester(focus)
-                )
-                if (tf.text.isNotEmpty()) {
-                    Text(
-                        text = "Kosongkan teks",
-                        color = Ev.Accent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.clickable { tf = TextFieldValue("") }
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onSave(tf.text) }) { Text("Simpan") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Batal") } },
-        containerColor = Ev.Panel,
-        titleContentColor = Ev.Text,
-        textContentColor = Ev.Text
-    )
 }

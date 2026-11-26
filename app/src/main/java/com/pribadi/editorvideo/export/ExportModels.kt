@@ -1,6 +1,7 @@
 package com.pribadi.editorvideo.export
 
 import com.pribadi.editorvideo.model.Seg
+import com.pribadi.editorvideo.model.TextOverlayConfig
 import com.pribadi.editorvideo.model.VideoInfo
 
 enum class ExportMode { VIDEO, ALL, CURRENT }
@@ -20,8 +21,8 @@ data class ExportRequest(
     val currentIndex: Int,
     val rot: Int,
     val flip: Boolean,
-    val text1: String,
-    val text2: String,
+    val style1: TextOverlayConfig,
+    val style2: TextOverlayConfig,
     val qIdx: Int,
     val fIdx: Int,
     val mode: ExportMode

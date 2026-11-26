@@ -57,22 +57,23 @@ import com.pribadi.editorvideo.vm.EditorViewModel
 import com.pribadi.editorvideo.vm.Tool
 
 /**
- * Layar utama editor: bar atas, pratinjau (dengan Readme awal saat kosong), kontrol putar,
- * bar alat, timeline, lalu sheet/dialog (kecepatan, teks overlay, catatan bug/pengembangan,
- * panduan readme, ekspor, konfirmasi), toast, dan mode layar penuh.
+ * Layar utama editor: bar atas, pratinjau (tanpa Readme awal), kontrol putar,
+ * bar alat (dilengkapi deteksi Scene, kustomisasi Teks kaya, Membalikkan frame), timeline,
+ * serta sheet/dialog (kecepatan, deteksi scene + grid preview, teks overlay, catatan + updated/readme,
+ * ekspor, konfirmasi), toast, dan mode layar penuh.
  */
 @Composable
 fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () -> Unit) {
     BackHandler(
         enabled = vm.confirmText != null || vm.speedSheet || vm.textSheet ||
-            vm.noteSheet || vm.readmeSheet || vm.exportSheet || vm.fullscreen
+            vm.sceneDetectSheet || vm.noteSheet || vm.exportSheet || vm.fullscreen
     ) {
         when {
             vm.confirmText != null -> vm.confirmText = null
+            vm.sceneDetectSheet -> vm.sceneDetectSheet = false
             vm.speedSheet -> vm.speedSheet = false
             vm.textSheet -> vm.textSheet = false
             vm.noteSheet -> vm.noteSheet = false
-            vm.readmeSheet -> vm.readmeSheet = false
             vm.exportSheet -> vm.closeExport()
             vm.fullscreen -> vm.fullscreen = false
         }
@@ -113,16 +114,16 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
                 SpeedSheet(vm) { vm.speedSheet = false }
             }
 
+            if (vm.sceneDetectSheet) {
+                SceneDetectSheet(vm) { vm.sceneDetectSheet = false }
+            }
+
             if (vm.textSheet) {
                 OverlayTextSheet(vm) { vm.textSheet = false }
             }
 
             if (vm.noteSheet) {
                 NotesSheet(vm) { vm.noteSheet = false }
-            }
-
-            if (vm.readmeSheet) {
-                ReadmeSheet(vm, onImport) { vm.readmeSheet = false }
             }
 
             val confirm = vm.confirmText
@@ -146,19 +147,6 @@ fun EditorScreen(vm: EditorViewModel, onImport: () -> Unit, onStartExport: () ->
                     .padding(bottom = 180.dp)
             )
         }
-    }
-
-    val which = vm.editingText
-    if (which != 0) {
-        TextEditDialog(
-            title = if (which == 1) "Ubah Teks Atas" else "Ubah Teks Bawah",
-            initial = if (which == 1) vm.text1 else vm.text2,
-            onSave = { v ->
-                vm.applyText(which, v)
-                vm.editingText = 0
-            },
-            onDismiss = { vm.editingText = 0 }
-        )
     }
 }
 
@@ -186,25 +174,18 @@ private fun TopBar(vm: EditorViewModel) {
                     if (vm.hasVideo) {
                         vm.resetMedia()
                     } else {
-                        vm.toast("Pratinjau sudah di tampilan awal")
+                        vm.toast("Pratinjau sudah kosong")
                     }
                 }
             ) {
                 Ico(R.drawable.ic_back, Ev.Text, 24.dp)
             }
-            TopIcon(onClick = { vm.readmeSheet = true }) {
-                Box {
-                    Ico(R.drawable.ic_help, Ev.Text, 24.dp)
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = 4.dp, y = (-2).dp)
-                            .size(8.dp)
-                            .background(Ev.Yellow, CircleShape)
-                    )
+            TopIcon(
+                onClick = {
+                    vm.noteTab = 0
+                    vm.noteSheet = true
                 }
-            }
-            TopIcon(onClick = { vm.noteSheet = true }) {
+            ) {
                 Box {
                     Ico(R.drawable.ic_note, Ev.Text, 24.dp)
                     if (openNotesCount > 0) {
@@ -297,34 +278,22 @@ private fun Stage(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier)
         contentAlignment = Alignment.Center
     ) {
         if (!vm.fullscreen) {
-            if (!vm.hasVideo) {
-                val w = maxWidth * 0.94f
-                val h = maxOf(maxHeight - 8.dp, 1.dp)
-                PreviewBox(
-                    vm = vm,
-                    boxW = w,
-                    boxH = h,
-                    onEditText = { vm.editingText = it },
-                    onImport = onImport
-                )
-            } else {
-                val ar = aspectOf(vm)
-                val maxW = maxWidth * 0.94f
-                val maxH = maxOf(maxHeight - 8.dp, 1.dp)
-                var w: Dp = maxW
-                var h: Dp = w / ar
-                if (h > maxH) {
-                    h = maxH
-                    w = h * ar
-                }
-                PreviewBox(
-                    vm = vm,
-                    boxW = w,
-                    boxH = h,
-                    onEditText = { vm.editingText = it },
-                    onImport = onImport
-                )
+            val ar = aspectOf(vm)
+            val maxW = maxWidth * 0.94f
+            val maxH = maxOf(maxHeight - 8.dp, 1.dp)
+            var w: Dp = maxW
+            var h: Dp = w / ar
+            if (h > maxH) {
+                h = maxH
+                w = h * ar
             }
+            PreviewBox(
+                vm = vm,
+                boxW = w,
+                boxH = h,
+                onEditText = { layer -> vm.openTextEditor(layer) },
+                onImport = onImport
+            )
         }
     }
 }
@@ -350,7 +319,7 @@ private fun FullscreenLayer(vm: EditorViewModel, onImport: () -> Unit) {
             vm = vm,
             boxW = w,
             boxH = h,
-            onEditText = { vm.editingText = it },
+            onEditText = { layer -> vm.openTextEditor(layer) },
             onImport = onImport,
             modifier = Modifier.align(Alignment.Center)
         )
@@ -488,13 +457,18 @@ private fun ToolBar(vm: EditorViewModel) {
             val sp = vm.selSpeed
             val hasText = vm.text1.isNotEmpty() || vm.text2.isNotEmpty()
             ToolItem("Potong", R.drawable.ic_split, false) { vm.onTool(Tool.SPLIT) }
+            ToolItem("Scene", R.drawable.ic_scene_detect, vm.sceneDetectSheet) { vm.onTool(Tool.SCENE_DETECT) }
             ToolItem(
                 if (sp == 1.0) "Kecepatan" else Fmt.one(sp) + "x",
                 R.drawable.ic_speed,
                 sp != 1.0
             ) { vm.onTool(Tool.SPEED) }
             ToolItem("Teks", R.drawable.ic_text, hasText) { vm.onTool(Tool.TEXT) }
-            ToolItem("Membalikkan", R.drawable.ic_reverse, vm.selReversed) { vm.onTool(Tool.REVERSE) }
+            ToolItem(
+                "Membalikkan",
+                R.drawable.ic_reverse,
+                vm.selReversed || vm.reverseRendering
+            ) { vm.onTool(Tool.REVERSE) }
             ToolItem("Duplikat", R.drawable.ic_dup, false) { vm.onTool(Tool.DUP) }
             ToolItem("Hapus", R.drawable.ic_del, false) { vm.onTool(Tool.DEL) }
             ToolItem("Putar", R.drawable.ic_rotate, vm.rot != 0) { vm.onTool(Tool.ROTATE) }

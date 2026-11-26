@@ -19,6 +19,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import com.pribadi.editorvideo.export.DetectedScene
 import com.pribadi.editorvideo.export.EncoderCaps
 import com.pribadi.editorvideo.export.ExportCenter
 import com.pribadi.editorvideo.export.ExportMath
@@ -27,14 +28,19 @@ import com.pribadi.editorvideo.export.ExportPlan
 import com.pribadi.editorvideo.export.ExportPlanner
 import com.pribadi.editorvideo.export.ExportRequest
 import com.pribadi.editorvideo.export.ExportState
+import com.pribadi.editorvideo.export.ReverseVideoRenderer
+import com.pribadi.editorvideo.export.SceneDetector
+import com.pribadi.editorvideo.export.SceneScanResult
 import com.pribadi.editorvideo.export.SourceSpec
 import com.pribadi.editorvideo.export.VideoFrames
 import com.pribadi.editorvideo.export.VideoProbe
 import com.pribadi.editorvideo.model.EditorCore
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Rules
+import com.pribadi.editorvideo.model.TextOverlayConfig
 import com.pribadi.editorvideo.model.VideoInfo
 import com.pribadi.editorvideo.model.clampD
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -43,6 +49,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -53,7 +60,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /** Alat di bar bawah. */
-enum class Tool { SPLIT, SPEED, DUP, DEL, ROTATE, MIRROR, FREEZE, REVERSE, TEXT }
+enum class Tool { SPLIT, SCENE_DETECT, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE }
 
 /** Kategori catatan (Bug atau Pengembangan). */
 enum class NoteType(val label: String) {
@@ -70,7 +77,15 @@ data class NoteItem(
     val createdAt: String = ""
 )
 
-/** Satu sumber video yang telah diimpor. */
+/** Satu entri riwayat pembaruan (Updated) di bagian Catatan > Updated. */
+data class UpdateLogEntry(
+    val version: String,
+    val date: String,
+    val title: String,
+    val items: List<String>
+)
+
+/** Satu sumber video yang telah diimpor atau dirender. */
 data class MediaSource(
     val uri: Uri,
     val info: VideoInfo
@@ -87,7 +102,8 @@ data class ExportInfo(
 
 /**
  * Jembatan antara UI Compose, logika editor (EditorCore), pemutar pratinjau (ExoPlayer),
- * manajemen catatan (Note), dan ekspor. Semua fungsi dipanggil dari thread utama.
+ * detektor scene, perender pembalik frame, kustomisasi teks kaya, manajemen catatan (Note + Updated/Readme),
+ * dan ekspor.
  */
 class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -122,16 +138,20 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var hasVideo by mutableStateOf(false)
         private set
-    var hint by mutableStateOf(false)
-        private set
     var info by mutableStateOf<VideoInfo?>(null)
         private set
 
-    /** Teks overlay atas dan bawah — default kosong sesuai permintaan. */
-    var text1 by mutableStateOf("")
+    /** Konfigurasi kustomisasi kaya untuk Teks 1 (Atas) & Teks 2 (Bawah) — default kosong. */
+    var style1 by mutableStateOf(TextOverlayConfig.defaultTop())
         private set
-    var text2 by mutableStateOf("")
+    var style2 by mutableStateOf(TextOverlayConfig.defaultBottom())
         private set
+
+    val text1: String get() = style1.text
+    val text2: String get() = style2.text
+
+    /** Tab teks yang sedang diedit di OverlayTextSheet (0 = Teks 1, 1 = Teks 2). */
+    var activeTextTab by mutableIntStateOf(0)
 
     /** Zoom timeline (dp per detik). */
     var pps by mutableDoubleStateOf(Rules.PPS0)
@@ -153,13 +173,32 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var speedSheet by mutableStateOf(false)
     var textSheet by mutableStateOf(false)
     var noteSheet by mutableStateOf(false)
-    var readmeSheet by mutableStateOf(false)
+    var noteTab by mutableIntStateOf(0) // 0 = Catatan Bug/Ide, 1 = Updated & Readme
+    var sceneDetectSheet by mutableStateOf(false)
     var confirmText by mutableStateOf<String?>(null)
     var exportSheet by mutableStateOf(false)
     var fullscreen by mutableStateOf(false)
 
-    /** 0 = tidak ada, 1 = teks atas, 2 = teks bawah. */
-    var editingText by mutableIntStateOf(0)
+    // --- State Deteksi Scene + Grid Preview Deteksi ---
+    var sceneScanning by mutableStateOf(false)
+        private set
+    var sceneScanProgress by mutableFloatStateOf(0f)
+        private set
+    var sceneSensitivity by mutableFloatStateOf(0.55f)
+        private set
+    var sceneMinDur by mutableDoubleStateOf(1.0)
+        private set
+    var detectedScenes by mutableStateOf<List<DetectedScene>>(emptyList())
+        private set
+    private var currentScanResult: SceneScanResult? = null
+    private var sceneScanJob: Job? = null
+
+    // --- State Render Membalikkan Urutan Frame ---
+    var reverseRendering by mutableStateOf(false)
+        private set
+    var reverseProgress by mutableFloatStateOf(0f)
+        private set
+    private var reverseJob: Job? = null
 
     /** Daftar catatan bug / pengembangan masa depan. */
     var notes by mutableStateOf<List<NoteItem>>(emptyList())
@@ -176,7 +215,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val sources = ArrayList<MediaSource>()
     private var curSeg = 0
     private var lastNanos = 0L
-    private var lastRevSeekNanos = 0L
     private var toastJob: Job? = null
     private var zoomJob: Job? = null
     private var importJob: Job? = null
@@ -217,6 +255,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         choreographer.removeFrameCallback(frameCallback)
         thumbJob?.cancel()
         importJob?.cancel()
+        sceneScanJob?.cancel()
+        reverseJob?.cancel()
         try {
             player.release()
         } catch (e: Exception) {
@@ -303,20 +343,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val g = core.segs[l.i]
         curSeg = l.i
         playing = true
-        hint = false
         if (hasVideo) {
+            setSeekFast(false)
+            seekPlayerTo(g.src, l.s, 0.03)
             if (g.fz) {
-                setSeekFast(false)
-                seekPlayerTo(g.src, l.s, 0.03)
                 player.pause()
-            } else if (g.rev) {
-                setSeekFast(true)
-                seekPlayerTo(g.src, l.s, 0.02)
-                player.pause()
-                lastRevSeekNanos = System.nanoTime()
             } else {
-                setSeekFast(false)
-                seekPlayerTo(g.src, l.s, 0.03)
                 player.setPlaybackSpeed(g.sp.toFloat())
                 player.play()
             }
@@ -361,13 +393,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             seekPlayerTo(g.src, g.a, 0.03)
             return
         }
-        if (g.rev) {
-            setSeekFast(true)
-            player.pause()
-            seekPlayerTo(g.src, g.b, 0.02)
-            lastRevSeekNanos = System.nanoTime()
-            return
-        }
         setSeekFast(false)
         player.setPlaybackSpeed(g.sp.toFloat())
         seekPlayerTo(g.src, g.a, 0.08)
@@ -387,18 +412,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (g.fz || !hasVideo) {
             core.t = core.t + dt
             if (core.t >= core.lay.off[curSeg] + g.len - 1e-6) adv = true
-        } else if (g.rev) {
-            core.t = core.t + dt
-            val u = core.t - core.lay.off[curSeg]
-            if (u >= g.len - 1e-6) {
-                adv = true
-            } else {
-                val revS = clampD(g.b - u * g.sp, g.a, g.b)
-                if (ts - lastRevSeekNanos >= 42_000_000L) {
-                    lastRevSeekNanos = ts
-                    seekPlayerTo(g.src, revS, 0.02)
-                }
-            }
         } else {
             if (player.currentMediaItemIndex != g.src) {
                 seekPlayerTo(g.src, g.a, 0.02)
@@ -428,13 +441,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ timeline: scrub, ketuk, zoom, trim
 
-    /** Awal geseran timeline oleh jari: hentikan putar, pakai seek cepat. */
     fun scrubBegin() {
         pause()
         setSeekFast(true)
     }
 
-    /** Menggeser playhead sebanyak dtSeconds detik timeline. */
     fun scrubBy(dtSeconds: Double) {
         core.setTime(core.t + dtSeconds)
         seekVideoToEdit()
@@ -442,7 +453,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         bump()
     }
 
-    /** Akhir geseran/fling: seek presisi ke posisi akhir. */
     fun scrubEnd() {
         setSeekFast(false)
         seekVideoToEdit()
@@ -450,7 +460,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         bump()
     }
 
-    /** Ketuk di timeline pada waktu tt (detik timeline). */
     fun tapAt(tt: Double) {
         if (tt < 0.0 || tt > core.total) return
         pause()
@@ -510,11 +519,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (hasVideo) {
             val g = core.trimSeg
             if (g != null && !g.fz) {
-                val targetSec = if (core.trimmingSide == 1) {
-                    if (g.rev) max(g.b - 0.05, g.a) else g.a
-                } else {
-                    if (g.rev) g.a else max(g.b - 0.05, g.a)
-                }
+                val targetSec = if (core.trimmingSide == 1) g.a else max(g.b - 0.05, g.a)
                 seekPlayerTo(g.src, targetSec, 0.02)
             }
         }
@@ -564,9 +569,22 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 if (msg != null) toast(msg)
             }
 
+            Tool.SCENE_DETECT -> {
+                openSceneDetector()
+            }
+
             Tool.SPEED -> {
                 refreshDerived()
                 speedSheet = true
+            }
+
+            Tool.TEXT -> {
+                pause()
+                textSheet = true
+            }
+
+            Tool.REVERSE -> {
+                toggleOrRenderReverse()
             }
 
             Tool.DUP -> {
@@ -606,28 +624,216 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 bump()
                 if (msg != null) toast(msg)
             }
+        }
+    }
 
-            Tool.REVERSE -> {
-                val msg = core.reverse()
-                refreshDerived()
+    // ------------------------------------------------------------------ deteksi scene + grid preview
+
+    fun openSceneDetector() {
+        if (!hasVideo || sources.isEmpty()) {
+            toast("Impor video dulu untuk deteksi scene")
+            return
+        }
+        val segIdx = core.sel.coerceIn(0, core.segs.size - 1)
+        val g = core.segs[segIdx]
+        if (g.fz) {
+            toast("Potongan beku tidak bisa dideteksi scene-nya")
+            return
+        }
+        if (g.b - g.a < 0.8) {
+            toast("Durasi potongan terlalu pendek untuk deteksi scene")
+            return
+        }
+        pause()
+        sceneDetectSheet = true
+
+        // Bila klip yang sama sudah dipindai sebelumnya, langsung pakai hasilnya
+        val cached = currentScanResult
+        if (cached != null &&
+            cached.srcIndex == g.src &&
+            abs(cached.startSec - g.a) < 0.01 &&
+            abs(cached.endSec - g.b) < 0.01 &&
+            cached.samples.isNotEmpty()
+        ) {
+            sceneScanning = false
+            detectedScenes = SceneDetector.buildScenes(cached, sceneSensitivity, sceneMinDur)
+            return
+        }
+
+        val src = sources.getOrElse(g.src) { sources.first() }
+        sceneScanJob?.cancel()
+        sceneScanning = true
+        sceneScanProgress = 0f
+        detectedScenes = emptyList()
+        sceneScanJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val scan = withContext(Dispatchers.IO) {
+                SceneDetector.scanClip(
+                    context = ctx,
+                    srcUri = src.uri,
+                    srcInfo = src.info,
+                    srcIndex = g.src,
+                    segIndex = segIdx,
+                    startSec = g.a,
+                    endSec = g.b,
+                    speed = g.sp
+                ) { p ->
+                    viewModelScope.launch(Dispatchers.Main) {
+                        sceneScanProgress = p
+                    }
+                }
+            }
+            currentScanResult = scan
+            detectedScenes = SceneDetector.buildScenes(scan, sceneSensitivity, sceneMinDur)
+            sceneScanning = false
+        }
+    }
+
+    fun updateSceneSettings(newSensitivity: Float, newMinDur: Double) {
+        sceneSensitivity = newSensitivity.coerceIn(0.1f, 0.9f)
+        sceneMinDur = newMinDur.coerceIn(0.3, 5.0)
+        val scan = currentScanResult ?: return
+        detectedScenes = SceneDetector.buildScenes(scan, sceneSensitivity, sceneMinDur)
+    }
+
+    fun toggleDetectedScene(sceneIndex: Int) {
+        detectedScenes = detectedScenes.map {
+            if (it.index == sceneIndex) it.copy(selected = !it.selected) else it
+        }
+    }
+
+    fun selectAllDetectedScenes(selectAll: Boolean) {
+        detectedScenes = detectedScenes.map { it.copy(selected = selectAll) }
+    }
+
+    fun previewDetectedScene(scene: DetectedScene) {
+        val scan = currentScanResult ?: return
+        if (scan.segIndex !in core.segs.indices) return
+        val g = core.segs[scan.segIndex]
+        val offsetInSeg = (scene.startSec - g.a) / g.sp
+        val timelineT = core.lay.off[scan.segIndex] + max(0.0, offsetInSeg)
+        tapAt(timelineT)
+    }
+
+    fun applyDetectedScenes(onlySelected: Boolean) {
+        val scan = currentScanResult ?: return
+        val chosen = if (onlySelected) {
+            detectedScenes.filter { it.selected }
+        } else {
+            detectedScenes
+        }
+        if (chosen.isEmpty()) {
+            toast("Pilih minimal 1 scene pada grid")
+            return
+        }
+        val ranges = chosen.map { it.startSec to it.endSec }
+        val msg = core.applySceneSplits(scan.segIndex, ranges)
+        sceneDetectSheet = false
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit()
+        bump()
+        toast(msg)
+    }
+
+    // ------------------------------------------------------------------ membalikkan urutan frame (Reverse Render)
+
+    private fun toggleOrRenderReverse() {
+        if (!hasVideo || sources.isEmpty()) {
+            toast("Impor video dulu sebelum membalikkan klip")
+            return
+        }
+        if (reverseRendering) {
+            toast("Sedang merender pembalikan frame…")
+            return
+        }
+        val segIdx = core.sel.coerceIn(0, core.segs.size - 1)
+        val g = core.segs[segIdx]
+        if (g.fz) {
+            toast("Potongan beku tidak perlu dibalik")
+            return
+        }
+        if (g.rev && g.origSrc >= 0) {
+            val msg = core.restoreFromReverse(segIdx)
+            refreshDerived()
+            setSeekFast(false)
+            seekVideoToEdit()
+            bump()
+            toast(msg)
+            return
+        }
+
+        val src = sources.getOrElse(g.src) { sources.first() }
+        pause()
+        reverseRendering = true
+        reverseProgress = 0f
+        reverseJob?.cancel()
+        reverseJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            try {
+                val revDir = File(ctx.cacheDir, "reversed")
+                val outFile = File(revDir, "rev_" + System.currentTimeMillis() + ".mp4")
+                withContext(Dispatchers.Default) {
+                    ReverseVideoRenderer.renderReversedClip(
+                        context = ctx,
+                        srcUri = src.uri,
+                        srcInfo = src.info,
+                        startSec = g.a,
+                        endSec = g.b,
+                        outFile = outFile
+                    ) { p ->
+                        viewModelScope.launch(Dispatchers.Main) {
+                            reverseProgress = p
+                        }
+                    }
+                }
+
+                val revUri = Uri.fromFile(outFile)
+                val revInfo = withContext(Dispatchers.IO) { VideoProbe.probe(ctx, revUri) }
+                if (revInfo == null || revInfo.durationMs <= 0L) {
+                    reverseRendering = false
+                    toast("Gagal membalikkan urutan frame video")
+                    return@launch
+                }
+
+                val newSrcIdx = sources.size
+                sources.add(MediaSource(revUri, revInfo))
+                val revDur = revInfo.durationMs / 1000.0
+                val uniq = min(150, max(10, ceil(revDur * 3.0).toInt()))
+                sourceThumbs.add(arrayOfNulls(uniq))
+                sourceThumbReady.add(0)
+
+                val msg = core.applyRenderedReverse(segIdx, newSrcIdx, revDur)
                 setSeekFast(false)
+                player.setMediaItems(sources.map { MediaItem.fromUri(it.uri) })
+                player.prepare()
+                player.pause()
                 seekVideoToEdit()
+                refreshDerived()
+                reverseRendering = false
                 bump()
                 toast(msg)
-            }
-
-            Tool.TEXT -> {
-                pause()
-                textSheet = true
+                startThumbsFrom(newSrcIdx)
+            } catch (e: CancellationException) {
+                reverseRendering = false
+                toast("Pembalikan video dibatalkan")
+            } catch (e: Exception) {
+                reverseRendering = false
+                toast("Gagal membalikkan frame: " + (e.message ?: "Error"))
             }
         }
+    }
+
+    fun cancelReverseRender() {
+        reverseJob?.cancel()
+        reverseRendering = false
     }
 
     // ------------------------------------------------------------------ kecepatan
 
     fun setSpeed(v: Double, commit: Boolean) {
         val msg = core.setSpeed(v, commit)
-        if (playing && curSeg == core.sel && hasVideo && !core.selReversed) {
+        if (playing && curSeg == core.sel && hasVideo) {
             player.setPlaybackSpeed(core.selSpeed.toFloat())
         }
         refreshDerived()
@@ -635,7 +841,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (msg != null) toast(msg)
     }
 
-    /** Slider selesai digeser: simpan ke riwayat bila ada perubahan. */
     fun commitSpeed() {
         core.commitIfChanged()
         refreshDerived()
@@ -659,26 +864,78 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast(msg)
     }
 
-    // ------------------------------------------------------------------ teks overlay
+    // ------------------------------------------------------------------ kustomisasi teks overlay kaya
 
-    /** Mengubah satu teks overlay (boleh dikosongkan). */
-    fun applyText(which: Int, v: String) {
-        val cleaned = v.trim()
-        if (which == 1) text1 = cleaned else if (which == 2) text2 = cleaned
+    fun openTextEditor(whichLayer: Int) {
+        pause()
+        activeTextTab = if (whichLayer == 2) 1 else 0
+        textSheet = true
+    }
+
+    fun updateTextConfig(whichLayer: Int, cfg: TextOverlayConfig) {
+        if (whichLayer == 1) {
+            style1 = cfg
+        } else if (whichLayer == 2) {
+            style2 = cfg
+        }
         bump()
     }
 
-    /** Mengubah kedua teks overlay sekaligus dari sheet Teks Overlay. */
-    fun applyBothTexts(newText1: String, newText2: String) {
-        text1 = newText1.trim()
-        text2 = newText2.trim()
+    fun moveOverlayText(whichLayer: Int, dxNorm: Float, dyNorm: Float) {
+        if (whichLayer == 1) {
+            style1 = style1.copy(
+                posX = (style1.posX + dxNorm).coerceIn(0.06f, 0.94f),
+                posY = (style1.posY + dyNorm).coerceIn(0.06f, 0.94f)
+            )
+        } else if (whichLayer == 2) {
+            style2 = style2.copy(
+                posX = (style2.posX + dxNorm).coerceIn(0.06f, 0.94f),
+                posY = (style2.posY + dyNorm).coerceIn(0.06f, 0.94f)
+            )
+        }
         bump()
     }
 
-    // ------------------------------------------------------------------ catatan (bug & pengembangan)
+    fun clearAllTexts() {
+        style1 = TextOverlayConfig.defaultTop()
+        style2 = TextOverlayConfig.defaultBottom()
+        bump()
+    }
+
+    // ------------------------------------------------------------------ catatan (bug & pengembangan + updated/readme)
+
+    val updateHistory: List<UpdateLogEntry> = listOf(
+        UpdateLogEntry(
+            version = "v1.0.3 (Terbaru)",
+            date = "26/11/2026",
+            title = "Pembaruan Fitur & Perbaikan Bug",
+            items = listOf(
+                "✓ [Bug Fixed] Re-install / update APK terbaru langsung menimpa versi lama tanpa perlu uninstall (Keystore Permanen + VersionCode Otomatis).",
+                "✓ [Pengembangan] Fitur Split Pendeteksi Scene otomatis dilengkapi Grid Preview Deteksi thumbnail per bagian.",
+                "✓ [Pengembangan] Kustomisasi Overlay Teks yang kaya (pilihan font, ukuran, warna teks, warna & tebal outline, kotak latar, bayangan, perataan, dan geser posisi langsung di pratinjau).",
+                "✓ [Bug Fixed] Fitur Membalikkan (Reverse) kini merender ulang video dengan membalik urutan frame-nya menjadi klip MP4 terbalik yang mulus saat diputar & diekspor.",
+                "✓ [Bug Fixed] Readme & info pembaruan dipindahkan ke dalam menu Catatan > tab Updated, tidak lagi ditampilkan di awal pratinjau kosong."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.2",
+            date = "26/11/2026",
+            title = "Multiseleksi Media, Pinch Zoom & Catatan",
+            items = listOf(
+                "✓ Impor media mendukung multiseleksi beberapa video sekaligus.",
+                "✓ Ikon aplikasi baru sesuai fungsi pemecah video menjadi beberapa bagian.",
+                "✓ Pinch 2 jari untuk zoom in/out di timeline dan pratinjau.",
+                "✓ Fitur Catatan Bug & Pengembangan tersimpan di perangkat."
+            )
+        )
+    )
 
     private fun loadNotes() {
-        val raw = prefs.getString(KEY_NOTES_JSON, null) ?: return
+        val raw = prefs.getString(KEY_NOTES_JSON, null)
+        if (raw == null) {
+            notes = emptyList()
+            return
+        }
         try {
             val arr = JSONArray(raw)
             val list = ArrayList<NoteItem>(arr.length())
@@ -700,7 +957,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             }
             notes = list
         } catch (e: Exception) {
-            // diabaikan bila format lama tidak valid
+            // diabaikan
         }
     }
 
@@ -801,8 +1058,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 pps = Rules.PPS0
                 resetPreviewZoom()
                 hasVideo = true
-                hint = false
                 curSeg = 0
+                currentScanResult = null
             } else {
                 sources.addAll(probed)
                 for (ms in probed) {
@@ -832,11 +1089,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Mengosongkan semua media dari timeline (kembali ke tampilan awal). */
+    /** Mengosongkan semua media dari timeline (kembali ke pratinjau kosong). */
     fun resetMedia() {
         pause()
         thumbJob?.cancel()
         importJob?.cancel()
+        sceneScanJob?.cancel()
+        reverseJob?.cancel()
+        reverseRendering = false
+        sceneScanning = false
+        currentScanResult = null
         sources.clear()
         sourceThumbs.clear()
         sourceThumbReady.clear()
@@ -845,7 +1107,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         info = null
         resetPreviewZoom()
         core.loadVideo(Rules.DEMO_DUR)
-        // Kembalikan status belum ada video
         try {
             val f = EditorCore::class.java.getDeclaredField("hasVideo")
             f.isAccessible = true
@@ -963,7 +1224,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         ExportCenter.reset()
     }
 
-    /** Ringkasan untuk sheet ekspor (ukuran, FPS efektif, perkiraan ukuran file, catatan fallback). */
     fun exportInfo(): ExportInfo {
         val inf = sources.firstOrNull()?.info ?: info ?: demoInfo()
         val plan = ExportPlanner.plan(inf, rot, qIdx, fIdx) { w, h -> EncoderCaps.supportsH264(w, h) }
@@ -995,8 +1255,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             currentIndex = core.sel,
             rot = core.rot,
             flip = core.flip,
-            text1 = text1,
-            text2 = text2,
+            style1 = style1,
+            style2 = style2,
             qIdx = qIdx,
             fIdx = fIdx,
             mode = exportMode

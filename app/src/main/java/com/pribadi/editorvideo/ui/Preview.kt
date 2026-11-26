@@ -15,16 +15,15 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +38,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,8 +52,10 @@ import kotlin.math.abs
 
 /**
  * Kotak pratinjau:
- *  - Saat belum ada video (!vm.hasVideo): menampilkan README / Panduan penggunaan di pratinjau kosong.
- *  - Saat sudah ada video (vm.hasVideo): menampilkan video + teks overlay, mendukung pinch-to-zoom & ketuk teks.
+ *  - Saat belum ada video (!vm.hasVideo): menampilkan kotak pratinjau bersih tanpa Readme
+ *    (Readme & riwayat pembaruan dipindahkan ke menu Catatan > tab Updated).
+ *  - Saat sudah ada video (vm.hasVideo): menampilkan video + teks overlay kaya, mendukung
+ *    pinch-to-zoom 2 jari, ketuk teks untuk mengedit, dan seret 1 jari untuk memindah posisi teks.
  */
 @Composable
 fun PreviewBox(
@@ -105,175 +107,120 @@ fun PreviewBox(
                     )
                 }
             }
+
+            if (vm.selReversed && !vm.reverseRendering) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xCCFF3B5C))
+                        .padding(horizontal = 9.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "⏪ Dibalik",
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            if (vm.reverseRendering) {
+                val pct = (vm.reverseProgress * 100f).toInt().coerceIn(0, 100)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xBF000000)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Ev.Panel)
+                            .border(1.dp, Ev.Line, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 18.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Membalikkan Urutan Frame… $pct%",
+                            color = Ev.Text,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        LinearProgressIndicator(
+                            progress = { vm.reverseProgress.coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .width(190.dp)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = Ev.Accent,
+                            trackColor = Ev.Ghost
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Ev.Ghost)
+                                .clickable { vm.cancelReverseRender() }
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "Batalkan",
+                                color = Ev.InfoText,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
         } else {
-            EmptyPreviewReadme(vm = vm, onImport = onImport)
+            EmptyPreviewState(onImport = onImport)
             OverlayLayer(vm, onEditText)
         }
     }
 }
 
 /**
- * Readme / Panduan singkat yang ditampilkan di area pratinjau saat belum ada video yang diimpor.
+ * Tampilan pratinjau awal yang bersih ketika belum ada video yang dipilih (tanpa menampilkan Readme).
  */
 @Composable
-fun EmptyPreviewReadme(
-    vm: EditorViewModel,
-    onImport: () -> Unit
-) {
+private fun EmptyPreviewState(onImport: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Ev.Panel)
             .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
-            .verticalScroll(rememberScrollState())
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Ev.Accent)
-                    .padding(horizontal = 7.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = "README",
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
-            }
-            Text(
-                text = "Editor Video · Pemecah Bagian",
-                color = Ev.Text,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        Text(
-            text = "Aplikasi editor video untuk memecah video menjadi beberapa bagian (potongan/scenes), mengedit tiap potongan, dan mengekspornya sekaligus atau terpisah.",
-            color = Ev.InfoText,
-            fontSize = 11.5.sp,
-            lineHeight = 16.sp
-        )
-
-        ReadmeBullet(
-            num = "1",
-            title = "Impor & Multiseleksi (+)",
-            desc = "Ketuk tombol + untuk memilih 1 atau beberapa video sekaligus. Ketuk + lagi untuk menambah video ke timeline."
-        )
-        ReadmeBullet(
-            num = "2",
-            title = "Potong / Pecah Video",
-            desc = "Geser timeline ke waktu yang diinginkan lalu ketuk Potong untuk memecah video menjadi beberapa bagian."
-        )
-        ReadmeBullet(
-            num = "3",
-            title = "Membalikkan & Alat Klip",
-            desc = "Atur Kecepatan (0.1x–9x), Duplikat, Hapus, Putar, Cermin, Beku (freeze), dan Membalikkan (putar mundur)."
-        )
-        ReadmeBullet(
-            num = "4",
-            title = "Overlay Teks (Default Kosong)",
-            desc = "Ketuk alat Teks di bar bawah untuk menambah atau mengosongkan teks overlay atas & bawah."
-        )
-        ReadmeBullet(
-            num = "5",
-            title = "Pinch untuk Zoom In/Out",
-            desc = "Cubit 2 jari di Timeline untuk zoom rentang waktu, atau di Pratinjau untuk memperbesar video."
-        )
-        ReadmeBullet(
-            num = "6",
-            title = "Catatan Bug & Pengembangan",
-            desc = "Ketuk ikon Catatan di bar atas untuk mencatat temuan bug atau rencana fitur masa depan."
-        )
-        ReadmeBullet(
-            num = "7",
-            title = "Ekspor Fleksibel",
-            desc = "Simpan sebagai 1 Video Utuh, Semua Potongan (file MP4 terpisah per bagian), atau Potongan Saat Ini."
-        )
-
-        Spacer(modifier = Modifier.height(2.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Ev.Accent)
-                    .clickable(onClick = onImport)
-                    .padding(vertical = 9.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "+ Pilih Video",
-                    color = Color.White,
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Ev.Ghost)
-                    .clickable { vm.noteSheet = true }
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Catatan",
-                    color = Ev.Text,
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ReadmeBullet(num: String, title: String, desc: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.Top
+            .clickable(onClick = onImport)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .padding(top = 1.dp)
-                .size(18.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(Ev.Line),
+                .size(54.dp)
+                .clip(CircleShape)
+                .background(Ev.Accent),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = num,
-                color = Ev.Yellow,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Ico(R.drawable.ic_plus, Color.White, 28.dp)
         }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                color = Ev.Text,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = desc,
-                color = Ev.Muted,
-                fontSize = 11.sp,
-                lineHeight = 15.sp
-            )
-        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "Impor Video",
+            color = Ev.Text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Ketuk untuk memilih satu atau beberapa video",
+            color = Ev.Muted,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -326,28 +273,39 @@ private fun VideoSurface(vm: EditorViewModel, boxW: Dp, boxH: Dp) {
 }
 
 /**
- * Dua teks overlay digambar dengan kode yang sama seperti saat ekspor.
+ * Dua layer teks overlay digambar dengan kode yang sama persis seperti saat ekspor.
  * Mendukung:
- *  - Ketuk 1 jari pada teks overlay untuk langsung mengedit teks tersebut.
+ *  - Ketuk 1 jari pada teks overlay untuk langsung membuka editor teks pada layer tersebut.
+ *  - Seret (drag) 1 jari pada teks overlay untuk menggeser posisi teks bebas di pratinjau.
  *  - Cubit 2 jari (pinch in/out) pada video untuk memperbesar/memperkecil pratinjau.
  */
 @Composable
 private fun OverlayLayer(vm: EditorViewModel, onEditText: (Int) -> Unit) {
-    val slop = LocalDensity.current.run { 10.dp.toPx() }
-    val hitPad = LocalDensity.current.run { 12.dp.toPx() }
+    val slop = LocalDensity.current.run { 8.dp.toPx() }
+    val hitPad = LocalDensity.current.run { 14.dp.toPx() }
     Canvas(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(vm.hasVideo) {
-                if (!vm.hasVideo) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     var multiTouch = false
                     var movedMuch = false
+                    val hitOnDown = OverlayRenderer.hitTest(
+                        size.width.toFloat(),
+                        size.height.toFloat(),
+                        vm.style1,
+                        vm.style2,
+                        down.position.x,
+                        down.position.y,
+                        hitPad
+                    )
+                    var prevPos = down.position
+
                     while (true) {
                         val ev = awaitPointerEvent()
                         val pressed = ev.changes.filter { it.pressed }
-                        if (pressed.size >= 2) {
+                        if (pressed.size >= 2 && vm.hasVideo) {
                             multiTouch = true
                             val zoomChange = ev.calculateZoom()
                             val panChange = ev.calculatePan()
@@ -361,25 +319,31 @@ private fun OverlayLayer(vm: EditorViewModel, onEditText: (Int) -> Unit) {
                             val d = (cur.position - down.position).getDistance()
                             if (d > slop) {
                                 movedMuch = true
-                                if (vm.previewZoom > 1.02f) {
-                                    val pan = ev.calculatePan()
-                                    vm.updatePreviewTransform(1f, pan.x, pan.y)
+                            }
+                            if (movedMuch) {
+                                val dx = cur.position.x - prevPos.x
+                                val dy = cur.position.y - prevPos.y
+                                prevPos = cur.position
+                                if (hitOnDown != 0 && size.width > 0 && size.height > 0) {
+                                    vm.moveOverlayText(
+                                        hitOnDown,
+                                        dx / size.width.toFloat(),
+                                        dy / size.height.toFloat()
+                                    )
+                                    cur.consume()
+                                } else if (vm.hasVideo && vm.previewZoom > 1.02f) {
+                                    vm.updatePreviewTransform(1f, dx, dy)
                                     cur.consume()
                                 }
                             }
                         }
                         if (pressed.isEmpty()) {
                             if (!multiTouch && !movedMuch) {
-                                val hit = OverlayRenderer.hitTest(
-                                    size.width.toFloat(),
-                                    size.height.toFloat(),
-                                    vm.text1,
-                                    vm.text2,
-                                    down.position.x,
-                                    down.position.y,
-                                    hitPad
-                                )
-                                if (hit != 0) onEditText(hit)
+                                if (hitOnDown != 0) {
+                                    onEditText(hitOnDown)
+                                } else if (vm.hasVideo) {
+                                    vm.togglePlay()
+                                }
                             }
                             break
                         }
@@ -388,11 +352,11 @@ private fun OverlayLayer(vm: EditorViewModel, onEditText: (Int) -> Unit) {
             }
     ) {
         val revTrigger = vm.rev
-        val t1 = vm.text1
-        val t2 = vm.text2
-        if (revTrigger >= 0 && (t1.isNotEmpty() || t2.isNotEmpty())) {
+        val s1 = vm.style1
+        val s2 = vm.style2
+        if (revTrigger >= 0 && (s1.isNotEmpty || s2.isNotEmpty)) {
             drawIntoCanvas { c ->
-                OverlayRenderer.draw(c.nativeCanvas, size.width, size.height, t1, t2)
+                OverlayRenderer.draw(c.nativeCanvas, size.width, size.height, s1, s2)
             }
         }
     }

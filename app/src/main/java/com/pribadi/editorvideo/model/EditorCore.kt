@@ -6,7 +6,8 @@ import kotlin.math.min
 /**
  * Logika inti editor (tanpa Android/Compose):
  * potongan (mendukung multi-video sumber), playhead, pilihan potongan, riwayat undo/redo,
- * potong, beku, kecepatan, duplikat, hapus, putar, cermin, membalikkan (reverse), dan geser handle trim.
+ * potong, deteksi scene otomatis, beku, kecepatan, duplikat, hapus, putar, cermin,
+ * membalikkan (reverse frame render), dan geser handle trim.
  */
 class EditorCore {
 
@@ -197,19 +198,44 @@ class EditorCore {
         if (L.s - g.a < 0.1 * g.sp || g.b - L.s < 0.1 * g.sp) return "Geser playhead ke dalam klip dulu"
         onPause()
         val n = ArrayList(segs)
-        if (g.rev) {
-            // Pada klip terbalik, bagian awal berjalan dari b -> L.s, dan bagian kedua dari L.s -> a.
-            n[L.i] = g.copy(a = L.s)
-            n.add(L.i + 1, g.copy(b = L.s))
-        } else {
-            n[L.i] = g.copy(b = L.s)
-            n.add(L.i + 1, g.copy(a = L.s))
-        }
+        n[L.i] = g.copy(b = L.s)
+        n.add(L.i + 1, g.copy(a = L.s))
         segs = n
         sel = L.i + 1
         push()
         build()
         return "Klip dipotong di " + Fmt.time(t)
+    }
+
+    /**
+     * Memecah potongan ke-[segIdx] menjadi beberapa bagian sesuai hasil Deteksi Scene.
+     */
+    fun applySceneSplits(segIdx: Int, ranges: List<Pair<Double, Double>>): String {
+        if (segIdx !in segs.indices || ranges.isEmpty()) return "Tidak ada scene untuk diterapkan"
+        val g = segs[segIdx]
+        if (g.fz) return "Potongan beku tidak bisa dipecah"
+        onPause()
+        val created = ranges.mapNotNull { (sa, sb) ->
+            val a = clampD(sa, g.a, g.b)
+            val b = clampD(sb, g.a, g.b)
+            if (b - a >= Rules.MIN) g.copy(a = a, b = b) else null
+        }
+        if (created.isEmpty()) return "Rentang scene terlalu pendek"
+        val n = ArrayList<Seg>(segs.size - 1 + created.size)
+        for (i in segs.indices) {
+            if (i == segIdx) {
+                n.addAll(created)
+            } else {
+                n.add(segs[i])
+            }
+        }
+        segs = n
+        calc()
+        sel = segIdx.coerceIn(0, segs.size - 1)
+        t = lay.off[sel]
+        push()
+        build()
+        return "Video dipecah menjadi ${created.size} bagian scene"
     }
 
     fun freezeFrame(): String? {
@@ -222,24 +248,16 @@ class EditorCore {
         val fz = Seg.freezeAt(s, g.src)
         val n = ArrayList(segs)
         val idx: Int
-        val nearStart = if (g.rev) (g.b - s < edge) else (s - g.a < edge)
-        val nearEnd = if (g.rev) (s - g.a < edge) else (g.b - s < edge)
-        if (nearStart) {
+        if (s - g.a < edge) {
             n.add(L.i, fz)
             idx = L.i
-        } else if (nearEnd) {
+        } else if (g.b - s < edge) {
             n.add(L.i + 1, fz)
             idx = L.i + 1
         } else {
-            if (g.rev) {
-                n[L.i] = g.copy(a = s)
-                n.add(L.i + 1, fz)
-                n.add(L.i + 2, g.copy(b = s))
-            } else {
-                n[L.i] = g.copy(b = s)
-                n.add(L.i + 1, fz)
-                n.add(L.i + 2, g.copy(a = s))
-            }
+            n[L.i] = g.copy(b = s)
+            n.add(L.i + 1, fz)
+            n.add(L.i + 2, g.copy(a = s))
             idx = L.i + 1
         }
         segs = n
@@ -286,20 +304,70 @@ class EditorCore {
         return if (flip) "Cermin kiri-kanan aktif" else "Cermin dimatikan"
     }
 
-    /** Membalikkan arah putar potongan aktif (mundur <-> normal). */
+    /** Status apakah potongan terpilih saat ini adalah hasil balik urutan frame. */
     val selReversed: Boolean get() = segs.getOrNull(sel)?.rev ?: false
 
-    fun reverse(): String {
-        val g = segs.getOrNull(sel) ?: return "Tidak ada potongan aktif"
-        if (g.fz) return "Potongan beku tidak perlu dibalik"
+    /**
+     * Mengganti potongan ke-[segIdx] dengan sumber video baru hasil render balik urutan frame.
+     */
+    fun applyRenderedReverse(segIdx: Int, newSrcIdx: Int, revDurSec: Double): String {
+        if (segIdx !in segs.indices) return "Potongan tidak ditemukan"
         onPause()
-        val nr = !g.rev
+        val g = segs[segIdx]
+        val updatedDurs = ArrayList(srcDurs)
+        while (updatedDurs.size <= newSrcIdx) {
+            updatedDurs.add(revDurSec)
+        }
+        updatedDurs[newSrcIdx] = revDurSec
+        srcDurs = updatedDurs
+
+        val revSeg = Seg(
+            a = 0.0,
+            b = revDurSec,
+            sp = g.sp,
+            fz = false,
+            d = 0.0,
+            rev = true,
+            src = newSrcIdx,
+            origSrc = if (g.origSrc >= 0) g.origSrc else g.src,
+            origA = if (g.origSrc >= 0) g.origA else g.a,
+            origB = if (g.origSrc >= 0) g.origB else g.b
+        )
         val n = ArrayList(segs)
-        n[sel] = g.copy(rev = nr)
+        n[segIdx] = revSeg
         segs = n
+        calc()
+        sel = segIdx
+        t = lay.off[segIdx]
         push()
         build()
-        return if (nr) "Potongan dibalik (putar mundur)" else "Arah potongan kembali normal"
+        return "Urutan frame potongan berhasil dibalik"
+    }
+
+    /** Mengembalikan potongan yang sudah dibalik ke video sumber aslinya (arah normal). */
+    fun restoreFromReverse(segIdx: Int): String {
+        if (segIdx !in segs.indices) return "Potongan tidak ditemukan"
+        val g = segs[segIdx]
+        if (!g.rev || g.origSrc < 0) return "Potongan sudah normal"
+        onPause()
+        val restored = Seg(
+            a = g.origA,
+            b = if (g.origB > g.origA) g.origB else durOf(g.origSrc),
+            sp = g.sp,
+            fz = false,
+            d = 0.0,
+            rev = false,
+            src = g.origSrc
+        )
+        val n = ArrayList(segs)
+        n[segIdx] = restored
+        segs = n
+        calc()
+        sel = segIdx
+        t = lay.off[segIdx]
+        push()
+        build()
+        return "Arah potongan dikembalikan ke normal"
     }
 
     // ------------------------------------------------------------------ kecepatan

@@ -101,9 +101,13 @@ jobs:
         with:
           path: ~/.editorvideo-keystore
           key: keystore-v1
+          restore-keys: |
+            keystore-v1
 
-      - name: Siapkan tanda tangan (keystore)
+      - name: Siapkan tanda tangan (keystore permanen)
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           SECRET_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
@@ -134,16 +138,28 @@ jobs:
             } >> "$GITHUB_ENV"
             echo "Memakai keystore dari secrets repo."
           else
-            # --- Jalur 2: keystore otomatis, disimpan di cache ---
-            if [ -n "$SECRET_KEYSTORE_BASE64$SECRET_KEYSTORE_PASSWORD$SECRET_KEY_ALIAS$SECRET_KEY_PASSWORD" ]; then
-              echo "::warning::Secrets keystore belum lengkap (butuh 4 secret). Memakai keystore otomatis."
-            fi
+            # --- Jalur 2: keystore otomatis permanen (cache + cadangan terenkripsi di release anchor) ---
             KS_DIR="$HOME/.editorvideo-keystore"
             mkdir -p "$KS_DIR"
             chmod 700 "$KS_DIR"
+            ANCHOR_TAG="keystore-anchor"
+            ENC_KEY="ev-ks-${GITHUB_REPOSITORY}-${GITHUB_REPOSITORY_ID:-a05}"
+            export ENC_KEY
+
+            # Bila belum ada di cache lokal, coba unduh dari cadangan release anchor agar tanda tangan tidak pernah berubah
+            if [ ! -s "$KS_DIR/release.jks" ] || [ ! -s "$KS_DIR/pass.txt" ]; then
+              if gh release download "$ANCHOR_TAG" -p "keystore.enc" -O "$RUNNER_TEMP/keystore.enc" --clobber > /dev/null 2>&1; then
+                if openssl enc -d -aes-256-cbc -pbkdf2 -pass env:ENC_KEY -in "$RUNNER_TEMP/keystore.enc" -out "$RUNNER_TEMP/keystore.tar.gz" 2>/dev/null; then
+                  tar -xzf "$RUNNER_TEMP/keystore.tar.gz" -C "$KS_DIR" 2>/dev/null || true
+                  chmod 600 "$KS_DIR/release.jks" "$KS_DIR/pass.txt" 2>/dev/null || true
+                fi
+                rm -f "$RUNNER_TEMP/keystore.enc" "$RUNNER_TEMP/keystore.tar.gz"
+              fi
+            fi
+
             if [ -s "$KS_DIR/release.jks" ] && [ -s "$KS_DIR/pass.txt" ]; then
-              SIGN_MODE="Keystore otomatis (dipulihkan dari cache)"
-              echo "Memakai keystore otomatis dari cache."
+              SIGN_MODE="Keystore permanen (sama dengan versi sebelumnya, bisa langsung timpa/update)"
+              echo "Memakai keystore permanen yang sudah ada."
             else
               rm -f "$KS_DIR/release.jks" "$KS_DIR/pass.txt"
               KS_PASS=$(openssl rand -hex 16)
@@ -154,9 +170,24 @@ jobs:
                 -dname "CN=Editor Video, O=Pribadi, C=ID" > /dev/null 2>&1
               printf '%s' "$KS_PASS" > "$KS_DIR/pass.txt"
               chmod 600 "$KS_DIR/release.jks" "$KS_DIR/pass.txt"
-              SIGN_MODE="Keystore otomatis BARU (tanda tangan berbeda dari build sebelumnya, jika ada)"
-              echo "Keystore otomatis baru dibuat dan akan disimpan ke cache."
+              SIGN_MODE="Keystore permanen baru dibuat"
+              echo "Keystore baru dibuat."
             fi
+
+            # Simpan cadangan terenkripsi ke release anchor supaya lintas-branch & lewat 7 hari tetap memakai sertifikat yang sama
+            tar -czf "$RUNNER_TEMP/keystore.tar.gz" -C "$KS_DIR" release.jks pass.txt
+            if openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ENC_KEY -in "$RUNNER_TEMP/keystore.tar.gz" -out "$RUNNER_TEMP/keystore.enc" 2>/dev/null; then
+              if gh release view "$ANCHOR_TAG" > /dev/null 2>&1; then
+                gh release upload "$ANCHOR_TAG" "$RUNNER_TEMP/keystore.enc" --clobber > /dev/null 2>&1 || true
+              else
+                gh release create "$ANCHOR_TAG" "$RUNNER_TEMP/keystore.enc" \
+                  --title "Keystore Anchor (Internal)" \
+                  --notes "Cadangan keystore terenkripsi otomatis agar update APK selalu bisa menimpa versi lama tanpa uninstall." \
+                  --prerelease > /dev/null 2>&1 || true
+              fi
+            fi
+            rm -f "$RUNNER_TEMP/keystore.tar.gz" "$RUNNER_TEMP/keystore.enc"
+
             KS_PASS=$(cat "$KS_DIR/pass.txt")
             echo "::add-mask::$KS_PASS"
             {

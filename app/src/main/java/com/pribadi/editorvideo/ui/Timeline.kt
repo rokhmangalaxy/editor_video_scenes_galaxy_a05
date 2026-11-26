@@ -620,12 +620,7 @@ private fun drawSegment(
         var i = from
         while (i <= to) {
             val tx = left + (i * tilePx - tg.a * kRate).toFloat()
-            val rawSrcTime = (i + 0.5) * tilePx / kRate
-            val srcTime = if (tg.rev) {
-                clampD(tg.b - (rawSrcTime - tg.a), tg.a, tg.b)
-            } else {
-                rawSrcTime
-            }
+            val srcTime = (i + 0.5) * tilePx / kRate
             drawTile(cv, p, vm.thumbAt(tg.src, srcTime), tx, top, tilePx.toFloat(), bottom, i + tg.src * 7, false)
             i++
         }

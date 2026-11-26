@@ -2,7 +2,6 @@ package com.pribadi.editorvideo.export
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -33,7 +32,6 @@ import androidx.media3.transformer.VideoEncoderSettings
 import com.google.common.collect.ImmutableList
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.VideoInfo
-import com.pribadi.editorvideo.model.clampD
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
@@ -52,7 +50,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 /** Kegagalan ekspor dengan pesan yang siap ditampilkan ke pengguna (bahasa Indonesia). */
 class ExportFailure(message: String) : Exception(message)
@@ -64,14 +61,14 @@ data class ExportOutcome(val files: List<String>, val notes: List<String>)
  * Mesin ekspor berbasis Media3 Transformer.
  *
  * Satu file keluaran = satu Composition berisi urutan potongan:
- *  - klip normal  : MediaItem dengan ClippingConfiguration (a..b), efek kecepatan video + audio, rotasi, cermin, teks
- *  - klip terbalik: urutan frame dari detik b mundur ke a melalui ReverseFrameOverlay, dengan rotasi, cermin, teks
- *  - beku         : gambar JPEG dari frame di detik a, durasi = d / kecepatan, dengan rotasi, cermin, teks yang sama
+ *  - klip  : MediaItem dengan ClippingConfiguration (a..b), efek kecepatan video + audio, rotasi, cermin, teks
+ *  - beku  : gambar JPEG dari frame di detik a, durasi = d / kecepatan, dengan rotasi, cermin, teks yang sama
+ * (Potongan yang sudah dibalik telah dirender menjadi file MP4 terbalik oleh ReverseVideoRenderer,
+ *  sehingga diekspor cepat dan mulus sebagai klip standar.)
  */
 object ExportEngine {
 
     private const val MAX_FREEZE_SIDE = 2560
-    private const val MAX_REVERSE_SIDE = 1280
     private const val MIN_ITEM_US = 100_000L
 
     suspend fun run(
@@ -102,11 +99,12 @@ object ExportEngine {
                 progress(idx, jobs.size, 0f)
 
                 val outFile = File(dir, "hasil_" + idx + ".mp4")
-                var prepared: Prepared? = null
+                var overlay: Bitmap? = null
                 try {
-                    prepared = withContext(Dispatchers.IO) {
+                    val prepared = withContext(Dispatchers.IO) {
                         prepare(app, req, plan, job.segs, dir, idx)
                     }
+                    overlay = prepared.overlay
 
                     runTransformer(app, prepared.composition, outFile.absolutePath, plan, notes) { f ->
                         progress(idx, jobs.size, f)
@@ -129,7 +127,7 @@ object ExportEngine {
                     }
                     saved.add(where)
                 } finally {
-                    prepared?.close()
+                    overlay?.recycle()
                     withContext(NonCancellable + Dispatchers.IO) {
                         cleanDir(dir)
                         dir.mkdirs()
@@ -148,94 +146,7 @@ object ExportEngine {
     // Persiapan: item Composition
     // ---------------------------------------------------------------------------------------------
 
-    private class Prepared(
-        val composition: Composition,
-        val overlay: Bitmap?,
-        val reverseOverlays: List<ReverseFrameOverlay>
-    ) {
-        fun close() {
-            for (ro in reverseOverlays) {
-                ro.close()
-            }
-            overlay?.recycle()
-        }
-    }
-
-    /** Overlay dinamis yang mengambil frame mundur (dari seg.b ke seg.a) selama ekspor klip terbalik. */
-    private class ReverseFrameOverlay(
-        private val context: Context,
-        private val srcUri: Uri,
-        private val srcInfo: VideoInfo,
-        private val seg: Seg,
-        private val targetW: Int,
-        private val targetH: Int,
-        private val stepFps: Double,
-        initialBitmap: Bitmap
-    ) : BitmapOverlay() {
-
-        private var retriever: MediaMetadataRetriever? = null
-        private var currentBmp: Bitmap = initialBitmap
-        private var lastStepIndex: Long = Long.MIN_VALUE
-
-        @Synchronized
-        override fun getBitmap(presentationTimeUs: Long): Bitmap {
-            val uSec = presentationTimeUs / 1_000_000.0
-            val revSec = clampD(seg.b - uSec * seg.sp, seg.a, seg.b)
-            val stepIdx = Math.round(revSec * stepFps)
-            if (stepIdx == lastStepIndex) {
-                return currentBmp
-            }
-            lastStepIndex = stepIdx
-            try {
-                var r = retriever
-                if (r == null) {
-                    r = MediaMetadataRetriever()
-                    r.setDataSource(context, srcUri)
-                    retriever = r
-                }
-                var timeUs = Math.round(revSec * 1_000_000.0)
-                val maxUs = max(0L, (srcInfo.durationMs - 1L) * 1000L)
-                if (maxUs > 0L && timeUs > maxUs) timeUs = maxUs
-                if (timeUs < 0L) timeUs = 0L
-
-                var raw = r.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
-                if (raw == null) raw = r.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                if (raw != null) {
-                    val up = VideoFrames.upright(raw, srcInfo)
-                    val scaled = if (up.width == targetW && up.height == targetH) {
-                        up
-                    } else {
-                        val s = Bitmap.createScaledBitmap(up, targetW, targetH, true)
-                        if (s !== up) up.recycle()
-                        s
-                    }
-                    val old = currentBmp
-                    currentBmp = scaled
-                    if (old !== scaled && !old.isRecycled) {
-                        // Biarkan GC atau recycle saat close jika masih direferensikan tekstur sebelumnya
-                    }
-                }
-            } catch (e: Exception) {
-                // Gunakan currentBmp terakhir bila gagal mengambil frame tunggal
-            }
-            return currentBmp
-        }
-
-        @Synchronized
-        fun close() {
-            try {
-                retriever?.release()
-            } catch (e: Exception) {
-                // diabaikan
-            }
-            retriever = null
-            try {
-                if (!currentBmp.isRecycled) currentBmp.recycle()
-            } catch (e: Exception) {
-                // diabaikan
-            }
-        }
-    }
+    private class Prepared(val composition: Composition, val overlay: Bitmap?)
 
     private fun resolveSource(req: ExportRequest, srcIndex: Int): SourceSpec {
         if (req.sources.isNotEmpty()) {
@@ -244,7 +155,7 @@ object ExportEngine {
         return SourceSpec(req.sourceUri, req.info)
     }
 
-    /** Dijalankan di thread IO: membuat gambar beku, klip terbalik, bitmap teks, dan seluruh EditedMediaItem. */
+    /** Dijalankan di thread IO: membuat gambar beku, bitmap teks, dan seluruh EditedMediaItem. */
     private fun prepare(
         app: Context,
         req: ExportRequest,
@@ -253,10 +164,9 @@ object ExportEngine {
         dir: File,
         jobIdx: Int
     ): Prepared {
-        val hasText = req.text1.isNotEmpty() || req.text2.isNotEmpty()
+        val hasText = req.style1.isNotEmpty || req.style2.isNotEmpty
         val overlay: Bitmap? =
-            if (hasText) OverlayRenderer.render(plan.width, plan.height, req.text1, req.text2) else null
-        val revOverlays = ArrayList<ReverseFrameOverlay>()
+            if (hasText) OverlayRenderer.render(plan.width, plan.height, req.style1, req.style2) else null
         try {
             val items = ArrayList<EditedMediaItem>()
             for (i in segs.indices) {
@@ -264,16 +174,10 @@ object ExportEngine {
                 val spec = resolveSource(req, seg.src)
                 val srcUri = Uri.parse(spec.uri)
                 val srcInfo = spec.info
-                when {
-                    seg.fz -> items.add(
-                        freezeItem(app, req, plan, seg, srcUri, srcInfo, dir, "j" + jobIdx + "_" + i, overlay)
-                    )
-                    seg.rev -> items.add(
-                        reverseItem(app, req, plan, seg, srcUri, srcInfo, dir, "r" + jobIdx + "_" + i, overlay, revOverlays)
-                    )
-                    else -> items.add(
-                        clipItem(req, plan, seg, srcUri, srcInfo, overlay)
-                    )
+                if (seg.fz) {
+                    items.add(freezeItem(app, req, plan, seg, srcUri, srcInfo, dir, "j" + jobIdx + "_" + i, overlay))
+                } else {
+                    items.add(clipItem(req, plan, seg, srcUri, srcInfo, overlay))
                 }
             }
             val sequence = EditedMediaItemSequence(items)
@@ -283,13 +187,10 @@ object ExportEngine {
             } else {
                 req.info.hasAudio
             }
-            // Potongan beku/terbalik tidak punya audio: minta Transformer membuat audio senyap supaya urutan tetap utuh.
             builder.experimentalSetForceAudioTrack(anyAudio)
-            // Video HDR dari ponsel lain diubah ke SDR agar encoder A05 tidak gagal.
             builder.setHdrMode(Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL)
-            return Prepared(builder.build(), overlay, revOverlays)
+            return Prepared(builder.build(), overlay)
         } catch (e: Throwable) {
-            for (ro in revOverlays) ro.close()
             overlay?.recycle()
             throw e
         }
@@ -320,7 +221,7 @@ object ExportEngine {
         val speed = seg.sp
         val audio: List<AudioProcessor> =
             if (srcInfo.hasAudio && abs(speed - 1.0) > 0.0001) audioSpeed(speed) else emptyList()
-        val video = videoEffects(req, plan, speed, false, overlay, null)
+        val video = videoEffects(req, plan, speed, false, overlay)
 
         val b = EditedMediaItem.Builder(mediaItem)
         if (!srcInfo.hasAudio) b.setRemoveAudio(true)
@@ -362,53 +263,7 @@ object ExportEngine {
         val durationUs = max(MIN_ITEM_US, Math.round(seg.len * 1_000_000.0))
         val frameRate = max(1, Math.round(plan.fps).toInt())
 
-        val video = videoEffects(req, plan, 1.0, true, overlay, null)
-        return EditedMediaItem.Builder(mediaItem)
-            .setDurationUs(durationUs)
-            .setFrameRate(frameRate)
-            .setEffects(Effects(emptyList<AudioProcessor>(), video))
-            .build()
-    }
-
-    private fun reverseItem(
-        app: Context,
-        req: ExportRequest,
-        plan: ExportPlan,
-        seg: Seg,
-        srcUri: Uri,
-        srcInfo: VideoInfo,
-        dir: File,
-        tag: String,
-        overlay: Bitmap?,
-        revOverlays: MutableList<ReverseFrameOverlay>
-    ): EditedMediaItem {
-        val startMs = Math.round(seg.b * 1000.0)
-        var bmp = VideoFrames.grabFrame(app, srcUri, startMs, srcInfo)
-            ?: throw ExportFailure("Gagal mengambil frame untuk potongan terbalik. Coba ekspor ulang.")
-        bmp = VideoFrames.limitLongSide(bmp, MAX_REVERSE_SIDE)
-        val baseW = bmp.width
-        val baseH = bmp.height
-        val file = File(dir, "rev_" + tag + ".jpg")
-        FileOutputStream(file).use { out ->
-            if (!bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)) {
-                bmp.recycle()
-                throw ExportFailure("Gagal menyiapkan frame awal potongan terbalik.")
-            }
-        }
-
-        val effFps = min(20.0, max(10.0, plan.fps))
-        val revOverlay = ReverseFrameOverlay(app, srcUri, srcInfo, seg, baseW, baseH, effFps, bmp)
-        revOverlays.add(revOverlay)
-
-        val mediaItem = MediaItem.Builder()
-            .setUri(Uri.fromFile(file))
-            .setMimeType(MimeTypes.IMAGE_JPEG)
-            .build()
-
-        val durationUs = max(MIN_ITEM_US, Math.round(seg.len * 1_000_000.0))
-        val frameRate = max(1, Math.round(plan.fps).toInt())
-
-        val video = videoEffects(req, plan, 1.0, true, overlay, revOverlay)
+        val video = videoEffects(req, plan, 1.0, true, overlay)
         return EditedMediaItem.Builder(mediaItem)
             .setDurationUs(durationUs)
             .setFrameRate(frameRate)
@@ -426,20 +281,16 @@ object ExportEngine {
 
     /**
      * Rantai efek video per item:
-     *   [frame terbalik (bila ada)] -> [kecepatan] -> [buang frame] -> [putar] -> [cermin] -> [ukuran akhir] -> [teks]
+     *   [kecepatan] -> [buang frame] -> [putar] -> [cermin] -> [ukuran akhir] -> [teks]
      */
     private fun videoEffects(
         req: ExportRequest,
         plan: ExportPlan,
         speed: Double,
         isImage: Boolean,
-        overlay: Bitmap?,
-        reverseOverlay: ReverseFrameOverlay?
+        overlay: Bitmap?
     ): List<Effect> {
         val list = ArrayList<Effect>()
-        if (reverseOverlay != null) {
-            list.add(OverlayEffect(ImmutableList.of<TextureOverlay>(reverseOverlay)))
-        }
         if (!isImage) {
             if (abs(speed - 1.0) > 0.0001) list.add(SpeedChangeEffect(speed.toFloat()))
             if (plan.dropFrames || speed > 1.0001) {

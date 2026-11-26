@@ -4,8 +4,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// versionCode = nomor run GitHub Actions supaya build baru selalu bisa menimpa yang lama.
+// versionCode selalu naik di setiap build & percobaan ulang supaya APK baru selalu bisa langsung menimpa (update) versi lama.
 val runNumber: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+val runAttempt: Int = System.getenv("GITHUB_RUN_ATTEMPT")?.toIntOrNull() ?: 1
+val computedVersionCode: Int = runNumber * 10 + runAttempt
 
 // Keystore dibaca dari environment (diisi oleh build.yml). Isinya tidak pernah disimpan di repo.
 val keystorePath: String? = System.getenv("KEYSTORE_PATH")
@@ -19,7 +21,7 @@ android {
         applicationId = "com.pribadi.editorvideo"
         minSdk = 28
         targetSdk = 34
-        versionCode = runNumber
+        versionCode = computedVersionCode
         versionName = "1.0.$runNumber"
     }
 

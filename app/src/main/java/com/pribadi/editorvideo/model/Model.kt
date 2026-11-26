@@ -38,9 +38,59 @@ fun clampD(v: Double, a: Double, b: Double): Double = min(b, max(a, v))
 fun jsRound(v: Double): Double = floor(v + 0.5)
 
 /**
+ * Konfigurasi kustomisasi kaya untuk satu layer teks overlay.
+ * Default text = "" (kosong).
+ */
+data class TextOverlayConfig(
+    val text: String = "",
+    val sizeScale: Float = 1.0f,
+    val posX: Float = 0.5f,
+    val posY: Float = 0.12f,
+    val fontIndex: Int = 0,
+    val alignIndex: Int = 1,
+    val fillColor: Int = 0xFFFFE45C.toInt(),
+    val strokeColor: Int = 0xFF4A2FB0.toInt(),
+    val strokeScale: Float = 1.0f,
+    val bgColor: Int = 0x00000000,
+    val shadow: Boolean = true
+) {
+    val isNotEmpty: Boolean get() = text.isNotEmpty()
+
+    companion object {
+        fun defaultTop(): TextOverlayConfig = TextOverlayConfig(
+            text = "",
+            sizeScale = 1.0f,
+            posX = 0.5f,
+            posY = 0.12f,
+            fontIndex = 0,
+            alignIndex = 1,
+            fillColor = 0xFFFFE45C.toInt(),
+            strokeColor = 0xFF4A2FB0.toInt(),
+            strokeScale = 1.0f,
+            bgColor = 0x00000000,
+            shadow = true
+        )
+
+        fun defaultBottom(): TextOverlayConfig = TextOverlayConfig(
+            text = "",
+            sizeScale = 1.0f,
+            posX = 0.5f,
+            posY = 0.88f,
+            fontIndex = 0,
+            alignIndex = 1,
+            fillColor = 0xFFFFFFFF.toInt(),
+            strokeColor = 0xFFF2C22A.toInt(),
+            strokeScale = 0.85f,
+            bgColor = 0x00000000,
+            shadow = true
+        )
+    }
+}
+
+/**
  * Satu potongan di timeline.
- *  - klip   : {a, b, sp, rev, src}       (a..b detik dari video sumber ke-src, kecepatan sp, arah mundur rev)
- *  - beku   : {fz=true, a, d, sp, src}   (gambar statis dari frame di detik a pada sumber ke-src, durasi dasar d)
+ *  - klip   : {a, b, sp, rev, src, origSrc, origA, origB}
+ *  - beku   : {fz=true, a, d, sp, src}
  * Durasi di timeline = (b - a) / sp  atau  d / sp.
  */
 data class Seg(
@@ -50,7 +100,10 @@ data class Seg(
     val fz: Boolean = false,
     val d: Double = 0.0,
     val rev: Boolean = false,
-    val src: Int = 0
+    val src: Int = 0,
+    val origSrc: Int = -1,
+    val origA: Double = 0.0,
+    val origB: Double = 0.0
 ) {
     /** Durasi dasar (sebelum dibagi kecepatan). */
     val baseLen: Double get() = if (fz) d else b - a
@@ -90,11 +143,7 @@ class SegLayout(val segs: List<Seg>) {
             val l = g.len
             if (tt < off[i] + l || i == segs.size - 1) {
                 val u = clampD(tt - off[i], 0.0, l)
-                val s = when {
-                    g.fz -> g.a
-                    g.rev -> clampD(g.b - u * g.sp, g.a, g.b)
-                    else -> clampD(g.a + u * g.sp, g.a, g.b)
-                }
+                val s = if (g.fz) g.a else clampD(g.a + u * g.sp, g.a, g.b)
                 return Located(i, u, s)
             }
         }
