@@ -4079,10 +4079,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         UpdateLogEntry(
             version = "$installedVersionLabel (Terbaru)",
             date = "27/11/2026",
-            title = "Pembagian Durasi Sama (Dobel/Tripel), Label Seek 2 Durasi, Replace Multi-Scene Berurutan & Frame dari Scene Tetangga",
+            title = "Pembagian Durasi Sama (Dobel/Tripel), Label Seek Ringkas, Replace Multi-Scene Berurutan & Frame dari Scene Tetangga",
             items = listOf(
                 "✓ [Pengembangan] Pembagian Durasi Sama: 1 Video (maks 10.0 dtk), Dobel (maks 5 dtk × 2 = 10.0 dtk), atau Tripel (maks 3.5 dtk × 3 = 10.5 dtk) — durasi dibagi RATA otomatis (mis. 7.0 dtk → 3.5 + 3.5, 10.5 dtk → 3.5 × 3) dan bisa diatur lewat slider total durasi.",
-                "✓ [Pengembangan] Label Seek menampilkan 2 durasi sekaligus: durasi dari AWAL VIDEO ke posisi seek, serta durasi dari AWAL SCENE yang sedang fokus ke posisi seek.",
+                "✓ [Pengembangan] Label seek di timeline kini ringkas: posisi waktu total + timestamp kecil durasi dari awal scene fokus ke playhead (tanpa teks panjang).",
                 "✓ [Pengembangan] AI Replace Multi-Scene Berurutan: ganti beberapa scene sekaligus (mulai scene terpilih) dalam satu kali generate — tiap scene dijalankan sebagai workflow terpisah sehingga total durasi bisa melebihi 10.5 dtk.",
                 "✓ [Pengembangan] Opsi Frame Awal AI dari frame TERAKHIR scene sebelumnya dan Frame Akhir AI dari frame AWAL scene berikutnya, lengkap dengan pratinjau thumbnail & navigasi scene sebelumnya/berikutnya."
             )

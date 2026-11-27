@@ -144,7 +144,7 @@ private class TlPaints(val d: Float, palette: EvPalette) {
         typeface = Typeface.create(Typeface.DEFAULT, 600, false)
         textAlign = Paint.Align.RIGHT
     }
-    /** Label kecil "dari awal video / dari awal klip" di bawah posisi playhead. */
+    /** Timestamp kecil durasi scene aktif (dari awal scene ke playhead). */
     val seekText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = palette.yellow.toArgb()
         textSize = 8.5f * d
@@ -608,12 +608,10 @@ private fun drawTimeline(
     )
     cv.drawText(Fmt.time(t), cx, base, p.curText)
 
-    // Info seek: durasi dari AWAL VIDEO + durasi dari AWAL SCENE yang sedang fokus (di bawah playhead)
+    // Info seek ringkas: timestamp durasi dari AWAL SCENE yang sedang fokus (tanpa teks panjang)
     val seekSegIdx = core.locate(t).i.coerceIn(0, segs.size - 1)
-    val sceneStartTimelineSec = core.lay.off[seekSegIdx]
-    val seekInsideScene = (t - sceneStartTimelineSec).coerceAtLeast(0.0)
-    val seekInfoText = "dari awal video ${Fmt.time2(t)} · dari awal klip #${seekSegIdx + 1} ${Fmt.time2(seekInsideScene)}"
-    cv.drawText(seekInfoText, cx, base + 12f * d, p.seekText)
+    val seekInsideScene = (t - core.lay.off[seekSegIdx]).coerceAtLeast(0.0)
+    cv.drawText(Fmt.time2(seekInsideScene), cx, base + 11f * d, p.seekText)
 
     cv.drawText("Total " + Fmt.time(core.total), w - 14f * d, base, p.totText)
 }
