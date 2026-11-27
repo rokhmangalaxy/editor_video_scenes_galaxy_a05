@@ -20,9 +20,8 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch yang akan di-build (default: branch ini)'
+        description: 'Branch yang akan di-build'
         required: true
-        default: '${{ github.ref_name }}'
         type: choice
         options:
           - arena/302ee537-editor-video-scenes-galaxy-a05
