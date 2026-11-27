@@ -3576,9 +3576,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ preferensi & catatan
 
+    /** Label versi asli dari APK yang terpasang (selalu sama dengan versionName build CI). */
+    private val installedVersionLabel: String = runCatching {
+        val ctx = getApplication<Application>()
+        val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+        "v${info.versionName}"
+    }.getOrDefault("v1.0.20")
+
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.19 (Terbaru)",
+            version = "$installedVersionLabel (Terbaru)",
             date = "27/11/2026",
             title = "Kandidat AI, Mode Tunggal 10s, Fix Berantai & Rotasi AI, Tanda (Markers) + Gabung Scene Instan",
             items = listOf(
