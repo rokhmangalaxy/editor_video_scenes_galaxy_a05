@@ -6,6 +6,7 @@ import com.pribadi.editorvideo.model.VideoInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -330,14 +331,45 @@ data class AiRunnerConfig(
 /** Rencana eksekusi segmen ZeroGPU untuk Mode Sisipkan maupun Mode Replace Scene. */
 data class AiExecutionPlan(
     val workMode: AiWorkMode,
+    /** Durasi SLOT timeline yang diinginkan pengguna (0.1 dtk grid, hasil splitEvenly). Dipakai UI & sebagai basis hitung kecepatan. */
     val segDurs: List<Double>,
     val targetTotalSec: Double,
     val autoMergeDefault: Boolean,
     val sceneOrigLenSec: Double = 0.0,
     val overZeroGpuLimit: Boolean = false,
-    val note: String = ""
+    val note: String = "",
+    /** Durasi GENERATE yang AMAN untuk Space AI (0.25 dtk grid). Null = sama dengan [segDurs] (tidak perlu penyesuaian). */
+    val genDurs: List<Double>? = null,
+    /** Pesan penolakan rencana (total generate melebihi batas 1 workflow). Bila tidak null, generate tidak boleh jalan. */
+    val blockReason: String? = null
 ) {
     val count: Int get() = segDurs.size
+
+    /** Durasi generate untuk segmen ke-[index]; null/0 = gunakan slot (tidak ada penyesuaian). */
+    fun genAt(index: Int): Double = genDurs?.getOrNull(index) ?: segDurs.getOrNull(index) ?: 0.0
+
+    /** Slot timeline untuk segmen ke-[index]. */
+    fun slotAt(index: Int): Double = segDurs.getOrNull(index) ?: 0.0
+
+    /** Kecepatan yang dipakai agar hasil AI mengisi slot timeline tepat (genDur / slotDur). 1.0 = tidak ada penyesuaian. */
+    fun speedAt(index: Int): Double {
+        val slot = slotAt(index)
+        val gen = genAt(index)
+        if (slot <= 0.0 || gen <= 0.0) return 1.0
+        return gen / slot
+    }
+
+    /** Ringkasan kecepatan penyesuai (mis. "3.5→3.3 dtk 1.06x"), kosong bila tidak ada penyesuaian. */
+    val speedAdjustNote: String
+        get() {
+            val parts = ArrayList<String>()
+            for (i in segDurs.indices) {
+                val sp = speedAt(i)
+                if (abs(sp - 1.0) < 0.005) continue
+                parts.add("${Fmt.one(genAt(i))}→${Fmt.one(slotAt(i))} dtk ${Fmt.one(sp)}x")
+            }
+            return parts.joinToString(" · ")
+        }
 }
 
 /** Fase progres eksekusi beserta status timeout terpisah. */
@@ -454,6 +486,71 @@ object AiPlanner {
     const val ABSOLUTE_MAX_TOTAL_SEC = 10.5
 
     /**
+     * Grid durasi AMAN untuk Space Wan 2.2: jumlah frame dihitung `1 + round(detik × 16)` dan harus
+     * memenuhi aturan temporal VAE (kelipatan 4 frame + 1). Artinya `round(detik × 16)` wajib habis
+     * dibagi 4 → durasi harus kelipatan 0.25 dtk. Contoh: 3.5 / 5.0 / 7.0 aman, 3.3 / 5.2 / 2.4 gagal.
+     */
+    const val SAFE_DUR_STEP = 0.25
+
+    /** Durasi terdekat ke ATAS yang aman untuk Space AI (kelipatan [SAFE_DUR_STEP] dtk). */
+    fun safeDur(dur: Double): Double {
+        if (dur <= 0.0) return 0.0
+        val steps = kotlin.math.ceil(dur / SAFE_DUR_STEP - 1e-6).toInt()
+        return Math.round(steps * SAFE_DUR_STEP * 100.0) / 100.0
+    }
+
+    /** True bila [dur] sudah aman untuk Space AI (tidak perlu digenapkan). */
+    fun isSafeDur(dur: Double): Boolean = abs(safeDur(dur) - dur) < 0.006
+
+    /** Batas wajar penyesuaian kecepatan agar hasil AI tidak terlihat aneh. */
+    const val SPEED_SOFT_MIN = 0.9
+    const val SPEED_SOFT_MAX = 1.15
+
+    /**
+     * Merencanakan slot durasi timeline [segDurs] menjadi durasi generate yang AMAN untuk Space AI
+     * tanpa pernah memotong hasil AI:
+     * - tiap slot digenapkan ke atas ke kelipatan 0.25 dtk (grid frame aman),
+     * - bila total hasil genap masih muat di 1 workflow, dipakai apa adanya,
+     * - bila tidak muat tetapi masih bisa "dipadatkan", tiap segmen dinaikkan semaksimal mungkin
+     *   lalu dikompensasi lewat kecepatan (> 1x = agak dipercepat, hasil AI tetap utuh),
+     * - bila tetap tidak muat → rencana [blocked] dengan pesan jelas.
+     */
+    fun planSpeedAdjustedSlots(segDurs: List<Double>): SpeedAdjustedPlan {
+        if (segDurs.isEmpty()) return SpeedAdjustedPlan(emptyList(), emptyList(), null)
+        val slots = segDurs.map { Math.round(max(ZEROGPU_MIN_REPLACE_SEC, it) * 100.0) / 100.0 }
+        var gens = slots.map { safeDur(it) }
+        val maxWf = maxWorkflowDurationFor(gens)
+        if (gens.sum() <= maxWf + 1e-6) {
+            return SpeedAdjustedPlan(gens, slots, null)
+        }
+        // Padatkan: tiap segmen dapat jatah sama, dibulatkan ke BAWAH ke grid aman (supaya tidak melebihi batas).
+        val perSeg = Math.floor((maxWf / slots.size) / SAFE_DUR_STEP + 1e-9) * SAFE_DUR_STEP
+        val packedGen = Math.round(perSeg * 100.0) / 100.0
+        if (packedGen >= ZEROGPU_MIN_REPLACE_SEC) {
+            gens = slots.map { packedGen }
+            if (gens.sum() <= maxWf + 1e-6) {
+                return SpeedAdjustedPlan(gens, slots, null)
+            }
+        }
+        val total = slots.sum()
+        return SpeedAdjustedPlan(
+            emptyList(),
+            slots,
+            "Total ${Fmt.one(total)} dtk tidak bisa dibagi ke ${slots.size} video dalam 1 workflow " +
+                "AI (maks ${Fmt.one(maxWf)} dtk). Turunkan total durasi atau jumlah pembagian."
+        )
+    }
+
+    /** Hasil perencanaan penyesuaian kecepatan (lihat [planSpeedAdjustedSlots]). */
+    data class SpeedAdjustedPlan(
+        val genDurs: List<Double>,
+        val slotDurs: List<Double>,
+        val blockReason: String?
+    ) {
+        val blocked: Boolean get() = blockReason != null
+    }
+
+    /**
      * Membagi total durasi menjadi [parts] segmen dengan durasi SAMA (dibulatkan 0.1 dtk, sisa dibagikan
      * ke segmen-segmen awal) dengan batas maksimum per segmen [maxSegSec].
      * Contoh: 10.0 dtk dibagi 2 → 5.0 + 5.0 · 10.5 dtk dibagi 3 → 3.5 + 3.5 + 3.5 · 7.0 dtk dibagi 3 → 2.4/2.3/2.3.
@@ -476,21 +573,51 @@ object AiPlanner {
     /**
      * Merencanakan pembagian durasi sesuai [split] (Tunggal / Dobel ≤5×2 / Tripel ≤3.5×3) untuk Mode Sisipkan.
      */
+    /** Kepala catatan durasi yang menyesuaikan: "Generate 3.5 dtk (slot 3.3 dtk = 1.06x)" bila ada, atau "Generate {dur} dtk" bila tidak. */
+    private fun speedAdjustHead(slots: List<Double>, genDurs: List<Double>, split: AiDurationSplit): String {
+        if (genDurs.size != slots.size) return ""
+        val sb = StringBuilder()
+        for (i in slots.indices) {
+            val sp = genDurs[i] / slots[i]
+            if (abs(sp - 1.0) >= 0.005) {
+                sb.append("Generate ${Fmt.one(genDurs[i])} dtk (slot ${Fmt.one(slots[i])} dtk = ${Fmt.one(sp)}x) · ")
+            }
+        }
+        return sb.toString()
+    }
+
     fun planInsertWithSplit(totalSec: Double, split: AiDurationSplit): AiExecutionPlan {
-        val perSeg = splitEvenly(totalSec, split.maxSegs, split.maxSegSec)
-        val total = perSeg.sum()
-        val note = when (split) {
-            AiDurationSplit.AUTO_1 -> "Mode Tunggal · 1 video utuh ${Fmt.one(total)} dtk (tanpa dipecah)"
-            AiDurationSplit.DOUBLE_5 ->
-                "Dobel · ${perSeg.size} video durasi sama (${perSeg.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(total)} dtk, maks 5 dtk/video)"
-            AiDurationSplit.TRIPLE_35 ->
-                "Tripel · ${perSeg.size} video durasi sama (${perSeg.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(total)} dtk, maks 3.5 dtk/video)"
+        val slots = splitEvenly(totalSec, split.maxSegs, split.maxSegSec)
+        val total = slots.sum()
+        val adj = planSpeedAdjustedSlots(slots)
+        if (adj.blocked) {
+            return AiExecutionPlan(
+                workMode = AiWorkMode.INSERT,
+                segDurs = slots,
+                targetTotalSec = total,
+                autoMergeDefault = false,
+                note = adj.blockReason,
+                genDurs = null,
+                blockReason = adj.blockReason
+            )
+        }
+        val note = buildString {
+            append(speedAdjustHead(slots, adj.genDurs, split))
+            append(" · ")
+            append(when (split) {
+                AiDurationSplit.AUTO_1 -> "1 video utuh"
+                AiDurationSplit.DOUBLE_5 -> "Dobel · ${slots.size} video"
+                AiDurationSplit.TRIPLE_35 -> "Tripel · ${slots.size} video"
+                else -> "${slots.size} video"
+            })
+            append(" (${slots.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(total)} dtk${if (adj.genDurs != slots) " · generate AI ${adj.genDurs.joinToString(" + ") { Fmt.one(it) }}" else ""})")
         }
         return AiExecutionPlan(
             workMode = AiWorkMode.INSERT,
-            segDurs = perSeg,
+            segDurs = slots,
             targetTotalSec = total,
             autoMergeDefault = false,
+            genDurs = adj.genDurs,
             note = note
         )
     }
@@ -507,32 +634,46 @@ object AiPlanner {
     ): AiExecutionPlan {
         val clamped = min(ABSOLUTE_MAX_TOTAL_SEC, max(ZEROGPU_MIN_REPLACE_SEC, requestedSec))
         val capped = min(clamped, split.maxTotalSec)
-        val perSeg = splitEvenly(capped, split.maxSegs, split.maxSegSec)
-        val total = perSeg.sum()
-        val note = when (split) {
-            AiDurationSplit.AUTO_1 ->
-                if (total < 3.45) {
-                    "Mode Tunggal · 1 × 3.5 dtk → auto-trim presisi ke ${Fmt.one(total)} dtk"
-                } else {
-                    "Mode Tunggal · 1 video utuh ${Fmt.one(total)} dtk (bukan ${split.maxSegs} segmen)"
-                }
-            else -> buildString {
-                append(split.label)
-                append(" · ")
-                append(perSeg.joinToString(" + ") { Fmt.one(it) })
-                append(" = ${Fmt.one(total)} dtk")
-                if (capped + 0.05 < clamped) {
-                    append(" (dibatasi maks ${Fmt.one(split.maxTotalSec)} dtk untuk ${split.shortLabel})")
+        val slots = splitEvenly(capped, split.maxSegs, split.maxSegSec)
+        val total = slots.sum()
+        val adj = planSpeedAdjustedSlots(slots)
+        val note = buildString {
+            if (adj.blocked) {
+                append(adj.blockReason)
+            } else {
+                append(speedAdjustHead(slots, adj.genDurs, split))
+                when (split) {
+                    AiDurationSplit.AUTO_1 -> {
+                        if (total < 3.45) {
+                            append("Mode Tunggal · 1 video 3.5 dtk generate, dijalankan ${Fmt.one(total)} dtk di timeline")
+                        } else {
+                            append("Mode Tunggal · 1 video utuh ${Fmt.one(total)} dtk")
+                        }
+                    }
+                    else -> {
+                        append(split.label)
+                        append(" · ")
+                        append(slots.joinToString(" + ") { Fmt.one(it) })
+                        append(" = ${Fmt.one(total)} dtk")
+                        if (capped + 0.05 < clamped) {
+                            append(" (dibatasi maks ${Fmt.one(split.maxTotalSec)} dtk untuk ${split.shortLabel})")
+                        }
+                        if (adj.genDurs != slots) {
+                            append(" · generate AI ${adj.genDurs.joinToString(" + ") { Fmt.one(it) }}")
+                        }
+                    }
                 }
             }
         }
         return AiExecutionPlan(
             workMode = AiWorkMode.REPLACE_SCENE,
-            segDurs = perSeg,
+            segDurs = slots,
             targetTotalSec = total,
             autoMergeDefault = false,
             sceneOrigLenSec = sceneOrigLenSec,
             overZeroGpuLimit = sceneOrigLenSec > ZERO_GPU_HARD_MAX_SEC + 0.05,
+            genDurs = if (adj.blocked) null else adj.genDurs,
+            blockReason = adj.blockReason,
             note = note
         )
     }

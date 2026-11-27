@@ -1873,18 +1873,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val split = aiDurationSplit
             val perSceneTotal = mp?.totalSec ?: aiReplaceTargetDurSec
             val perSceneList = mp?.perSceneDurs ?: listOf(aiReplaceTargetDurSec)
-            val segDurs = ArrayList<Double>()
+            val slots = ArrayList<Double>()
             for (sceneDur in perSceneList) {
-                segDurs.addAll(AiPlanner.splitEvenly(sceneDur, split.maxSegs, split.maxSegSec))
+                slots.addAll(AiPlanner.splitEvenly(sceneDur, split.maxSegs, split.maxSegSec))
             }
+            val adj = AiPlanner.planSpeedAdjustedSlots(slots)
+            val note = (mp?.note ?: "") + " · ${slots.size} video AI" +
+                if (adj.genDurs != slots) " · generate AI ${adj.genDurs.joinToString(" + ") { Fmt.one(it) }}" else ""
             AiExecutionPlan(
                 workMode = AiWorkMode.REPLACE_SCENE,
-                segDurs = segDurs,
+                segDurs = slots,
                 targetTotalSec = perSceneTotal,
                 autoMergeDefault = false,
                 sceneOrigLenSec = selectedSceneDurationSec(),
                 overZeroGpuLimit = perSceneTotal > AiPlanner.ABSOLUTE_MAX_TOTAL_SEC + 0.05,
-                note = (mp?.note ?: "") + " · ${segDurs.size} video AI"
+                genDurs = if (adj.blocked) null else adj.genDurs,
+                blockReason = adj.blockReason,
+                note = note
             )
         } else {
             AiPlanner.planReplaceWithSplit(aiReplaceTargetDurSec, selectedSceneDurationSec(), aiDurationSplit)
@@ -2297,6 +2302,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val plan = currentAiExecutionPlan()
+        if (plan.blockReason != null) {
+            toast(plan.blockReason)
+            aiActiveTab = AiTab.PLAN
+            return
+        }
         for (i in 1..plan.count) {
             if (promptForSegmentOneBased(i).isBlank()) {
                 toast("Isi teks prompt untuk Segmen #$i terlebih dahulu")
@@ -2446,7 +2456,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                             order = 1,
                             space = spaceSnap,
                             prompt = promptsSnap[idx],
-                            durationSec = plan.segDurs[idx],
+                            durationSec = plan.genAt(idx),
                             safeMode = safeSnap,
                             enableSafetyChecker = safetySnap,
                             firstBmp = rollingFirstBmp,
@@ -2548,7 +2558,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     // - Mode Tunggal: 1 video utuh langsung (mis. 10.0 dtk langsung 1 MP4)
                     // - Mode Berantai v3: begitu Video #1 selesai, firebase_worker.py mengekstrak frame paling akhir
                     //   hasil AI #1 sebagai input Video #2 tepat di dalam workflow yang sama!
-                    val batchReqs = plan.segDurs.mapIndexed { idx, dur ->
+                    val batchReqs = plan.segDurs.indices.map { idx ->
                         val isLastSeg = idx == plan.segDurs.lastIndex
                         val segLastBmp = if (!useChain) {
                             finalTargetLastBmp
@@ -2562,7 +2572,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                             order = idx + 1,
                             space = spaceSnap,
                             prompt = promptsSnap[idx],
-                            durationSec = dur,
+                            durationSec = plan.genAt(idx),
                             safeMode = safeSnap,
                             enableSafetyChecker = safetySnap,
                             firstBmp = initialFirstBmp,
@@ -2703,8 +2713,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 AiGeneratedSegment(
                     id = "aiseg_err_${System.currentTimeMillis()}_${nextIdx + 1}",
                     segNumber = nextIdx + 1,
-                    requestedDurSec = plan.segDurs[nextIdx],
-                    actualDurSec = plan.segDurs[nextIdx],
+                    requestedDurSec = plan.genAt(nextIdx),
+                    actualDurSec = plan.genAt(nextIdx),
                     mp4File = null,
                     info = null,
                     previewBmp = nextFirst,
@@ -2905,15 +2915,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val plan = aiSnapshotPlan ?: currentAiExecutionPlan()
         val audioModeSnap = aiReplaceAudioMode
 
-        // Hitung durasi pakai per segmen agar pada Mode Replace Scene totalnya presisi sesuai slider/scene!
+        // Hitung slot durasi per segmen agar pada Mode Replace Scene totalnya presisi sesuai slider/scene!
+        // Speed-fit: hasil AI tidak dipotong; kecepatan disesuaikan agar video mengisi slot timeline tepat.
         val targetCap = if (mode == AiWorkMode.REPLACE_SCENE) plan.targetTotalSec else Double.MAX_VALUE
         var remainingAllowance = targetCap
         val clippedChosen = ArrayList<Triple<File, VideoInfo, Double>>()
-        for (sg in chosen) {
+        for (idx in chosen.indices) {
             if (remainingAllowance < Rules.MIN) break
-            val useSec = min(sg.actualDurSec, remainingAllowance)
-            clippedChosen.add(Triple(sg.mp4File!!, sg.info!!, max(Rules.MIN, useSec)))
-            remainingAllowance -= useSec
+            val sg = chosen[idx]
+            val slotDur = min(plan.slotAt(idx), remainingAllowance)
+            if (slotDur < Rules.MIN) continue
+            clippedChosen.add(Triple(sg.mp4File!!, sg.info!!, slotDur))
+            remainingAllowance -= slotDur
         }
         if (clippedChosen.isEmpty()) {
             toast("Durasi hasil tidak mencukupi")
@@ -3173,13 +3186,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         outDir = outDir
                     )
                     val newIdx = sources.size
-                    val fullDur = max(Rules.MIN, inf.durationMs / 1000.0)
+                    val genDur = max(Rules.MIN, inf.durationMs / 1000.0)
                     sources.add(MediaSource(Uri.fromFile(f), inf))
-                    val uniq = min(150, max(10, ceil(fullDur * 3.0).toInt()))
+                    val uniq = min(150, max(10, ceil(genDur * 3.0).toInt()))
                     sourceThumbs.add(arrayOfNulls(uniq))
                     sourceThumbReady.add(0)
-                    addedDurPairs.add(newIdx to fullDur)
-                    segSpecs.add(Triple(newIdx, fullDur, min(fullDur, useDur)))
+                    addedDurPairs.add(newIdx to genDur)
+                    // Speed-fit: (srcIdx, genDur=hasil AI penuh, slotDur=durasi timeline yang diisi)
+                    segSpecs.add(Triple(newIdx, genDur, useDur))
                 }
 
                 core.registerAddedSourceDurs(addedDurPairs)
@@ -4079,9 +4093,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         UpdateLogEntry(
             version = "$installedVersionLabel (Terbaru)",
             date = "27/11/2026",
-            title = "Pembagian Durasi Sama (Dobel/Tripel), Label Seek Ringkas, Replace Multi-Scene Berurutan & Frame dari Scene Tetangga",
+            title = "Kustomisasi Kecepatan AI, Perbaikan Generasi Durasi Lainnya & Label Seek Ringkas",
             items = listOf(
-                "✓ [Pengembangan] Pembagian Durasi Sama: 1 Video (maks 10.0 dtk), Dobel (maks 5 dtk × 2 = 10.0 dtk), atau Tripel (maks 3.5 dtk × 3 = 10.5 dtk) — durasi dibagi RATA otomatis (mis. 7.0 dtk → 3.5 + 3.5, 10.5 dtk → 3.5 × 3) dan bisa diatur lewat slider total durasi.",
+                "✓ [Pengembangan] Hasil AI kini tidak dipotong untuk menyesuaikan durasi timeline; alih-alih kecepatan video disesuaikan (otentik 0.9×–1.15×, atau lebih bila perlu) agar hasil AI tetap utuh dan mengisi slot durasi yang ditentukan — baca catatan di bawah untuk detail teknis.",
+                "✓ [Bug Fixed] Generasi AI kini bekerja untuk durasi lain selain 3.5/5/7 dtk: durasi generate dibulatkan ke ATAS ke kelipatan 0.25 dtk (grid frame aman Space Wan 2.2) dan kecepatan disesuaikan agar timeline tetap presisi sesuai slider/scene.",
+                "✓ [Bug Fixed] Bila total durasi tidak bisa dibagi tanpa melebihi batas 10.0 dtk workflow (mis. 10.5 dtk ÷ 2 → 5.5+5.5=11 dtk), generate ditolak dengan pesan jelas agar user menurunkan total — bukan error umum 'Data tugas tidak valid'.",
                 "✓ [Pengembangan] Label seek di timeline kini ringkas: posisi waktu total + timestamp kecil durasi dari awal scene fokus ke playhead (tanpa teks panjang).",
                 "✓ [Pengembangan] AI Replace Multi-Scene Berurutan: ganti beberapa scene sekaligus (mulai scene terpilih) dalam satu kali generate — tiap scene dijalankan sebagai workflow terpisah sehingga total durasi bisa melebihi 10.5 dtk.",
                 "✓ [Pengembangan] Opsi Frame Awal AI dari frame TERAKHIR scene sebelumnya dan Frame Akhir AI dari frame AWAL scene berikutnya, lengkap dengan pratinjau thumbnail & navigasi scene sebelumnya/berikutnya."

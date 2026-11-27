@@ -852,12 +852,14 @@ class EditorCore {
         if (newSegSpecs.isEmpty()) return "Tidak ada hasil AI yang dipilih"
         onPause()
 
-        val aiSegs = newSegSpecs.map { (srcIdx, fullSrcDur, useDur) ->
-            val endB = clampD(useDur, Rules.MIN, max(Rules.MIN, fullSrcDur))
+        val aiSegs = newSegSpecs.map { (srcIdx, genDur, slotDur) ->
+            // Speed-fit: bangun Seg dengan durasi generate penuh dan kecepatan adjustments
+            // sehingga panjang timeline menjadi tepat slotDur (tanpa memotong hasil AI).
+            val sp = if (slotDur > Rules.MIN) genDur / slotDur else 1.0
             Seg(
                 a = 0.0,
-                b = endB,
-                sp = 1.0,
+                b = max(Rules.MIN, genDur),
+                sp = sp,
                 fz = false,
                 d = 0.0,
                 src = srcIdx,
@@ -947,12 +949,13 @@ class EditorCore {
         val orig = segs[idx]
         val mergedTags = (orig.tags + tagName).distinct()
 
-        val aiSegs = newSegSpecs.map { (srcIdx, fullSrcDur, useDur) ->
-            val endB = clampD(useDur, Rules.MIN, max(Rules.MIN, fullSrcDur))
+        val aiSegs = newSegSpecs.map { (srcIdx, genDur, slotDur) ->
+            // Speed-fit: bangun Seg dengan durasi generate penuh dan kecepatan adjustments.
+            val sp = if (slotDur > Rules.MIN) genDur / slotDur else 1.0
             Seg(
                 a = 0.0,
-                b = endB,
-                sp = 1.0,
+                b = max(Rules.MIN, genDur),
+                sp = sp,
                 fz = false,
                 d = 0.0,
                 src = srcIdx,
@@ -1021,12 +1024,13 @@ class EditorCore {
             }
             val orig = segs[k]
             val mergedTags = (orig.tags + tagName).distinct()
-            val aiSegs = rep.newSegSpecs.map { (srcIdx, fullSrcDur, useDur) ->
-                val endB = clampD(useDur, Rules.MIN, max(Rules.MIN, fullSrcDur))
+            val aiSegs = rep.newSegSpecs.map { (srcIdx, genDur, slotDur) ->
+                // Speed-fit: bangun Seg dengan durasi generate penuh dan kecepatan adjustments.
+                val sp = if (slotDur > Rules.MIN) genDur / slotDur else 1.0
                 Seg(
                     a = 0.0,
-                    b = endB,
-                    sp = 1.0,
+                    b = max(Rules.MIN, genDur),
+                    sp = sp,
                     fz = false,
                     d = 0.0,
                     src = srcIdx,
