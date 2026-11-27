@@ -9,8 +9,8 @@
 #   - Paling stabil: isi 4 secret repo (Settings -> Secrets and variables -> Actions):
 #       KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
 #   - Jika secret tidak diisi: keystore dibuat otomatis (password acak, tidak ditampilkan di log)
-#     lalu disimpan di cache GitHub Actions (kunci tetap: keystore-v1) supaya tanda tangan sama
-#     di build berikutnya. Cache bisa hilang (mis. tidak dipakai 7 hari). Jika hilang, tanda
+#     lalu disimpan di cache GitHub Actions (kunci tetap: keystore-v1) supaya tanda
+#     tangan sama di build berikutnya. Cache bisa hilang (mis. tidak dipakai 7 hari). Jika hilang, tanda
 #     tangan berubah dan aplikasi lama harus di-uninstall dulu sebelum memasang yang baru.
 #   - Keystore TIDAK PERNAH disimpan di repo dan password TIDAK PERNAH dicetak ke log.
 
@@ -18,6 +18,15 @@ name: Build APK
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch yang akan di-build (default: branch ini)'
+        required: true
+        default: '${{ github.ref_name }}'
+        type: choice
+        options:
+          - arena/302ee537-editor-video-scenes-galaxy-a05
+          - main
   push:
     paths:
       - 'app/**'
@@ -44,6 +53,7 @@ jobs:
       - name: Ambil isi repo
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
           persist-credentials: false
 
       - name: Periksa struktur proyek
@@ -118,13 +128,13 @@ jobs:
           if [ -n "$SECRET_KEYSTORE_BASE64" ] && [ -n "$SECRET_KEYSTORE_PASSWORD" ] && [ -n "$SECRET_KEY_ALIAS" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
             # --- Jalur 1: keystore dari secrets repo ---
             KS_FILE="$RUNNER_TEMP/release.jks"
-            if ! printf '%s' "$SECRET_KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$KS_FILE" 2>/dev/null; then
+            if ! printf '%s' "$SECRET_KEYSTORE_BASE64" | tr -d ' \\r\\n' | base64 -d > "$KS_FILE" 2>/dev/null; then
               echo "::error title=KEYSTORE_BASE64 tidak valid::Isi secret KEYSTORE_BASE64 bukan base64 yang benar."
               exit 1
             fi
-            KS_PASS=$(printf '%s' "$SECRET_KEYSTORE_PASSWORD" | tr -d '\r\n')
-            KEY_PASS=$(printf '%s' "$SECRET_KEY_PASSWORD" | tr -d '\r\n')
-            KEY_ALIAS=$(printf '%s' "$SECRET_KEY_ALIAS" | tr -d '\r\n')
+            KS_PASS=$(printf '%s' "$SECRET_KEYSTORE_PASSWORD" | tr -d '\\r\\n')
+            KEY_PASS=$(printf '%s' "$SECRET_KEY_PASSWORD" | tr -d '\\r\\n')
+            KEY_ALIAS=$(printf '%s' "$SECRET_KEY_ALIAS" | tr -d '\\r\\n')
             export KS_PASS
             if ! keytool -list -keystore "$KS_FILE" -storepass:env KS_PASS -alias "$KEY_ALIAS" > /dev/null 2>&1; then
               echo "::error title=Secrets keystore tidak cocok::Keystore tidak bisa dibuka atau alias tidak ditemukan. Periksa KEYSTORE_BASE64, KEYSTORE_PASSWORD, dan KEY_ALIAS."
