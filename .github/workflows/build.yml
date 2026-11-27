@@ -77,6 +77,10 @@ jobs:
           cache-provider: basic
           add-job-summary: never
           validate-wrappers: false
+          # Invalidasi cache Gradle & Compose compiler untuk menghindari error tersembunyi dari cache rusak
+          gradle-properties: |
+            org.gradle.build.cache.enabled=false
+            kotlin.compiler.execution.strategy=in-process
 
       - name: Terima lisensi dan siapkan Android SDK
         run: |
@@ -204,7 +208,9 @@ jobs:
           set -o pipefail
           cd "$PROJECT_DIR"
           gradle --version
-          gradle --no-daemon --console=plain --stacktrace assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          # Bersihkan build sebelumnya untuk menghindari cache yang rusak
+          gradle --no-daemon --console=plain clean 2>&1 | tail -n 5
+          gradle --no-daemon --console=plain --stacktrace --info assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Cari APK dan periksa tanda tangan
         run: |
