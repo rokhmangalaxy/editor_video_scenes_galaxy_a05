@@ -531,7 +531,7 @@ private fun Controls(vm: EditorViewModel) {
             ) {
                 Ico(
                     id = R.drawable.ic_loop,
-                    tint = if (vm.previewLoop) Color.White else Ev.Text2,
+                    tint = if (vm.previewLoop) Color.White else Ev.Text,
                     size = 19.dp
                 )
             }

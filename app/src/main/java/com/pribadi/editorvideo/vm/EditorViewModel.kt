@@ -1940,7 +1940,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.11 (Terbaru)",
+            version = "v1.0.12 (Terbaru)",
             date = "27/11/2026",
             title = "Ekspor Berdasarkan Tag, Toggle Loop Preview & Shortcut Sesuai Video Asli",
             items = listOf(

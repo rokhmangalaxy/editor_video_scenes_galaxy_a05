@@ -7,10 +7,19 @@ import com.pribadi.editorvideo.model.VideoInfo
 enum class ExportMode { VIDEO, ALL, CURRENT, BY_TAG }
 
 /** Bentuk keluaran saat mengekspor berdasarkan Tag (ExportMode.BY_TAG). */
-enum class ByTagExportStyle(val label: String) {
-    MERGE_SINGLE("Gabung 1 Video"),
-    SPLIT_CLIPS("Pisah per Klip"),
-    PER_TAG("1 File per Tag")
+enum class ByTagExportStyle(val label: String, val sub: String) {
+    MERGE_SINGLE(
+        "Gabung 1 Video",
+        "Seluruh klip bertag terpilih digabung urut timeline menjadi 1 berkas MP4."
+    ),
+    SPLIT_CLIPS(
+        "Pisah per Klip",
+        "Setiap klip bertag terpilih diekspor menjadi berkas MP4 terpisah."
+    ),
+    PER_TAG(
+        "1 File per Tag",
+        "Setiap Tag terpilih menghasilkan 1 berkas MP4 gabungan klip tag tersebut."
+    )
 }
 
 /** Spesifikasi satu sumber video yang diimpor. */

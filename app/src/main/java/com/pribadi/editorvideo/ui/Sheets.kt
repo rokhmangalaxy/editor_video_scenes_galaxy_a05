@@ -3003,7 +3003,7 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
                     .fillMaxWidth()
                     .padding(bottom = 8.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Ev.Surface)
+                    .background(Ev.Bg)
                     .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
                     .padding(12.dp)
             ) {
@@ -3075,7 +3075,7 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
                                 )
                                 Text(
                                     text = "#$tagName ($count)",
-                                    color = if (selected) Ev.Text else Ev.Text2,
+                                    color = if (selected) Ev.Text else Ev.Muted,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                     fontSize = 12.5.sp
                                 )
@@ -3138,7 +3138,7 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(if (origActive) Ev.Accent else Ev.Surface),
+                        .background(if (origActive) Ev.Accent else Ev.Bg),
                     contentAlignment = Alignment.Center
                 ) {
                     Ico(
@@ -3164,7 +3164,7 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (origActive) Ev.Accent else Ev.Surface)
+                    .background(if (origActive) Ev.Accent else Ev.Bg)
                     .border(1.dp, if (origActive) Ev.Accent else Ev.Line, RoundedCornerShape(10.dp))
                     .padding(horizontal = 9.dp, vertical = 4.dp)
             ) {
