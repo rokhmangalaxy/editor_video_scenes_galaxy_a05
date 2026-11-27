@@ -74,10 +74,12 @@ private const val HD_H = 42f
 private const val HD_R = 6f
 private const val HIT_X = 10f
 private const val HIT_Y = 6f
-private const val RULER_TOP = 84f
+private const val RULER_TOP = 104f
 private const val HEAD_TOP = 6f
 private const val HEAD_BOTTOM_INSET = 30f
-private const val TIMES_TOP = 124f
+private const val TIMES_TOP = 144f
+private const val OVL_TOP = 68f
+private const val OVL_H = 16f
 
 private val RULER_STEPS = doubleArrayOf(0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
 
@@ -144,6 +146,23 @@ private class TlPaints(val d: Float, palette: EvPalette) {
         typeface = Typeface.create(Typeface.DEFAULT, 600, false)
         textAlign = Paint.Align.RIGHT
     }
+    /** Track overlay (multilayer): latar lane + klip overlay + label mode. */
+    val ovlLaneBg = Paint().apply { color = 0x14FFFFFF }
+    val ovlClip = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCF59E0B.toInt() }
+    val ovlClipPip = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC38BDF8.toInt() }
+    val ovlClipSplit = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC10B981.toInt() }
+    val ovlSelected = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.8f * d
+        color = 0xFFFFFFFF.toInt()
+    }
+    val ovlText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF101014.toInt()
+        textSize = 8.5f * d
+        typeface = Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.LEFT
+    }
+
     /** Label kecil "dari awal video / dari awal klip" di bawah posisi playhead. */
     val seekText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = palette.yellow.toArgb()
@@ -219,7 +238,7 @@ fun Timeline(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier = Mod
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(158.dp)
+            .height(178.dp)
             .background(Ev.Bg)
     ) {
         Canvas(
@@ -568,6 +587,40 @@ private fun drawTimeline(
     // handle trim pada potongan terpilih
     val edges = selEdges(vm, cx, ppsPx)
     drawHandles(cv, p, edges[0], edges[1])
+
+    // === TRACK OVERLAY (multilayer) =========================================
+    val ovlClips = vm.timelineOverlays()
+    if (ovlClips.isNotEmpty()) {
+        val laneTop = OVL_TOP * d
+        val laneH = OVL_H * d
+        cv.drawRect(0f, laneTop, w, laneTop + laneH, p.ovlLaneBg)
+        for ((idx2, ov) in ovlClips.withIndex()) {
+            val lane = (idx2 % 2)
+            val top = laneTop + lane * (laneH / 2f) + 1f * d
+            val bottom = top + laneH / 2f - 2f * d
+            val left = cx + ((ov.startT - t) * ppsPx).toFloat()
+            val right = cx + ((ov.endT - t) * ppsPx).toFloat()
+            if (right < -4f * d || left > w + 4f * d) continue
+            val paint = when (ov.mode) {
+                com.pribadi.editorvideo.model.OverlayMode.REPLACE_VISUAL -> p.ovlClip
+                com.pribadi.editorvideo.model.OverlayMode.PIP_CORNER -> p.ovlClipPip
+                com.pribadi.editorvideo.model.OverlayMode.SPLIT_HALF -> p.ovlClipSplit
+            }
+            p.rect.set(left, top, right, bottom)
+            cv.drawRoundRect(p.rect, 3f * d, 3f * d, paint)
+            if (vm.selectedOverlayId == ov.id) {
+                cv.drawRoundRect(p.rect, 3f * d, 3f * d, p.ovlSelected)
+            }
+            val label = ov.label.ifEmpty { ov.mode.shortLabel }
+            if (right - left > 34f * d) {
+                cv.save()
+                cv.clipRect(p.rect)
+                val fmO = p.ovlText.fontMetrics
+                cv.drawText(label, left + 2.5f * d, bottom - 2f * d - fmO.descent, p.ovlText)
+                cv.restore()
+            }
+        }
+    }
 
     // Tanda (Markers) kuning di atas track & garis penanda vertikal
     val projectedMarkers = vm.timelineProjectedMarkers()

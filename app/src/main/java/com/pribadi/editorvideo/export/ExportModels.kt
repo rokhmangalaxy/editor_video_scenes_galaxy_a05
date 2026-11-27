@@ -1,5 +1,6 @@
 package com.pribadi.editorvideo.export
 
+import com.pribadi.editorvideo.model.OverlayClip
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.TextOverlayConfig
 import com.pribadi.editorvideo.model.VideoInfo
@@ -80,7 +81,11 @@ data class ExportRequest(
     val selectedExportTags: List<String> = emptyList(),
     val byTagStyle: ByTagExportStyle = ByTagExportStyle.MERGE_SINGLE,
     val specRef: ExportSpecRef = ExportSpecRef.MAIN_ORIGINAL,
-    val scaleFit: ExportScaleFit = ExportScaleFit.FIT_LETTERBOX
+    val scaleFit: ExportScaleFit = ExportScaleFit.FIT_LETTERBOX,
+    /** Track overlay (multilayer). Fase 1: overlay dibakar (bake) per klip terdampak. */
+    val overlays: List<OverlayClip> = emptyList(),
+    /** False = track overlay disembunyikan pengguna (scene asli yang diekspor). */
+    val overlayTrackVisible: Boolean = true
 )
 
 /** Satu file keluaran: sufiks nama file dan potongan yang dimuat. */

@@ -72,6 +72,7 @@ import com.pribadi.editorvideo.export.ExportSpecRef
 import com.pribadi.editorvideo.export.ExportState
 import com.pribadi.editorvideo.export.OverlayRenderer
 import com.pribadi.editorvideo.export.SceneMarkerMode
+import com.pribadi.editorvideo.model.OverlayMode
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.vm.EditorViewModel
@@ -3629,5 +3630,354 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+// =============================================================================================
+// TRACK OVERLAY (MULTILAYER) — Fase 1
+// =============================================================================================
+
+/**
+ * Panel pengelola Track Overlay: daftar overlay, tambah dari posisi seek, atur mode
+ * (Penuh / PiP / Split), posisi sudut, opasitas, geser waktu, dan hapus.
+ * Semua bersifat NON-DESTRUKTIF: scene utama di timeline tidak pernah diubah.
+ */
+@Composable
+fun OverlayTrackSheet(vm: EditorViewModel, onClose: () -> Unit) {
+    val overlays = vm.timelineOverlays()
+    val selId = vm.selectedOverlayId
+    val sel = overlays.firstOrNull { it.id == selId } ?: overlays.firstOrNull()
+
+    FloatingSheetPanel(onTapOutside = onClose) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "🎬 Track Overlay (Multilayer)",
+                    color = Ev.Text,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+                Text(
+                    text = "Non-destruktif: scene utama tetap utuh, overlay bisa dimatikan kapan pun.",
+                    color = Ev.Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp
+                )
+            }
+            SmallIconButton(R.drawable.ic_close, onClose)
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Toggle tampil/sembunyi + jumlah overlay
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (vm.overlayTrackVisible) Ev.Accent else Ev.Ghost)
+                    .border(1.dp, if (vm.overlayTrackVisible) Ev.Accent else Ev.Line, RoundedCornerShape(10.dp))
+                    .clickable { vm.toggleOverlayTrackVisible() }
+                    .padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (vm.overlayTrackVisible) "👁 Track Tampil" else "🚫 Track Disembunyikan",
+                    color = Color.White,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Ev.Ghost)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${overlays.size} klip",
+                    color = Ev.Yellow,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Tambah overlay baru dari posisi seek saat ini
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OverlaySmallBtn("＋ Penuh", Modifier.weight(1f), !vm.hasVideo) {
+                vm.addOverlayFromPlayhead(OverlayMode.REPLACE_VISUAL)
+            }
+            OverlaySmallBtn("＋ PiP", Modifier.weight(1f), !vm.hasVideo) {
+                vm.addOverlayFromPlayhead(OverlayMode.PIP_CORNER)
+            }
+            OverlaySmallBtn("＋ Split", Modifier.weight(1f), !vm.hasVideo) {
+                vm.addOverlayFromPlayhead(OverlayMode.SPLIT_HALF)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (overlays.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Ev.Bg)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                    .padding(14.dp)
+            ) {
+                Text(
+                    text = "Belum ada overlay. Arahkan playhead ke posisi yang diinginkan lalu ketuk salah satu tombol ＋ di atas, " +
+                        "atau hasilkan video AI lalu pilih \"🎬 Overlay Penuh / 🪟 Overlay PiP\" di Tab Status.",
+                    color = Ev.Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            }
+        } else {
+            // Daftar overlay
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (ov in overlays) {
+                    val active = ov.id == sel?.id
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (active) Ev.Accent.copy(alpha = 0.18f) else Ev.Bg)
+                            .border(
+                                width = if (active) 1.5.dp else 1.dp,
+                                color = if (active) Ev.Accent else Ev.Line,
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            .clickable { vm.selectOverlay(ov.id) }
+                            .padding(horizontal = 9.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = (ov.label.ifEmpty { "Overlay" }) + " · " + ov.mode.shortLabel,
+                                color = Ev.Text,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                            Text(
+                                text = "${Fmt.time(ov.startT)} → ${Fmt.time(ov.endT)} · ${Fmt.one(ov.len)} dtk · " +
+                                    "${(ov.rect.opacity * 100).toInt()}%",
+                                color = Ev.Muted,
+                                fontSize = 10.sp
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Ev.Ghost)
+                                .clickable { vm.removeOverlay(ov.id) }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Text(text = "🗑", color = Ev.Text, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (sel != null) {
+                OverlayEditorCard(vm, sel)
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            ActionButton("✕ Hapus Semua Overlay", false, Modifier.fillMaxWidth()) { vm.clearOverlays() }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        ActionButton("Tutup", false, Modifier.fillMaxWidth(), onClick = onClose)
+    }
+}
+
+@Composable
+private fun OverlayEditorCard(vm: EditorViewModel, ov: com.pribadi.editorvideo.model.OverlayClip) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Accent.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            text = "ATUR OVERLAY TERPILIH",
+            color = Ev.Muted,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Mode overlay
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            for (m in com.pribadi.editorvideo.model.OverlayMode.entries) {
+                OverlayChip(
+                    label = m.shortLabel,
+                    active = ov.mode == m
+                ) { vm.updateOverlay(ov.id, mode = m) }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = "Posisi & Ukuran", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(5.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            OverlayChip("Penuh", ov.rect.w > 0.98 && ov.rect.h > 0.98) { vm.setOverlayPresetRect(ov.id, "FULL") }
+            OverlayChip("↖", ov.rect.corner == 0 && ov.rect.w < 0.99) { vm.setOverlayPresetRect(ov.id, "TL") }
+            OverlayChip("↗", ov.rect.corner == 1 && ov.rect.w < 0.99) { vm.setOverlayPresetRect(ov.id, "TR") }
+            OverlayChip("↙", ov.rect.corner == 2 && ov.rect.w < 0.99) { vm.setOverlayPresetRect(ov.id, "BL") }
+            OverlayChip("↘", ov.rect.corner == 3 && ov.rect.w < 0.99) { vm.setOverlayPresetRect(ov.id, "BR") }
+            OverlayChip("◀ Belah", false) { vm.setOverlayPresetRect(ov.id, "SPLIT_L") }
+            OverlayChip("Belah ▶", false) { vm.setOverlayPresetRect(ov.id, "SPLIT_R") }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = "Opasitas", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "${(ov.rect.opacity * 100).toInt()}%",
+                color = Ev.Yellow,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Slider(
+            value = ov.rect.opacity.toFloat().coerceIn(0.05f, 1f),
+            onValueChange = { vm.setOverlayOpacity(ov.id, it.toDouble()) },
+            valueRange = 0.05f..1f,
+            colors = SliderDefaults.colors(
+                thumbColor = Ev.Yellow,
+                activeTrackColor = Ev.Accent,
+                inactiveTrackColor = Ev.Line
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(text = "Geser Waktu", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(5.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            OverlaySmallBtn("⏪ -1s", Modifier.weight(1f), false) { vm.moveOverlayBy(ov.id, -1.0) }
+            OverlaySmallBtn("◀ -0.2s", Modifier.weight(1f), false) { vm.moveOverlayBy(ov.id, -0.2) }
+            OverlaySmallBtn("+0.2s ▶", Modifier.weight(1f), false) { vm.moveOverlayBy(ov.id, 0.2) }
+            OverlaySmallBtn("+1s ⏩", Modifier.weight(1f), false) { vm.moveOverlayBy(ov.id, 1.0) }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(text = "Fade & Audio", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(5.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            OverlayChip("Tanpa Fade", ov.fadeInSec <= 0.0 && ov.fadeOutSec <= 0.0) {
+                vm.setOverlayFade(ov.id, 0.0, 0.0)
+            }
+            OverlayChip("Fade 0.3s", ov.fadeInSec > 0.0 && ov.fadeInSec < 0.5) {
+                vm.setOverlayFade(ov.id, 0.3, 0.3)
+            }
+            OverlayChip("Fade 0.8s", ov.fadeInSec >= 0.5 && ov.fadeInSec < 1.2) {
+                vm.setOverlayFade(ov.id, 0.8, 0.8)
+            }
+            OverlayChip(if (ov.muted) "🔇 Audio Bisu" else "🔊 Audio ON", !ov.muted) {
+                vm.setOverlayMuted(ov.id, !ov.muted)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OverlaySmallBtn("📍 Ke Playhead", Modifier.weight(1f), false) {
+                vm.updateOverlay(ov.id, startT = vm.core.t)
+            }
+            OverlaySmallBtn("🎨 Gaya ke Semua", Modifier.weight(1f), vm.timelineOverlays().size < 2) {
+                vm.applyOverlayStyleToAll(ov.id)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverlayChip(label: String, active: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) Ev.Accent else Ev.Ghost)
+            .border(1.dp, if (active) Ev.Accent else Ev.Line, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun OverlaySmallBtn(label: String, modifier: Modifier, disabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .alpha(if (disabled) 0.4f else 1f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Ev.Ghost)
+            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+            .clickable(enabled = !disabled, onClick = onClick)
+            .padding(vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = Ev.Text,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
     }
 }

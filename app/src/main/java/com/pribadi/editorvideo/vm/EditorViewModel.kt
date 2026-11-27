@@ -68,6 +68,9 @@ import com.pribadi.editorvideo.export.VideoFrames
 import com.pribadi.editorvideo.export.VideoProbe
 import com.pribadi.editorvideo.model.EditorCore
 import com.pribadi.editorvideo.model.Fmt
+import com.pribadi.editorvideo.model.OverlayClip
+import com.pribadi.editorvideo.model.OverlayMode
+import com.pribadi.editorvideo.model.OverlayRect
 import com.pribadi.editorvideo.model.ProjectedMarker
 import com.pribadi.editorvideo.model.Rules
 import com.pribadi.editorvideo.model.SceneAiReplace
@@ -193,6 +196,30 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val core = EditorCore()
     val player: ExoPlayer = ExoPlayer.Builder(app).build()
+
+    /** Player kedua khusus memutar klip TRACK OVERLAY (multilayer, non-destruktif). */
+    val overlayPlayer: ExoPlayer = ExoPlayer.Builder(app).build()
+
+    /** Overlay yang sedang tampil di pratinjau (null = tidak ada overlay di posisi ini). */
+    var activeOverlay by mutableStateOf<OverlayClip?>(null)
+        private set
+
+    /** True bila track overlay ditampilkan di pratinjau (toggle mata). */
+    var overlayTrackVisible by mutableStateOf(true)
+        private set
+
+    /** True bila panel Track Overlay sedang terbuka. */
+    var overlaySheet by mutableStateOf(false)
+
+    /** Overlay yang sedang dipilih untuk diedit (null = tidak ada). */
+    var selectedOverlayId by mutableStateOf<Long?>(null)
+        private set
+
+    private var overlayAttachedSrc: Int = -1
+    private var overlayAttachedStart: Double = -1.0
+
+    /** Jumlah overlay pada timeline (untuk badge UI). */
+    val overlayCount: Int get() = core.overlays.size
 
     // ------------------------------------------------------------------ state untuk UI
 
@@ -600,6 +627,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         clearGridFrameCaches()
         try {
             player.release()
+        } catch (e: Exception) {
+            // diabaikan
+        }
+        try {
+            overlayPlayer.release()
         } catch (e: Exception) {
             // diabaikan
         }
@@ -1120,6 +1152,324 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         captureNeighborFrames(wantFirst = true)
         captureNeighborFrames(wantFirst = false)
         bump()
+    }
+
+    // ------------------------------------------------------------------ TRACK OVERLAY (multilayer, Fase 1)
+
+    /** Daftar overlay pada timeline (urut waktu mulai). */
+    fun timelineOverlays(): List<OverlayClip> = core.visibleOverlays
+
+    fun selectOverlay(id: Long?) {
+        selectedOverlayId = id
+        bump()
+    }
+
+    fun toggleOverlayTrackVisible() {
+        overlayTrackVisible = !overlayTrackVisible
+        if (!overlayTrackVisible) {
+            pauseOverlayPlayer()
+            activeOverlay = null
+        } else {
+            syncOverlayPreview(force = true)
+        }
+        bump()
+        toast(if (overlayTrackVisible) "Track overlay ditampilkan" else "Track overlay disembunyikan (scene asli terlihat)")
+    }
+
+    /**
+     * Menambahkan klip pada TRACK OVERLAY (non-destruktif) — scene utama TIDAK diubah sama sekali,
+     * sehingga hasil AI bisa dipakai sebagai lapisan yang bisa dimatikan kapan pun.
+     */
+    fun addOverlayClip(
+        src: Int,
+        a: Double,
+        b: Double,
+        startT: Double,
+        mode: OverlayMode = OverlayMode.REPLACE_VISUAL,
+        label: String = "",
+        muted: Boolean = true
+    ) {
+        val rect = if (mode == OverlayMode.REPLACE_VISUAL) OverlayRect.fullFrame() else OverlayRect.pipCorner(3)
+        val msg = core.addOverlay(src, a, b, startT, mode, rect, 1.0, label, muted)
+        refreshDerived()
+        syncOverlayPreview(force = true)
+        bump()
+        toast(msg)
+    }
+
+    /** Menambahkan overlay dari posisi seek saat ini (memakai klip yang sedang aktif di timeline). */
+    fun addOverlayFromPlayhead(mode: OverlayMode) {
+        if (!hasVideo || core.segs.isEmpty()) {
+            toast("Impor video dulu")
+            return
+        }
+        pause()
+        val loc = core.locate(core.t)
+        val g = core.segs.getOrNull(loc.i) ?: return
+        if (g.fz) {
+            toast("Klip beku belum bisa dijadikan overlay")
+            return
+        }
+        val maxLen = min(5.0, max(Rules.MIN, g.len))
+        val startA = loc.s
+        val startB = min(g.b, startA + maxLen)
+        val alreadyOtherSrc = core.overlays.lastOrNull()?.let { it.src == g.src && abs(it.startT - core.t) < 0.2 } == true
+        if (alreadyOtherSrc) {
+            toast("Overlay pada posisi ini sudah ada")
+            return
+        }
+        addOverlayClip(g.src, startA, startB, core.t, mode, label = "Overlay ${core.overlays.size + 1}")
+    }
+
+    /** Menerapkan track overlay dari hasil AI: rentang scene asli tetap utuh, hasil AI jadi lapisan di atasnya. */
+    fun addAiResultsAsOverlay(mode: OverlayMode = OverlayMode.REPLACE_VISUAL) {
+        if (aiMergingClips) return
+        val chosen = aiGeneratedSegments.filter {
+            it.selected && !it.failed && it.mp4File != null && it.info != null
+        }
+        if (chosen.isEmpty()) {
+            toast("Pilih minimal 1 hasil video AI terlebih dahulu")
+            return
+        }
+        aiMergingClips = true
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            try {
+                if (availableTags.none { it.equals("AI", ignoreCase = true) }) {
+                    val nextTags = availableTags + "AI"
+                    availableTags = nextTags
+                    val arr = JSONArray()
+                    nextTags.forEach { arr.put(it) }
+                    prefs.edit().putString(KEY_CUSTOM_TAGS, arr.toString()).apply()
+                }
+                val outDir = File(ctx.filesDir, "ai_videos")
+                if (!outDir.exists()) outDir.mkdirs()
+                val multiPlan = aiSnapshotMultiScenePlan
+                val baseStartT = if (aiSnapshotWorkMode == AiWorkMode.INSERT) {
+                    aiSnapshotInsertSeekSec
+                } else {
+                    val segIdx = multiPlan?.startSegIdx ?: aiSnapshotReplaceSegIdx
+                    core.lay.off.getOrElse(segIdx.coerceIn(0, core.segs.lastIndex)) { 0.0 }
+                }
+                var cursorT = baseStartT
+                var added = 0
+                val firstNewSrcIdx = sources.size
+                for ((idx, sg) in chosen.withIndex()) {
+                    val fRaw = sg.mp4File ?: continue
+                    val infRaw = sg.info ?: continue
+                    val (f, inf) = WanStudioClient.ensureExpectedOrientation(
+                        context = ctx,
+                        mp4File = fRaw,
+                        probedInfo = infRaw,
+                        expectedPortrait = null,
+                        outDir = outDir
+                    )
+                    val newIdx = sources.size
+                    sources.add(MediaSource(Uri.fromFile(f), inf))
+                    val fullDur = max(Rules.MIN, inf.durationMs / 1000.0)
+                    val uniq = min(150, max(10, ceil(fullDur * 3.0).toInt()))
+                    sourceThumbs.add(arrayOfNulls(uniq))
+                    sourceThumbReady.add(0)
+                    val useDur = max(Rules.MIN, min(fullDur, sg.actualDurSec))
+                    core.registerAddedSourceDurs(listOf(newIdx to fullDur))
+                    core.addOverlay(
+                        src = newIdx,
+                        a = 0.0,
+                        b = useDur,
+                        startT = cursorT,
+                        mode = mode,
+                        rect = if (mode == OverlayMode.REPLACE_VISUAL) OverlayRect.fullFrame() else OverlayRect.pipCorner(3),
+                        label = "AI #${idx + 1}"
+                    )
+                    cursorT += useDur
+                    added++
+                }
+                overlayTrackVisible = true
+                refreshDerived()
+                syncOverlayPreview(force = true)
+                aiMergingClips = false
+                aiSheet = false
+                bump()
+                startThumbsFrom(firstNewSrcIdx)
+                toast(
+                    if (added > 0) "🎬 $added klip AI masuk ke Track Overlay (scene asli tetap utuh)"
+                    else "Gagal menambahkan overlay AI"
+                )
+            } catch (e: Exception) {
+                aiMergingClips = false
+                bump()
+                toast("Gagal membuat overlay AI: " + (e.message ?: "Error"))
+            }
+        }
+    }
+
+    fun removeOverlay(id: Long) {
+        val msg = core.removeOverlay(id)
+        if (selectedOverlayId == id) selectedOverlayId = null
+        refreshDerived()
+        syncOverlayPreview(force = true)
+        bump()
+        toast(msg)
+    }
+
+    fun clearOverlays() {
+        val msg = core.clearOverlays()
+        selectedOverlayId = null
+        pauseOverlayPlayer()
+        activeOverlay = null
+        refreshDerived()
+        bump()
+        toast(msg)
+    }
+
+    fun updateOverlay(
+        id: Long,
+        startT: Double? = null,
+        mode: OverlayMode? = null,
+        rect: OverlayRect? = null,
+        fadeInSec: Double? = null,
+        fadeOutSec: Double? = null,
+        muted: Boolean? = null,
+        sp: Double? = null
+    ) {
+        if (sp != null) {
+            val cur = core.overlayById(id) ?: return
+            val nextA = cur.a
+            val nextB = min(cur.b, nextA + cur.len * sp)
+            core.updateOverlay(id, a = nextA, b = nextB, sp = sp)
+        }
+        core.updateOverlay(
+            id = id,
+            startT = startT,
+            mode = mode,
+            rect = rect,
+            fadeInSec = fadeInSec,
+            fadeOutSec = fadeOutSec,
+            muted = muted
+        )
+        refreshDerived()
+        syncOverlayPreview(force = true)
+        bump()
+    }
+
+    fun moveOverlayBy(id: Long, deltaSec: Double) {
+        core.moveOverlay(id, deltaSec)
+        syncOverlayPreview(force = true)
+        bump()
+    }
+
+    fun applyOverlayStyleToAll(id: Long) {
+        val msg = core.applyOverlayStyleToAll(id)
+        syncOverlayPreview(force = true)
+        bump()
+        toast(msg)
+    }
+
+    fun setOverlayPresetRect(id: Long, preset: String) {
+        val rect = when (preset) {
+            "FULL" -> OverlayRect.fullFrame()
+            "TL" -> OverlayRect.fromCorner(0)
+            "TR" -> OverlayRect.fromCorner(1)
+            "BL" -> OverlayRect.fromCorner(2)
+            "BR" -> OverlayRect.fromCorner(3)
+            "SPLIT_L" -> OverlayRect(0.0, 0.0, 0.5, 1.0, 1.0, 0)
+            "SPLIT_R" -> OverlayRect(0.5, 0.0, 0.5, 1.0, 1.0, 0)
+            else -> return
+        }
+        val mode = if (preset == "FULL") OverlayMode.REPLACE_VISUAL else OverlayMode.PIP_CORNER
+        core.updateOverlay(id, rect = rect, mode = mode)
+        syncOverlayPreview(force = true)
+        bump()
+    }
+
+    /** Mengatur fade in/out overlay (detik). */
+    fun setOverlayFade(id: Long, fadeInSec: Double? = null, fadeOutSec: Double? = null) {
+        core.updateOverlay(id, fadeInSec = fadeInSec, fadeOutSec = fadeOutSec)
+        syncOverlayPreview(force = true)
+        bump()
+    }
+
+    /** Mengatur apakah audio overlay ikut terdengar (default bisu agar audio scene asli dominan). */
+    fun setOverlayMuted(id: Long, muted: Boolean) {
+        core.updateOverlay(id, muted = muted)
+        syncOverlayPreview(force = true)
+        bump()
+        toast(if (muted) "Audio overlay dibisukan" else "Audio overlay diaktifkan")
+    }
+
+    fun setOverlayOpacity(id: Long, opacity: Double) {
+        val cur = core.overlayById(id) ?: return
+        core.updateOverlay(id, rect = cur.rect.copy(opacity = opacity.coerceIn(0.05, 1.0)))
+        bump()
+    }
+
+    // --- Sinkronisasi player overlay dengan posisi timeline ---
+
+    private fun pauseOverlayPlayer() {
+        try {
+            if (overlayPlayer.isPlaying) overlayPlayer.pause()
+        } catch (e: Exception) {
+            // diabaikan
+        }
+    }
+
+    /** Dipanggil dari tick(), seek, dan perubahan track overlay untuk menjaga sinkronisasi pratinjau. */
+    fun syncOverlayPreview(force: Boolean = false) {
+        if (!hasVideo || core.segs.isEmpty()) {
+            activeOverlay = null
+            pauseOverlayPlayer()
+            return
+        }
+        if (!overlayTrackVisible) {
+            activeOverlay = null
+            pauseOverlayPlayer()
+            return
+        }
+        val top = core.topOverlayAt(core.t)
+        activeOverlay = top
+        if (top == null) {
+            pauseOverlayPlayer()
+            overlayAttachedSrc = -1
+            overlayAttachedStart = -1.0
+            return
+        }
+        val src = sources.getOrNull(top.src)
+        if (src == null) {
+            activeOverlay = null
+            pauseOverlayPlayer()
+            return
+        }
+        val targetSec = top.sourceSecAt(core.t)
+        val needReload = force ||
+            overlayAttachedSrc != top.src ||
+            abs(overlayAttachedStart - top.startT) > 0.001 ||
+            overlayPlayer.mediaItemCount == 0
+        try {
+            if (needReload) {
+                val clipping = MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(Math.round(top.a * 1000.0))
+                    .setEndPositionMs(Math.round(max(top.a + 0.05, top.b) * 1000.0))
+                    .build()
+                val item = MediaItem.Builder()
+                    .setUri(src.uri)
+                    .setClippingConfiguration(clipping)
+                    .build()
+                overlayPlayer.setMediaItem(item)
+                overlayPlayer.prepare()
+                overlayPlayer.playWhenReady = playing
+                overlayPlayer.setPlaybackSpeed(top.sp.toFloat())
+                overlayAttachedSrc = top.src
+                overlayAttachedStart = top.startT
+            }
+            val targetMs = Math.round(targetSec * 1000.0)
+            if (abs(overlayPlayer.currentPosition - targetMs) > 45L || overlayPlayer.playbackState == Player.STATE_IDLE) {
+                overlayPlayer.seekTo(targetMs)
+            }
+            overlayPlayer.volume = if (top.muted) 0f else 1f
+            if (playing && !top.muted) overlayPlayer.play() else overlayPlayer.pause()
+        } catch (e: Exception) {
+            // Pratinjau overlay bersifat opsional; jangan ganggu pemutaran utama
+        }
     }
 
     // ------------------------------------------------------------------ kontrol Tanda (Markers) & Split by Tanda
@@ -3253,6 +3603,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         markerNearCurrentPlayhead = core.markerNearPlayhead(0.08) != null
         info = sources.getOrElse(g.src) { sources.first() }.info
         seekPlayerTo(g.src, l.s, 0.015, forceExact = forceExact)
+        syncOverlayPreview(force = true)
     }
 
     private fun setSeekFast(fast: Boolean) {
@@ -3315,6 +3666,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         lastNanos = System.nanoTime()
         choreographer.removeFrameCallback(frameCallback)
         choreographer.postFrameCallback(frameCallback)
+        syncOverlayPreview(force = true)
         bump()
     }
 
@@ -3322,6 +3674,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (!playing) return
         playing = false
         choreographer.removeFrameCallback(frameCallback)
+        pauseOverlayPlayer()
         if (hasVideo && core.segs.isNotEmpty()) {
             setSeekFast(false)
             player.pause()
@@ -3342,6 +3695,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun endPlay() {
         playing = false
         choreographer.removeFrameCallback(frameCallback)
+        pauseOverlayPlayer()
         if (hasVideo) {
             setSeekFast(false)
             player.pause()
@@ -3414,6 +3768,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
         core.sync()
         refreshDerived()
+        syncOverlayPreview()
         bump()
         choreographer.postFrameCallback(frameCallback)
     }
@@ -4079,8 +4434,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         UpdateLogEntry(
             version = "$installedVersionLabel (Terbaru)",
             date = "27/11/2026",
-            title = "Pembagian Durasi Sama (Dobel/Tripel), Label Seek 2 Durasi, Replace Multi-Scene Berurutan & Frame dari Scene Tetangga",
+            title = "Track Overlay Multilayer (Non-Destruktif), Pembagian Durasi Sama, Label Seek 2 Durasi, Replace Multi-Scene & Frame Tetangga",
             items = listOf(
+                "✓ [Pengembangan] TRACK OVERLAY / MULTILAYER (Fase 1): hasil AI tidak lagi harus menimpa scene — bisa dipasang sebagai lapisan di atas scene asli (mode Penuh, PiP sudut, atau Belah Layar). Scene utama tetap utuh, overlay bisa disembunyikan kapan pun lewat tombol 🎬 di Pratinjau, dan ekspor otomatis membakar lapisan tersebut.",
+                "✓ [Pengembangan] Timeline multilayer: lane khusus di bawah klip utama menampilkan semua overlay (warna berbeda per mode) + panel Track Overlay untuk menambah dari playhead, mengatur sudut/opasitas/fade, menggeser waktu, mengaktifkan audio overlay, dan menghapus overlay.",
                 "✓ [Pengembangan] Pembagian Durasi Sama: 1 Video (maks 10.0 dtk), Dobel (maks 5 dtk × 2 = 10.0 dtk), atau Tripel (maks 3.5 dtk × 3 = 10.5 dtk) — durasi dibagi RATA otomatis (mis. 7.0 dtk → 3.5 + 3.5, 10.5 dtk → 3.5 × 3) dan bisa diatur lewat slider total durasi.",
                 "✓ [Pengembangan] Label Seek menampilkan 2 durasi sekaligus: durasi dari AWAL VIDEO ke posisi seek, serta durasi dari AWAL SCENE yang sedang fokus ke posisi seek.",
                 "✓ [Pengembangan] AI Replace Multi-Scene Berurutan: ganti beberapa scene sekaligus (mulai scene terpilih) dalam satu kali generate — tiap scene dijalankan sebagai workflow terpisah sehingga total durasi bisa melebihi 10.5 dtk.",
@@ -5094,7 +5451,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             selectedExportTags = exportSelectedTags,
             byTagStyle = exportByTagStyle,
             specRef = exportSpecRef,
-            scaleFit = exportScaleFit
+            scaleFit = exportScaleFit,
+            overlays = core.overlays,
+            overlayTrackVisible = overlayTrackVisible
         )
         val basePlan = ExportPlanner.plan(resolved.refInfo, resolved.refRot, qIdx, fIdx) { w, h ->
             EncoderCaps.supportsH264(w, h)

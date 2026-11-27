@@ -42,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
@@ -127,7 +128,32 @@ fun PreviewBox(
                     }
             ) {
                 VideoSurface(vm, boxW, boxH)
+                // Track Overlay (multilayer): lapisan video kedua di atas scene utama
+                if (vm.overlayTrackVisible && vm.activeOverlay != null) {
+                    OverlayVideoLayer(vm, boxW, boxH)
+                }
                 OverlayLayer(vm, onEditText)
+            }
+
+            // Badge jumlah overlay + toggle cepat tampil/sembunyi
+            if (vm.overlayCount > 0) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (vm.overlayTrackVisible) Ev.Accent.copy(alpha = 0.85f) else Ev.Bg.copy(alpha = 0.85f))
+                        .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                        .clickable { vm.toggleOverlayTrackVisible() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = (if (vm.overlayTrackVisible) "🎬 " else "🚫 ") + "${vm.overlayCount} Overlay",
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             if (vm.previewZoom > 1.02f) {
@@ -1392,6 +1418,63 @@ private fun EmptyPreviewState() {
  * TextureView dibuat seukuran video sebelum diputar, lalu diputar/dicermin lewat properti View.
  * Juga mendaftarkan TextureView aktif ke ViewModel agar panel AI dapat membaca buffer piksel yang 100% sama persis.
  */
+/**
+ * Lapisan video TRACK OVERLAY (multilayer): TextureView kedua (player kedua) yang digambar
+ * di atas scene utama sesuai mode & posisi OverlayRect (penuh / PiP sudut / belah layar).
+ */
+@Composable
+private fun OverlayVideoLayer(vm: EditorViewModel, boxW: Dp, boxH: Dp) {
+    val clip = vm.activeOverlay ?: return
+    val rect = clip.rect
+    val density = LocalDensity.current
+    val boxWPx = with(density) { boxW.toPx() }
+    val boxHPx = with(density) { boxH.toPx() }
+    val wPx = (boxWPx * rect.w.toFloat()).roundToInt().coerceAtLeast(8)
+    val hPx = (boxHPx * rect.h.toFloat()).roundToInt().coerceAtLeast(8)
+    val xPx = (boxWPx * rect.x.toFloat()).roundToInt()
+    val yPx = (boxHPx * rect.y.toFloat()).roundToInt()
+    val alpha = clip.opacityAt(vm.core.t).toFloat().coerceIn(0f, 1f)
+    val isPip = clip.mode != com.pribadi.editorvideo.model.OverlayMode.REPLACE_VISUAL
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+    ) {
+        AndroidView(
+            modifier = Modifier
+                .offset(x = with(density) { xPx.toDp() }, y = with(density) { yPx.toDp() })
+                .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
+                .alpha(alpha)
+                .then(
+                    if (isPip) {
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.5.dp, Ev.Yellow.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
+                    } else {
+                        Modifier
+                    }
+                ),
+            factory = { ctx ->
+                val tv = TextureView(ctx)
+                vm.overlayPlayer.setVideoTextureView(tv)
+                vm.overlayPlayer.volume = if (clip.muted) 0f else 1f
+                tv
+            },
+            update = { tv ->
+                vm.overlayPlayer.setVideoTextureView(tv)
+            },
+            onRelease = { tv ->
+                try {
+                    vm.overlayPlayer.clearVideoTextureView(tv)
+                } catch (e: Exception) {
+                    // diabaikan
+                }
+            }
+        )
+    }
+}
+
 @Composable
 private fun VideoSurface(vm: EditorViewModel, boxW: Dp, boxH: Dp, rotOverride: Int = vm.rot) {
     val rot = rotOverride

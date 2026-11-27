@@ -30,6 +30,7 @@ import androidx.media3.transformer.TransformationRequest
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
 import com.google.common.collect.ImmutableList
+import com.pribadi.editorvideo.model.OverlayClip
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.VideoInfo
 import kotlinx.coroutines.Dispatchers
@@ -188,15 +189,32 @@ object ExportEngine {
             if (hasText) OverlayRenderer.render(plan.width, plan.height, req.style1, req.style2) else null
         try {
             val items = ArrayList<EditedMediaItem>()
+            // Posisi timeline awal tiap klip pada job ini (untuk overlay yang menyeberangi beberapa klip)
+            val timelineBySeg = HashMap<Int, Double>()
+            var cursorT = 0.0
+            for ((i, seg) in segs.withIndex()) {
+                timelineBySeg[i] = cursorT
+                cursorT += seg.len
+            }
+            val exportOverlays: List<OverlayClip> =
+                if (!req.overlayTrackVisible || req.overlays.isEmpty()) emptyList() else req.overlays
             for (i in segs.indices) {
                 val seg = segs[i]
                 val spec = resolveSource(req, seg.src)
                 val srcUri = Uri.parse(spec.uri)
                 val srcInfo = spec.info
+                val tStart = timelineBySeg[i] ?: 0.0
+                val segEnd = tStart + seg.len
+                val segOverlays = exportOverlays.filter { it.endT > tStart + 0.02 && it.startT < segEnd - 0.02 }
                 if (seg.fz) {
-                    items.add(freezeItem(app, req, plan, seg, srcUri, srcInfo, dir, "j" + jobIdx + "_" + i, overlay))
+                    items.add(
+                        freezeItem(
+                            app, req, plan, seg, srcUri, srcInfo, dir, "j" + jobIdx + "_" + i,
+                            overlay, tStart, segOverlays
+                        )
+                    )
                 } else {
-                    items.add(clipItem(req, plan, seg, srcUri, srcInfo, overlay))
+                    items.add(clipItem(app, req, plan, seg, srcUri, srcInfo, overlay, tStart, segOverlays))
                 }
             }
             val sequence = EditedMediaItemSequence(items)
@@ -216,12 +234,15 @@ object ExportEngine {
     }
 
     private fun clipItem(
+        app: Context,
         req: ExportRequest,
         plan: ExportPlan,
         seg: Seg,
         srcUri: Uri,
         srcInfo: VideoInfo,
-        overlay: Bitmap?
+        overlay: Bitmap?,
+        tStartT: Double = 0.0,
+        overlayLayers: List<OverlayClip> = emptyList()
     ): EditedMediaItem {
         val startMs = Math.round(seg.a * 1000.0)
         var endMs = Math.round(seg.b * 1000.0)
@@ -240,7 +261,7 @@ object ExportEngine {
         val speed = seg.sp
         val audio: List<AudioProcessor> =
             if (srcInfo.hasAudio && abs(speed - 1.0) > 0.0001) audioSpeed(speed) else emptyList()
-        val video = videoEffects(req, plan, speed, seg.rot, srcInfo.fps, false, overlay)
+        val video = videoEffects(app, req, plan, speed, seg.rot, srcInfo.fps, false, overlay, tStartT, seg.len, overlayLayers)
 
         val b = EditedMediaItem.Builder(mediaItem)
         if (!srcInfo.hasAudio) b.setRemoveAudio(true)
@@ -257,7 +278,9 @@ object ExportEngine {
         srcInfo: VideoInfo,
         dir: File,
         tag: String,
-        overlay: Bitmap?
+        overlay: Bitmap?,
+        tStartT: Double = 0.0,
+        overlayLayers: List<OverlayClip> = emptyList()
     ): EditedMediaItem {
         val ms = Math.round(seg.a * 1000.0)
         var bmp = VideoFrames.grabFrame(app, srcUri, ms, srcInfo)
@@ -282,7 +305,7 @@ object ExportEngine {
         val durationUs = max(MIN_ITEM_US, Math.round(seg.len * 1_000_000.0))
         val frameRate = max(1, Math.round(plan.fps).toInt())
 
-        val video = videoEffects(req, plan, 1.0, seg.rot, srcInfo.fps, true, overlay)
+        val video = videoEffects(app, req, plan, 1.0, seg.rot, srcInfo.fps, true, overlay, tStartT, seg.len, overlayLayers)
         return EditedMediaItem.Builder(mediaItem)
             .setDurationUs(durationUs)
             .setFrameRate(frameRate)
@@ -303,13 +326,17 @@ object ExportEngine {
      *   [kecepatan] -> [buang frame per klip] -> [putar khusus scene ini] -> [cermin] -> [ukuran akhir Fit/Crop] -> [teks]
      */
     private fun videoEffects(
+        app: Context,
         req: ExportRequest,
         plan: ExportPlan,
         speed: Double,
         segRot: Int,
         srcFps: Float,
         isImage: Boolean,
-        overlay: Bitmap?
+        overlay: Bitmap?,
+        tStartT: Double = 0.0,
+        segLenSec: Double = 0.0,
+        overlayLayers: List<OverlayClip> = emptyList()
     ): List<Effect> {
         val list = ArrayList<Effect>()
         if (!isImage) {
@@ -332,10 +359,90 @@ object ExportEngine {
             Presentation.LAYOUT_SCALE_TO_FIT
         }
         list.add(Presentation.createForWidthAndHeight(plan.width, plan.height, layoutMode))
+        // Track overlay (multilayer) — dibakar (bake) sebagai lapisan bitmap di atas klip ini.
+        if (overlayLayers.isNotEmpty() && segLenSec > 0.0) {
+            val clipStartT = tStartT
+            val clipEndT = tStartT + segLenSec
+            for (ov in overlayLayers) {
+                val winStart = max(ov.startT, clipStartT)
+                val winEnd = min(ov.endT, clipEndT)
+                if (winEnd - winStart < 0.05) continue
+                val baked = bakeOverlayBitmap(app, req, ov, plan, winStart, winEnd) ?: continue
+                val window = winStart to winEnd
+                val ovBmp = baked
+                val relStart = window.first - tStartT
+                val relEnd = window.second - tStartT
+                if (relEnd <= 0.0 || relStart >= segLenSec - 1e-6) {
+                    ovBmp.recycle()
+                    continue
+                }
+                val startTl = max(0.0, relStart)
+                val endTl = min(segLenSec, relEnd)
+                if (endTl - startTl < 0.02) {
+                    ovBmp.recycle()
+                    continue
+                }
+                list.add(
+                    OverlayEffect(
+                        ImmutableList.of<TextureOverlay>(
+                            BitmapOverlay.createStaticBitmapOverlay(
+                                ovBmp,
+                                startTl.toFloat(),
+                                endTl.toFloat()
+                            )
+                        )
+                    )
+                )
+            }
+        }
         if (overlay != null) {
             list.add(OverlayEffect(ImmutableList.of<TextureOverlay>(BitmapOverlay.createStaticBitmapOverlay(overlay))))
         }
         return list
+    }
+
+    /**
+     * Membakar (bake) satu overlay menjadi bitmap RGBA seukuran kanvas ekspor untuk rentang
+     * [winStart]..[winEnd] pada timeline. Fase 1: overlay statis (1 frame per rentang) — cukup untuk
+     * mode Replace Visual & PiP karena durasi tampilnya pendek dan hasilnya jauh lebih cepat/aman.
+     */
+    private fun bakeOverlayBitmap(
+        app: Context,
+        req: ExportRequest,
+        ov: OverlayClip,
+        plan: ExportPlan,
+        winStart: Double,
+        winEnd: Double
+    ): Bitmap? {
+        val spec = resolveSource(req, ov.src)
+        val uri = Uri.parse(spec.uri)
+        val midT = (winStart + winEnd) / 2.0
+        val srcSec = ov.sourceSecAt(midT)
+        val frame = try {
+            VideoFrames.grabFrame(app, uri, Math.round(max(0.0, srcSec) * 1000.0), spec.info)
+        } catch (e: Throwable) {
+            null
+        } ?: return null
+
+        val out = Bitmap.createBitmap(plan.width, plan.height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(out)
+        canvas.drawColor(android.graphics.Color.TRANSPARENT)
+        val targetLeft = (plan.width * ov.rect.x).toInt()
+        val targetTop = (plan.height * ov.rect.y).toInt()
+        val targetW = (plan.width * ov.rect.w).toInt().coerceAtLeast(2)
+        val targetH = (plan.height * ov.rect.h).toInt().coerceAtLeast(2)
+        val dst = android.graphics.RectF(
+            targetLeft.toFloat(),
+            targetTop.toFloat(),
+            (targetLeft + targetW).toFloat(),
+            (targetTop + targetH).toFloat()
+        )
+        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        paint.alpha = (ov.rect.opacity.coerceIn(0.0, 1.0) * 255.0).toInt()
+        val srcRect = android.graphics.Rect(0, 0, frame.width, frame.height)
+        canvas.drawBitmap(frame, srcRect, dst, paint)
+        frame.recycle()
+        return out
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -201,12 +201,109 @@ data class SceneAiReplace(
     val keepOverflowFromSec: Double? = null
 )
 
+/**
+ * Mode tampilan sebuah OverlayClip di atas track utama (multilayer).
+ * Fase 1 hanya mendukung tampilan penuh & PiP sudut; split-half menyusul.
+ */
+enum class OverlayMode(val label: String, val shortLabel: String) {
+    REPLACE_VISUAL("Replace Visual (Penuh)", "Penuh"),
+    PIP_CORNER("Picture-in-Picture (Sudut)", "PiP"),
+    SPLIT_HALF("Belah Layar (Kiri/Kanan)", "Split")
+}
+
+/** Posisi & ukuran overlay dalam koordinat ternormalisasi (0..1) terhadap kanvas pratinjau. */
+data class OverlayRect(
+    val x: Double = 0.0,
+    val y: Double = 0.0,
+    val w: Double = 1.0,
+    val h: Double = 1.0,
+    val opacity: Double = 1.0,
+    val corner: Int = 0
+) {
+    fun clamped(): OverlayRect = OverlayRect(
+        x = clamp01(x),
+        y = clamp01(y),
+        w = w.coerceIn(0.12, 1.0),
+        h = h.coerceIn(0.12, 1.0),
+        opacity = opacity.coerceIn(0.0, 1.0),
+        corner = corner.coerceIn(0, 3)
+    )
+
+    private fun clamp01(v: Double): Double = if (v < 0.0) 0.0 else if (v > 1.0) 1.0 else v
+
+    companion object {
+        /** PiP kecil di sudut kanan bawah (default). */
+        fun pipCorner(corner: Int = 3): OverlayRect = fromCorner(corner)
+
+        /** Mengatur PiP ke salah satu dari 4 sudut: 0=Kiri Atas, 1=Kanan Atas, 2=Kiri Bawah, 3=Kanan Bawah. */
+        fun fromCorner(corner: Int): OverlayRect {
+            val c = corner.coerceIn(0, 3)
+            val w = 0.38
+            val h = 0.38
+            val margin = 0.03
+            val x = if (c == 0 || c == 2) margin else 1.0 - w - margin
+            val y = if (c == 0 || c == 1) margin else 1.0 - h - margin
+            return OverlayRect(x = x, y = y, w = w, h = h, opacity = 1.0, corner = c)
+        }
+
+        fun fullFrame(): OverlayRect = OverlayRect(0.0, 0.0, 1.0, 1.0, 1.0, 0)
+    }
+}
+
+/**
+ * Satu klip pada TRACK OVERLAY (multilayer, non-destruktif).
+ * Berbeda dari [Seg] yang menempati track utama: overlay punya posisi waktu sendiri
+ * ([startT]) sehingga scene utama tetap utuh dan overlay bisa ditumpuk/dimatikan kapan saja.
+ */
+data class OverlayClip(
+    val id: Long,
+    val src: Int,
+    val a: Double,
+    val b: Double,
+    val startT: Double,
+    val sp: Double = 1.0,
+    val mode: OverlayMode = OverlayMode.REPLACE_VISUAL,
+    val rect: OverlayRect = OverlayRect.fullFrame(),
+    val fadeInSec: Double = 0.0,
+    val fadeOutSec: Double = 0.0,
+    val muted: Boolean = true,
+    val label: String = ""
+) {
+    /** Durasi tampil di timeline (detik). */
+    val len: Double get() = max(Rules.MIN, (b - a) / sp.coerceAtLeast(0.1))
+
+    val endT: Double get() = startT + len
+
+    fun covers(t: Double): Boolean = t >= startT - 1e-6 && t < endT - 1e-6
+
+    /** Waktu sumber (detik) pada posisi timeline [t]. */
+    fun sourceSecAt(t: Double): Double {
+        val u = (t - startT).coerceAtLeast(0.0) * sp
+        return clampD(a + u, a, max(a, b - 0.001))
+    }
+
+    /** Opasitas efektif setelah fade in/out. */
+    fun opacityAt(t: Double): Double {
+        val base = rect.opacity
+        if (fadeInSec <= 0.0 && fadeOutSec <= 0.0) return base
+        var k = 1.0
+        if (fadeInSec > 0.0 && t < startT + fadeInSec) {
+            k = ((t - startT) / fadeInSec).coerceIn(0.0, 1.0)
+        }
+        if (fadeOutSec > 0.0 && t > endT - fadeOutSec) {
+            k = minOf(k, ((endT - t) / fadeOutSec).coerceIn(0.0, 1.0))
+        }
+        return base * k
+    }
+}
+
 /** Satu langkah riwayat undo/redo. */
 data class Snap(
     val segs: List<Seg>,
     val rot: Int,
     val flip: Boolean,
-    val markers: List<ClipMarker> = emptyList()
+    val markers: List<ClipMarker> = emptyList(),
+    val overlays: List<OverlayClip> = emptyList()
 )
 
 object Fmt {

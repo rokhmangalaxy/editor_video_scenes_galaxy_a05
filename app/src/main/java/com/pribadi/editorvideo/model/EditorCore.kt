@@ -51,6 +51,19 @@ class EditorCore {
     var hasVideo: Boolean = false
         private set
 
+    /**
+     * Klip pada TRACK OVERLAY (multilayer, non-destruktif). Tidak mengubah [segs] sehingga
+     * scene utama tetap utuh & hanya perlu di-toggle untuk melihat hasil aslinya.
+     */
+    var overlays: List<OverlayClip> = emptyList()
+        private set
+
+    private var nextOverlayId: Long = 1L
+
+    /** Overlay yang aktif/terlihat (tidak disembunyikan) diurutkan berdasarkan waktu mulai. */
+    val visibleOverlays: List<OverlayClip>
+        get() = overlays.sortedBy { it.startT }
+
     private val hist = ArrayList<Snap>()
     private var hi = -1
 
@@ -113,7 +126,7 @@ class EditorCore {
 
     // ------------------------------------------------------------------ riwayat
 
-    private fun snap(): Snap = Snap(segs, rot, flip, markers)
+    private fun snap(): Snap = Snap(segs, rot, flip, markers, overlays)
 
     private fun push() {
         while (hist.size > hi + 1) hist.removeAt(hist.size - 1)
@@ -126,6 +139,7 @@ class EditorCore {
         rot = s.rot
         flip = s.flip
         markers = s.markers
+        overlays = s.overlays
         calc()
         t = min(t, lay.total)
         build()
@@ -161,6 +175,7 @@ class EditorCore {
         srcDurs = emptyList()
         segs = emptyList()
         markers = emptyList()
+        overlays = emptyList()
         hasVideo = false
         t = 0.0
         sel = 0
@@ -182,6 +197,7 @@ class EditorCore {
         srcDurs = ArrayList(durs)
         segs = durs.mapIndexed { idx, dur -> Seg(0.0, dur, src = idx) }
         markers = emptyList()
+        overlays = emptyList()
         hasVideo = true
         t = 0.0
         sel = 0
@@ -1056,6 +1072,138 @@ class EditorCore {
         push()
         build()
         return "$replacedCount scene berurutan diganti AI (${Fmt.one(totalAiSec)} dtk total)"
+    }
+
+    // ------------------------------------------------------------------ TRACK OVERLAY (multilayer)
+
+    /** Semua overlay yang terlihat pada posisi waktu timeline [t] (urut tampil: paling akhir di atas). */
+    fun overlaysAt(t: Double): List<OverlayClip> =
+        overlays.filter { it.covers(t) }.sortedBy { it.startT }
+
+    /** Overlay paling atas pada posisi [t] (dipakai pratinjau utama). */
+    fun topOverlayAt(t: Double): OverlayClip? = overlaysAt(t).lastOrNull()
+
+    fun overlayById(id: Long): OverlayClip? = overlays.firstOrNull { it.id == id }
+
+    /**
+     * Menambahkan overlay baru pada track overlay (non-destruktif).
+     * [startT] dijepit ke dalam durasi timeline agar tidak tampil di luar jangkauan.
+     */
+    fun addOverlay(
+        src: Int,
+        a: Double,
+        b: Double,
+        startT: Double,
+        mode: OverlayMode = OverlayMode.REPLACE_VISUAL,
+        rect: OverlayRect = OverlayRect.fullFrame(),
+        sp: Double = 1.0,
+        label: String = "",
+        muted: Boolean = true
+    ): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        val safeA = max(0.0, min(a, b - Rules.MIN))
+        val safeB = max(safeA + Rules.MIN, b)
+        val safeSp = sp.coerceIn(Rules.SPEED_MIN, Rules.SPEED_MAX)
+        val dur = (safeB - safeA) / safeSp
+        val safeStart = clampD(startT, 0.0, max(0.0, lay.total - Rules.MIN))
+        val clip = OverlayClip(
+            id = nextOverlayId++,
+            src = src,
+            a = safeA,
+            b = safeB,
+            startT = safeStart,
+            sp = safeSp,
+            mode = mode,
+            rect = rect.clamped(),
+            muted = muted,
+            label = label
+        )
+        overlays = (overlays + clip).sortedBy { it.startT }
+        onPause()
+        push()
+        build()
+        return "🎬 Overlay ditambahkan di ${Fmt.time(safeStart)} (${Fmt.one(dur)} dtk)"
+    }
+
+    /** Memindahkan overlay (geser posisi waktu, trim awal/akhir, ubah kecepatan). */
+    fun updateOverlay(
+        id: Long,
+        startT: Double? = null,
+        a: Double? = null,
+        b: Double? = null,
+        sp: Double? = null,
+        mode: OverlayMode? = null,
+        rect: OverlayRect? = null,
+        fadeInSec: Double? = null,
+        fadeOutSec: Double? = null,
+        muted: Boolean? = null
+    ): String {
+        val cur = overlayById(id) ?: return "Overlay tidak ditemukan"
+        var nextA = a ?: cur.a
+        var nextB = b ?: cur.b
+        if (nextB - nextA < Rules.MIN) nextB = nextA + Rules.MIN
+        val nextSp = (sp ?: cur.sp).coerceIn(Rules.SPEED_MIN, Rules.SPEED_MAX)
+        val nextStart = clampD(startT ?: cur.startT, 0.0, max(0.0, lay.total - Rules.MIN))
+        val updated = cur.copy(
+            a = nextA,
+            b = nextB,
+            startT = nextStart,
+            sp = nextSp,
+            mode = mode ?: cur.mode,
+            rect = (rect ?: cur.rect).clamped(),
+            fadeInSec = (fadeInSec ?: cur.fadeInSec).coerceAtLeast(0.0),
+            fadeOutSec = (fadeOutSec ?: cur.fadeOutSec).coerceAtLeast(0.0),
+            muted = muted ?: cur.muted
+        )
+        overlays = overlays.map { if (it.id == id) updated else it }.sortedBy { it.startT }
+        push()
+        build()
+        return "Overlay diperbarui"
+    }
+
+    /** Menggeser overlay secara horizontal pada timeline. */
+    fun moveOverlay(id: Long, deltaSec: Double): String {
+        val cur = overlayById(id) ?: return "Overlay tidak ditemukan"
+        return updateOverlay(id, startT = cur.startT + deltaSec)
+    }
+
+    fun removeOverlay(id: Long): String {
+        if (overlays.none { it.id == id }) return "Overlay tidak ditemukan"
+        onPause()
+        overlays = overlays.filterNot { it.id == id }
+        push()
+        build()
+        return "Overlay dihapus (scene utama tetap utuh)"
+    }
+
+    fun clearOverlays(): String {
+        if (overlays.isEmpty()) return "Belum ada overlay"
+        onPause()
+        overlays = emptyList()
+        push()
+        build()
+        return "Semua overlay dihapus (${overlays.size} klip)"
+    }
+
+    /** Menyalin atribut tampilan (mode + rect) ke semua overlay lain agar konsisten. */
+    fun applyOverlayStyleToAll(id: Long): String {
+        val src = overlayById(id) ?: return "Overlay tidak ditemukan"
+        if (overlays.size <= 1) return "Hanya ada 1 overlay"
+        overlays = overlays.map { it.copy(mode = src.mode, rect = src.rect) }.sortedBy { it.startT }
+        push()
+        build()
+        return "Gaya overlay diterapkan ke semua (${overlays.size} klip)"
+    }
+
+    /** Menggeser semua overlay sebesar [deltaSec] (berguna saat scene di awal dipotong). */
+    fun shiftOverlays(deltaSec: Double): String {
+        if (overlays.isEmpty()) return "Belum ada overlay"
+        overlays = overlays
+            .map { it.copy(startT = clampD(it.startT + deltaSec, 0.0, max(0.0, lay.total - Rules.MIN))) }
+            .sortedBy { it.startT }
+        push()
+        build()
+        return "Posisi overlay digeser ${Fmt.one(abs(deltaSec))} dtk"
     }
 
     /** Menghapus beberapa potongan sekaligus (menyisakan minimal 1 potongan di timeline). */
