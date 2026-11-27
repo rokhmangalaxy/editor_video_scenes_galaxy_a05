@@ -1893,14 +1893,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             )
         } else if (aiWorkMode == AiWorkMode.REPLACE_SEEK) {
             // Replace Seek: generate di posisi seek dengan durasi yang dipilih
-            // Menggunakan aiSeekTimeSec sebagai referensi posisi
+            // Berdasarkan seek position (bukan scene), durasi sesuai pilihan
             val seekDur = when (aiDurationSplit) {
                 AiDurationSplit.AUTO_1 -> 7.0  // 7 dtk tunggal
                 AiDurationSplit.DOUBLE_5 -> 10.0  // 5dtk × 2 = 10 dtk total
                 AiDurationSplit.TRIPLE_35 -> 10.5  // 3.5dtk × 3 = 10.5 dtk total
                 else -> aiReplaceTargetDurSec
             }
-            AiPlanner.planReplaceWithSplit(seekDur, aiSeekTimeSec, aiDurationSplit)
+            // Tidak ada scene, gunakan 0 untuk sceneOrigLenSec
+            AiPlanner.planReplaceWithSplit(seekDur, 0.0, aiDurationSplit)
         } else {
             AiPlanner.planReplaceWithSplit(aiReplaceTargetDurSec, selectedSceneDurationSec(), aiDurationSplit)
         }
