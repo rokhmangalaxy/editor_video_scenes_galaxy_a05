@@ -891,6 +891,102 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
+
+    // =========================================================================
+    // OPSI GENERATE BERULANG (item #5) - Generate di posisi sama beberapa kali
+    // =========================================================================
+    if (hasScene && vm.aiWorkMode == AiWorkMode.REPLACE_SCENE) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(11.dp))
+                .background(if (vm.aiRepeatGenerate) Ev.Accent.copy(alpha = 0.16f) else Ev.Bg)
+                .border(
+                    width = if (vm.aiRepeatGenerate) 1.5.dp else 1.dp,
+                    color = if (vm.aiRepeatGenerate) Ev.Accent else Ev.Line,
+                    shape = RoundedCornerShape(11.dp)
+                )
+                .padding(9.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "🔁 Generate Berulang (Variasi)",
+                        color = Ev.Text,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Generate beberapa kali di posisi yang sama untuk mendapatkan variasi berbeda",
+                        color = Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (vm.aiRepeatGenerate) Ev.Accent else Ev.Ghost)
+                        .border(1.dp, if (vm.aiRepeatGenerate) Ev.Accent else Ev.Line, RoundedCornerShape(9.dp))
+                        .clickable { vm.toggleAiRepeatGenerate() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (vm.aiRepeatGenerate) "ON" else "OFF",
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            if (vm.aiRepeatGenerate) {
+                Spacer(modifier = Modifier.height(7.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AiMiniBtn(
+                        label = "−",
+                        modifier = Modifier.weight(0.8f),
+                        enabled = vm.aiRepeatCount > 1
+                    ) { vm.stepAiRepeatCount(-1) }
+                    Box(
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Ev.Ghost)
+                            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${vm.aiRepeatCount}× generate (${vm.aiDurationSplit.label})",
+                            color = Ev.Yellow,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                    AiMiniBtn(
+                        label = "+",
+                        modifier = Modifier.weight(0.8f),
+                        enabled = vm.aiRepeatCount < 5
+                    ) { vm.stepAiRepeatCount(1) }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Akan menghasilkan ${vm.aiRepeatCount} kandidat terpisah dengan durasi ${vm.aiDurationSplit.label} di posisi scene yang sama.",
+                    color = Ev.InfoText,
+                    fontSize = 10.sp,
+                    lineHeight = 13.5.sp
+                )
+            }
+        }
     }
 
     // =========================================================================

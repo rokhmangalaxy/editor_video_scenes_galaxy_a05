@@ -356,6 +356,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Replace Multi-Scene Berurutan (item #3). */
     var aiMultiSceneMode by mutableStateOf(false)
+
+    /** Generate Berulang: generate di posisi yang sama beberapa kali untuk variasi. */
+    var aiRepeatGenerate by mutableStateOf(false)
+    var aiRepeatCount by mutableIntStateOf(1)
     var aiMultiSceneCount by mutableIntStateOf(2)
         private set
 
@@ -1716,6 +1720,21 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             count = aiMultiSceneCount,
             split = aiDurationSplit
         )
+
+    /** Mengaktifkan/mematikan Mode Generate Berulang. */
+    fun toggleAiRepeatGenerate() {
+        aiRepeatGenerate = !aiRepeatGenerate
+        if (aiRepeatGenerate) {
+            aiRepeatCount = 2
+        }
+        bump()
+    }
+
+    /** Menambah/mengurangi jumlah pengulangan generate (1 .. 5). */
+    fun stepAiRepeatCount(delta: Int) {
+        aiRepeatCount = (aiRepeatCount + delta).coerceIn(1, 5)
+        bump()
+    }
     }
 
     // --- Opsi Frame Awal / Frame Akhir dari scene tetangga (item #4) ---
@@ -2610,6 +2629,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 aiRunPhase = AiRunPhase.COMPLETED
                 aiRunStatusDetail = "Kandidat #$candNum selesai! (${aiCandidates.size} kandidat tersedia — pilih yang terbaik atau generate kandidat lagi)."
                 toast("Kandidat #$candNum selesai dibuat!")
+
+                // Generate berulang: jika diaktifkan dan masih ada pengulangan, lanjutkan generate
+                if (aiRepeatGenerate && aiRepeatCount > 1) {
+                    aiRepeatCount--
+                    aiNextCandidateNumber++
+                    startAiGeneration()
+                }
             } catch (ce: CancellationException) {
                 aiRunPhase = AiRunPhase.IDLE
                 aiRunStatusDetail = "Proses AI dibatalkan oleh pengguna."
