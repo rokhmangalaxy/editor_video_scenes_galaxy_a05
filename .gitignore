@@ -1,0 +1,26 @@
+# Gradle & Android build outputs
+.gradle/
+build/
+app/build/
+out/
+_src/
+local.properties
+
+# IDE / Android Studio
+.idea/
+*.iml
+.cxx/
+captures/
+.externalNativeBuild/
+
+# Keystores (jangan pernah disimpan di repo)
+*.jks
+*.keystore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# File simulasi prototipe lokal
+simulasi-ai-panel.html
+

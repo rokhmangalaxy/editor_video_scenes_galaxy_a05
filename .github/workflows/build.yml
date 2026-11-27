@@ -1,16 +1,16 @@
 # Simpan file ini sebagai: .github/workflows/build.yml  (di repo GitHub privat Anda)
 #
 # Cara pakai singkat:
-#   1. Unggah project.zip ke ROOT repo (sejajar dengan folder .github).
-#   2. Tab Actions -> "Build APK" -> Run workflow (atau otomatis jalan saat project.zip diperbarui).
+#   1. Proyek Android berada langsung di ROOT repo (settings.gradle.kts, build.gradle.kts, app/, dst).
+#   2. Tab Actions -> "Build APK" -> Run workflow (atau otomatis jalan saat kode proyek diperbarui).
 #   3. Unduh EditorVideo-A05.apk dari halaman Releases (atau dari Artifacts), lalu pasang di HP.
 #
 # Tanda tangan APK:
 #   - Paling stabil: isi 4 secret repo (Settings -> Secrets and variables -> Actions):
 #       KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
 #   - Jika secret tidak diisi: keystore dibuat otomatis (password acak, tidak ditampilkan di log)
-#     lalu disimpan di cache GitHub Actions (kunci tetap: keystore-v1) supaya tanda tangan sama
-#     di build berikutnya. Cache bisa hilang (mis. tidak dipakai 7 hari). Jika hilang, tanda
+#     lalu disimpan di cache GitHub Actions (kunci tetap: keystore-v1) supaya tanda
+#     tangan sama di build berikutnya. Cache bisa hilang (mis. tidak dipakai 7 hari). Jika hilang, tanda
 #     tangan berubah dan aplikasi lama harus di-uninstall dulu sebelum memasang yang baru.
 #   - Keystore TIDAK PERNAH disimpan di repo dan password TIDAK PERNAH dicetak ke log.
 
@@ -18,9 +18,22 @@ name: Build APK
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch yang akan di-build (default: branch ini)'
+        required: true
+        default: '${{ github.ref_name }}'
+        type: choice
+        options:
+          - arena/302ee537-editor-video-scenes-galaxy-a05
+          - main
   push:
     paths:
-      - 'project.zip'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build.yml'
 
 permissions:
   contents: write
@@ -40,35 +53,25 @@ jobs:
       - name: Ambil isi repo
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
           persist-credentials: false
 
-      - name: Ekstrak project.zip
+      - name: Periksa struktur proyek
         run: |
           set -eu
-          if [ ! -f project.zip ]; then
-            echo "::error title=project.zip tidak ada::Unggah project.zip ke root repo (sejajar dengan folder .github), lalu jalankan ulang."
+          PROJECT_DIR="$GITHUB_WORKSPACE"
+          if [ ! -f "$PROJECT_DIR/settings.gradle.kts" ] && [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
+            echo "::error title=Struktur proyek tidak lengkap::settings.gradle(.kts) tidak ditemukan di root repo."
+            ls -la "$PROJECT_DIR"
             exit 1
           fi
-          rm -rf _src
-          mkdir _src
-          unzip -q -o project.zip -d _src
-          # Cari settings.gradle(.kts) yang paling dangkal: zip boleh berisi proyek langsung di root
-          # atau di dalam satu folder.
-          FOUND=$(find _src -maxdepth 4 \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -not -path '*/__MACOSX/*' -print | awk -F/ '{print NF "\t" $0}' | sort -n | head -n 1 | cut -f2-)
-          if [ -z "$FOUND" ]; then
-            echo "::error title=Isi project.zip salah::settings.gradle(.kts) tidak ditemukan di dalam project.zip. Zip harus berisi proyek Android (settings.gradle.kts, app/, dst)."
-            echo "Isi tingkat atas project.zip:"
-            ls -la _src
-            exit 1
-          fi
-          ROOT=$(dirname "$FOUND")
-          PROJECT_DIR="$GITHUB_WORKSPACE/$ROOT"
           rm -f "$PROJECT_DIR/local.properties"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Root proyek: $ROOT"
+          echo "Root proyek: $PROJECT_DIR"
           ls -la "$PROJECT_DIR"
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::warning::Folder app/ tidak ditemukan di root proyek."
+            echo "::error title=Folder app tidak ada::Folder app/ tidak ditemukan di root proyek."
+            exit 1
           fi
 
       - name: Pasang Java 17
@@ -82,6 +85,7 @@ jobs:
         with:
           gradle-version: '8.7'
           cache-provider: basic
+          cache-disabled: true
           add-job-summary: never
           validate-wrappers: false
 
@@ -108,9 +112,13 @@ jobs:
         with:
           path: ~/.editorvideo-keystore
           key: keystore-v1
+          restore-keys: |
+            keystore-v1
 
-      - name: Siapkan tanda tangan (keystore)
+      - name: Siapkan tanda tangan (keystore permanen)
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           SECRET_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
@@ -120,13 +128,13 @@ jobs:
           if [ -n "$SECRET_KEYSTORE_BASE64" ] && [ -n "$SECRET_KEYSTORE_PASSWORD" ] && [ -n "$SECRET_KEY_ALIAS" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
             # --- Jalur 1: keystore dari secrets repo ---
             KS_FILE="$RUNNER_TEMP/release.jks"
-            if ! printf '%s' "$SECRET_KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$KS_FILE" 2>/dev/null; then
+            if ! printf '%s' "$SECRET_KEYSTORE_BASE64" | tr -d ' \\r\\n' | base64 -d > "$KS_FILE" 2>/dev/null; then
               echo "::error title=KEYSTORE_BASE64 tidak valid::Isi secret KEYSTORE_BASE64 bukan base64 yang benar."
               exit 1
             fi
-            KS_PASS=$(printf '%s' "$SECRET_KEYSTORE_PASSWORD" | tr -d '\r\n')
-            KEY_PASS=$(printf '%s' "$SECRET_KEY_PASSWORD" | tr -d '\r\n')
-            KEY_ALIAS=$(printf '%s' "$SECRET_KEY_ALIAS" | tr -d '\r\n')
+            KS_PASS=$(printf '%s' "$SECRET_KEYSTORE_PASSWORD" | tr -d '\\r\\n')
+            KEY_PASS=$(printf '%s' "$SECRET_KEY_PASSWORD" | tr -d '\\r\\n')
+            KEY_ALIAS=$(printf '%s' "$SECRET_KEY_ALIAS" | tr -d '\\r\\n')
             export KS_PASS
             if ! keytool -list -keystore "$KS_FILE" -storepass:env KS_PASS -alias "$KEY_ALIAS" > /dev/null 2>&1; then
               echo "::error title=Secrets keystore tidak cocok::Keystore tidak bisa dibuka atau alias tidak ditemukan. Periksa KEYSTORE_BASE64, KEYSTORE_PASSWORD, dan KEY_ALIAS."
@@ -141,16 +149,28 @@ jobs:
             } >> "$GITHUB_ENV"
             echo "Memakai keystore dari secrets repo."
           else
-            # --- Jalur 2: keystore otomatis, disimpan di cache ---
-            if [ -n "$SECRET_KEYSTORE_BASE64$SECRET_KEYSTORE_PASSWORD$SECRET_KEY_ALIAS$SECRET_KEY_PASSWORD" ]; then
-              echo "::warning::Secrets keystore belum lengkap (butuh 4 secret). Memakai keystore otomatis."
-            fi
+            # --- Jalur 2: keystore otomatis permanen (cache + cadangan terenkripsi di release anchor) ---
             KS_DIR="$HOME/.editorvideo-keystore"
             mkdir -p "$KS_DIR"
             chmod 700 "$KS_DIR"
+            ANCHOR_TAG="keystore-anchor"
+            ENC_KEY="ev-ks-${GITHUB_REPOSITORY}-${GITHUB_REPOSITORY_ID:-a05}"
+            export ENC_KEY
+
+            # Bila belum ada di cache lokal, coba unduh dari cadangan release anchor agar tanda tangan tidak pernah berubah
+            if [ ! -s "$KS_DIR/release.jks" ] || [ ! -s "$KS_DIR/pass.txt" ]; then
+              if gh release download "$ANCHOR_TAG" -p "keystore.enc" -O "$RUNNER_TEMP/keystore.enc" --clobber > /dev/null 2>&1; then
+                if openssl enc -d -aes-256-cbc -pbkdf2 -pass env:ENC_KEY -in "$RUNNER_TEMP/keystore.enc" -out "$RUNNER_TEMP/keystore.tar.gz" 2>/dev/null; then
+                  tar -xzf "$RUNNER_TEMP/keystore.tar.gz" -C "$KS_DIR" 2>/dev/null || true
+                  chmod 600 "$KS_DIR/release.jks" "$KS_DIR/pass.txt" 2>/dev/null || true
+                fi
+                rm -f "$RUNNER_TEMP/keystore.enc" "$RUNNER_TEMP/keystore.tar.gz"
+              fi
+            fi
+
             if [ -s "$KS_DIR/release.jks" ] && [ -s "$KS_DIR/pass.txt" ]; then
-              SIGN_MODE="Keystore otomatis (dipulihkan dari cache)"
-              echo "Memakai keystore otomatis dari cache."
+              SIGN_MODE="Keystore permanen (sama dengan versi sebelumnya, bisa langsung timpa/update)"
+              echo "Memakai keystore permanen yang sudah ada."
             else
               rm -f "$KS_DIR/release.jks" "$KS_DIR/pass.txt"
               KS_PASS=$(openssl rand -hex 16)
@@ -161,9 +181,24 @@ jobs:
                 -dname "CN=Editor Video, O=Pribadi, C=ID" > /dev/null 2>&1
               printf '%s' "$KS_PASS" > "$KS_DIR/pass.txt"
               chmod 600 "$KS_DIR/release.jks" "$KS_DIR/pass.txt"
-              SIGN_MODE="Keystore otomatis BARU (tanda tangan berbeda dari build sebelumnya, jika ada)"
-              echo "Keystore otomatis baru dibuat dan akan disimpan ke cache."
+              SIGN_MODE="Keystore permanen baru dibuat"
+              echo "Keystore baru dibuat."
             fi
+
+            # Simpan cadangan terenkripsi ke release anchor supaya lintas-branch & lewat 7 hari tetap memakai sertifikat yang sama
+            tar -czf "$RUNNER_TEMP/keystore.tar.gz" -C "$KS_DIR" release.jks pass.txt
+            if openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ENC_KEY -in "$RUNNER_TEMP/keystore.tar.gz" -out "$RUNNER_TEMP/keystore.enc" 2>/dev/null; then
+              if gh release view "$ANCHOR_TAG" > /dev/null 2>&1; then
+                gh release upload "$ANCHOR_TAG" "$RUNNER_TEMP/keystore.enc" --clobber > /dev/null 2>&1 || true
+              else
+                gh release create "$ANCHOR_TAG" "$RUNNER_TEMP/keystore.enc" \
+                  --title "Keystore Anchor (Internal)" \
+                  --notes "Cadangan keystore terenkripsi otomatis agar update APK selalu bisa menimpa versi lama tanpa uninstall." \
+                  --prerelease > /dev/null 2>&1 || true
+              fi
+            fi
+            rm -f "$RUNNER_TEMP/keystore.tar.gz" "$RUNNER_TEMP/keystore.enc"
+
             KS_PASS=$(cat "$KS_DIR/pass.txt")
             echo "::add-mask::$KS_PASS"
             {
@@ -180,7 +215,9 @@ jobs:
           set -o pipefail
           cd "$PROJECT_DIR"
           gradle --version
-          gradle --no-daemon --console=plain --stacktrace assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          # Bersihkan build sebelumnya untuk menghindari cache yang rusak
+          gradle --no-daemon --console=plain clean 2>&1 | tail -n 5
+          gradle --no-daemon --console=plain --stacktrace --info assembleRelease 2>&1 | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Cari APK dan periksa tanda tangan
         run: |
@@ -293,6 +330,11 @@ jobs:
             fi
             printf '%s\n' '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$LOG" ]; then
+            grep -E '^e: |error:|AAPT|Manifest merger|Execution failed|What went wrong' "$LOG" | head -n 12 | while IFS= read -r l; do
+              echo "::error title=Gradle::$l"
+            done
+          fi
           exit 0
 
       - name: Simpan log Gradle (hanya bila gagal)

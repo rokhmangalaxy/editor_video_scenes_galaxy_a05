@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Potongan 1 (bagian kiri video) -->
+    <path
+        android:fillColor="#FFDCDCE6"
+        android:fillType="evenOdd"
+        android:pathData="M30.8,41 H38.3 A1.2,1.2 0 0,1 39.5,42.2 V65.8 A1.2,1.2 0 0,1 38.3,67 H30.8 A4.8,4.8 0 0,1 26,62.2 V45.8 A4.8,4.8 0 0,1 30.8,41 Z M29.2,43.2 H32.2 V45.5 H29.2 Z M34.4,43.2 H37.4 V45.5 H34.4 Z M29.2,62.5 H32.2 V64.8 H29.2 Z M34.4,62.5 H37.4 V64.8 H34.4 Z" />
+    <path
+        android:fillColor="#FF22222A"
+        android:pathData="M29.6,47.3 H37.7 V60.7 H29.6 A1.6,1.6 0 0,1 28,59.1 V48.9 A1.6,1.6 0 0,1 29.6,47.3 Z" />
+    <path
+        android:strokeColor="#FFB4B4C4"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M34.2,51 L31,54 L34.2,57" />
+
+    <!-- Potongan 3 (bagian kanan video) -->
+    <path
+        android:fillColor="#FFDCDCE6"
+        android:fillType="evenOdd"
+        android:pathData="M69.7,41 H77.2 A4.8,4.8 0 0,1 82,45.8 V62.2 A4.8,4.8 0 0,1 77.2,67 H69.7 A1.2,1.2 0 0,1 68.5,65.8 V42.2 A1.2,1.2 0 0,1 69.7,41 Z M70.6,43.2 H73.6 V45.5 H70.6 Z M75.8,43.2 H78.8 V45.5 H75.8 Z M70.6,62.5 H73.6 V64.8 H70.6 Z M75.8,62.5 H78.8 V64.8 H75.8 Z" />
+    <path
+        android:fillColor="#FF22222A"
+        android:pathData="M70.3,47.3 H78.4 A1.6,1.6 0 0,1 80,48.9 V59.1 A1.6,1.6 0 0,1 78.4,60.7 H70.3 Z" />
+    <path
+        android:strokeColor="#FFB4B4C4"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M73.8,51 L77,54 L73.8,57" />
+
+    <!-- Potongan 2 (bagian tengah video utama dengan ikon Play) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M45.1,38.5 H62.9 A1.6,1.6 0 0,1 64.5,40.1 V67.9 A1.6,1.6 0 0,1 62.9,69.5 H45.1 A1.6,1.6 0 0,1 43.5,67.9 V40.1 A1.6,1.6 0 0,1 45.1,38.5 Z M46,41 H49.3 V43.6 H46 Z M52.3,41 H55.7 V43.6 H52.3 Z M58.7,41 H62 V43.6 H58.7 Z M46,64.4 H49.3 V67 H46 Z M52.3,64.4 H55.7 V67 H52.3 Z M58.7,64.4 H62 V67 H58.7 Z" />
+    <path
+        android:fillColor="#FFFF3B5C"
+        android:pathData="M50.4,47.8 V60.2 L60,54 Z" />
+
+    <!-- Garis potong kiri & kanan (playhead pemecah bagian) -->
+    <path
+        android:strokeColor="#FFFF3B5C"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M41.5,35 V39.5 M41.5,43.2 V47.8 M41.5,51.7 V56.3 M41.5,60.2 V64.8 M41.5,68.5 V72.2 M66.5,35 V39.5 M66.5,43.2 V47.8 M66.5,51.7 V56.3 M66.5,60.2 V64.8 M66.5,68.5 V72.2" />
+    <path
+        android:fillColor="#FFFF3B5C"
+        android:pathData="M39.1,29.8 H43.9 L41.5,33.5 Z M64.1,29.8 H68.9 L66.5,33.5 Z" />
+
+    <!-- Ikon gunting pemotong di atas -->
+    <path
+        android:strokeColor="#FFFFD60A"
+        android:strokeWidth="1.85"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M50.4,27.2 A2.1,2.1 0 1,1 46.2,27.2 A2.1,2.1 0 1,1 50.4,27.2 M61.8,27.2 A2.1,2.1 0 1,1 57.6,27.2 A2.1,2.1 0 1,1 61.8,27.2 M49.8,28.7 L57.8,35.2 M58.2,28.7 L50.2,35.2" />
+
+    <!-- Bar indikator 3 bagian timeline di bawah -->
+    <path
+        android:fillColor="#FFFF3B5C"
+        android:pathData="M31,74.5 H38.3 A1.2,1.2 0 0,1 39.5,75.7 V76.3 A1.2,1.2 0 0,1 38.3,77.5 H31 A1.5,1.5 0 0,1 29.5,76 V76 A1.5,1.5 0 0,1 31,74.5 Z" />
+    <path
+        android:fillColor="#FFFFD60A"
+        android:pathData="M45,74.2 H63 A1.5,1.5 0 0,1 64.5,75.7 V76.3 A1.5,1.5 0 0,1 63,77.8 H45 A1.5,1.5 0 0,1 43.5,76.3 V75.7 A1.5,1.5 0 0,1 45,74.2 Z" />
+    <path
+        android:fillColor="#FFFF3B5C"
+        android:pathData="M69.7,74.5 H77 A1.5,1.5 0 0,1 78.5,76 V76 A1.5,1.5 0 0,1 77,77.5 H69.7 A1.2,1.2 0 0,1 68.5,76.3 V75.7 A1.2,1.2 0 0,1 69.7,74.5 Z" />
+</vector>
