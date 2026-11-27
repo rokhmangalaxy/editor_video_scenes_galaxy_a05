@@ -100,7 +100,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Alat di bar bawah. */
-enum class Tool { SPLIT, MERGE, MARKER, SCENE_DETECT, AI, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE }
+enum class Tool { SPLIT, MERGE, MARKER, SCENE_DETECT, AI, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE, GERGAJI }
 
 /** Kategori catatan (Bug atau Pengembangan). */
 enum class NoteType(val label: String) {
@@ -3714,8 +3714,31 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 bump()
                 if (msg != null) toast(msg)
             }
+
+            Tool.GERGAJI -> {
+                // Menampilkan dialog pilihan durasi gergaji
+                gergajiSheet = true
+            }
         }
     }
+
+    fun executeGergaji(durSec: Double) {
+        if (!hasVideo || core.segs.isEmpty()) {
+            toast("Impor video dulu")
+            return
+        }
+        val result = core.splitAt(core.t, durSec)
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit(forceExact = true)
+        bump()
+        if (result != null) toast(result)
+        gergajiSheet = false
+    }
+
+    // Dialog pilihan durasi gergaji
+    var gergajiSheet by mutableStateOf(false)
+    var gergajiDuration by mutableDoubleStateOf(0.0)
 
     // ------------------------------------------------------------------ deteksi scene
 

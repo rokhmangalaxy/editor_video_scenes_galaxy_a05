@@ -238,6 +238,27 @@ class EditorCore {
         return "Klip dipotong di " + Fmt.time(t)
     }
 
+    /** Potong klip di posisi [t] dan buang [durSec] detik ke depan. */
+    fun splitAt(t: Double, durSec: Double): String? {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        val L = locate(t)
+        val g = segs[L.i]
+        if (g.fz) return "Potongan beku tidak bisa dipotong"
+        if (L.s - g.a < 0.1 * g.sp || g.b - L.s < 0.1 * g.sp) return "Geser playhead ke dalam klip dulu"
+        val cutEnd = L.s + durSec
+        if (cutEnd > g.b) return "Durasi potong melebihi panjang klip"
+        onPause()
+        val n = ArrayList(segs)
+        // Potong menjadi 3 bagian: sebelum potong, bagian yang dibuang, setelah potong
+        n[L.i] = g.copy(b = L.s)  // Sebelum posisi seek
+        n.add(L.i + 1, g.copy(a = cutEnd))  // Setelah bagian yang dibuang
+        segs = n
+        sel = L.i + 1
+        push()
+        build()
+        return "Gergaji ${Fmt.one(durSec)} dtk di posisi seek"
+    }
+
     // ------------------------------------------------------------------ gabung scene tanpa render ulang (Zero Re-encode)
 
     /**

@@ -154,6 +154,15 @@ fun EditorScreen(
                 )
             }
 
+            if (vm.gergajiSheet) {
+                GergajiSheet(
+                    onGergaji35 = { vm.executeGergaji(3.5) },
+                    onGergaji5 = { vm.executeGergaji(5.0) },
+                    onGergaji7 = { vm.executeGergaji(7.0) },
+                    onClose = { vm.gergajiSheet = false }
+                )
+            }
+
             if (vm.gridTagSheet) {
                 GridTagSheet(
                     vm = vm,
@@ -694,6 +703,7 @@ private fun ToolBar(vm: EditorViewModel) {
             }
             val markerLbl = if (vm.markerCount > 0) "Tandai (${vm.markerCount})" else "Tandai"
             ToolItem("Potong", R.drawable.ic_split, false) { vm.onTool(Tool.SPLIT) }
+            ToolItem("Gergaji", R.drawable.ic_scissors, false) { vm.onTool(Tool.GERGAJI) }
             ToolItem("Gabung", R.drawable.ic_merge, vm.canMergeScene) { vm.onTool(Tool.MERGE) }
             ToolItem(
                 markerLbl,
@@ -801,6 +811,107 @@ private fun ToastHost(msg: String?, modifier: Modifier) {
                 fontSize = 13.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun GergajiSheet(
+    onGergaji35: () -> Unit,
+    onGergaji5: () -> Unit,
+    onGergaji7: () -> Unit,
+    onClose: () -> Unit
+) {
+    FloatingSheetPanel(onTapOutside = onClose) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Text(
+                text = "Gergaji (Potong dari Seek)",
+                color = Ev.Text,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Pilih durasi yang akan dipotong dari posisi seek:",
+                color = Ev.Muted,
+                fontSize = 13.sp
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                GergajiOption(
+                    label = "3.5 dtk",
+                    value = "3.5dtk",
+                    active = false,
+                    onClick = onGergaji35,
+                    modifier = Modifier.weight(1f)
+                )
+                GergajiOption(
+                    label = "5 dtk",
+                    value = "5dtk",
+                    active = false,
+                    onClick = onGergaji5,
+                    modifier = Modifier.weight(1f)
+                )
+                GergajiOption(
+                    label = "7 dtk",
+                    value = "7dtk",
+                    active = false,
+                    onClick = onGergaji7,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            ActionButton(
+                text = "Batal",
+                primary = false,
+                onClick = onClose,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun GergajiOption(
+    label: String,
+    value: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (active) Ev.Accent.copy(alpha = 0.2f) else Ev.Bg
+        ),
+        border = if (active) Border(1.dp, Ev.Accent) else null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .clickable(onClick = onClick),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = label,
+                color = Ev.Text,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = value,
+                color = Ev.Muted,
+                fontSize = 12.sp
             )
         }
     }
