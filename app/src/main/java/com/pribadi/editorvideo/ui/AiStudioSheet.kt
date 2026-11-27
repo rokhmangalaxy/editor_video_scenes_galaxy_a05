@@ -262,18 +262,18 @@ fun AiStudioSheet(
 private fun AiCreateTabContent(vm: EditorViewModel) {
     val plan = vm.currentAiExecutionPlan()
 
-    // 1. Pemilih Mode Kerja AI: Mode Sisipkan vs Mode Replace Scene
+    // 1. Pemilih Mode Kerja AI: Mode Sisipkan vs Mode Replace Scene vs Mode Replace Seek
     AiSectionLabel("MODE KERJA AI")
     Spacer(modifier = Modifier.height(5.dp))
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         AiModeCard(
             modifier = Modifier.weight(1f),
             active = vm.aiWorkMode == AiWorkMode.INSERT,
-            title = "➕ Mode Sisipkan",
-            sub = "Belah & selipkan di titik Seek"
+            title = "➕ Sisipkan",
+            sub = "Belah & selipkan di Seek"
         ) {
             vm.selectAiWorkMode(AiWorkMode.INSERT)
         }
@@ -281,17 +281,149 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
             modifier = Modifier.weight(1f),
             active = vm.aiWorkMode == AiWorkMode.REPLACE_SCENE,
             title = "🔄 Replace Scene",
-            sub = "Ganti klip terpilih (≤10 dtk)"
+            sub = "Ganti klip terpilih"
         ) {
             vm.selectAiWorkMode(AiWorkMode.REPLACE_SCENE)
+        }
+        AiModeCard(
+            modifier = Modifier.weight(1f),
+            active = vm.aiWorkMode == AiWorkMode.REPLACE_SEEK,
+            title = "🎯 Replace Seek",
+            sub = "Generate di posisi Seek"
+        ) {
+            vm.selectAiWorkMode(AiWorkMode.REPLACE_SEEK)
         }
     }
 
     Spacer(modifier = Modifier.height(10.dp))
 
-    // 1B. Pembagian Durasi Sama: 1 Video / Dobel (maks 5 dtk × 2) / Tripel (maks 3.5 dtk × 3)
-    AiSectionLabel("PEMBAGIAN DURASI (SAMA RATA)")
-    Spacer(modifier = Modifier.height(5.dp))
+    // 1B. Pembagian Durasi: berbeda tergantung mode kerja
+    when (vm.aiWorkMode) {
+        AiWorkMode.REPLACE_SEEK -> {
+            // Mode Replace Seek: hanya tampilkan opsi 7dtk / 5dtk×2 / 3.5dtk×3
+            AiSectionLabel("PILIH DURASI GENERASI")
+            Spacer(modifier = Modifier.height(5.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // Opsi 7 dtk (1 video)
+                val active7 = vm.aiDurationSplit == AiDurationSplit.AUTO_1 && vm.aiReplaceTargetDurSec == 7.0
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(if (active7) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
+                        .border(
+                            width = if (active7) 1.5.dp else 1.dp,
+                            color = if (active7) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(11.dp)
+                        )
+                        .clickable { vm.selectAiDurationSplit(AiDurationSplit.AUTO_1); vm.updateReplaceTargetDuration(7.0, refreshEndFrame = true) }
+                        .padding(horizontal = 7.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "🎬 7 dtk",
+                        color = if (active7) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "1 video · 7.0s",
+                        color = if (active7) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+                // Opsi 5 dtk × 2
+                val active5x2 = vm.aiDurationSplit == AiDurationSplit.DOUBLE_5
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(if (active5x2) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
+                        .border(
+                            width = if (active5x2) 1.5.dp else 1.dp,
+                            color = if (active5x2) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(11.dp)
+                        )
+                        .clickable { vm.selectAiDurationSplit(AiDurationSplit.DOUBLE_5) }
+                        .padding(horizontal = 7.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "🎞️ 5×2 dtk",
+                        color = if (active5x2) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "2 video · 10.0s total",
+                        color = if (active5x2) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+                // Opsi 3.5 dtk × 3
+                val active35x3 = vm.aiDurationSplit == AiDurationSplit.TRIPLE_35
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(if (active35x3) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
+                        .border(
+                            width = if (active35x3) 1.5.dp else 1.dp,
+                            color = if (active35x3) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(11.dp)
+                        )
+                        .clickable { vm.selectAiDurationSplit(AiDurationSplit.TRIPLE_35) }
+                        .padding(horizontal = 7.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "🎞️ 3.5×3 dtk",
+                        color = if (active35x3) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "3 video · 10.5s total",
+                        color = if (active35x3) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = when (vm.aiDurationSplit) {
+                    AiDurationSplit.AUTO_1 -> "1 video tunggal 7.0 dtk · Frame awal & akhir sesuai pilihan scene tetangga"
+                    AiDurationSplit.DOUBLE_5 -> "2 video × 5.0 dtk berantai · Frame akhir video #1 → frame awal video #2"
+                    AiDurationSplit.TRIPLE_35 -> "3 video × 3.5 dtk berantai · Frame akhir → awal antar video terhubung"
+                    else -> ""
+                },
+                color = Ev.Muted,
+                fontSize = 10.sp,
+                lineHeight = 13.5.sp
+            )
+        }
+        else -> {
+            // Mode biasa: tampilkan semua opsi pembagian durasi
+            AiSectionLabel("PEMBAGIAN DURASI (SAMA RATA)")
+            Spacer(modifier = Modifier.height(5.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -341,13 +473,15 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
                     }
                 }
             }
-    Spacer(modifier = Modifier.height(4.dp))
-    Text(
-        text = vm.aiDurationSplit.sub,
-        color = Ev.Muted,
-        fontSize = 10.sp,
-        lineHeight = 13.5.sp
-    )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = vm.aiDurationSplit.sub,
+                color = Ev.Muted,
+                fontSize = 10.sp,
+                lineHeight = 13.5.sp
+            )
+        }
+    }
 
     // Total durasi yang dibagi rata (Dobel / Tripel)
     if (vm.aiDurationSplit != AiDurationSplit.AUTO_1) {
@@ -449,10 +583,18 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
     // Tombol Utama Generate (menambahkan Kandidat baru bila hasil sebelumnya sudah ada!)
     val nextCandNum = vm.aiCandidates.size + 1
     val candTag = if (vm.aiCandidates.isNotEmpty()) "Kandidat #$nextCandNum · " else ""
-    val btnLabel = if (vm.aiWorkMode == AiWorkMode.INSERT) {
-        "✨ Generate ${candTag}${plan.count} Video (${Fmt.one(plan.targetTotalSec)} dtk)"
-    } else {
-        "🔄 Generate ${candTag}Replace (${Fmt.one(plan.targetTotalSec)} dtk · ${plan.count} Video)"
+    val btnLabel = when (vm.aiWorkMode) {
+        AiWorkMode.INSERT -> "✨ Generate ${candTag}${plan.count} Video (${Fmt.one(plan.targetTotalSec)} dtk)"
+        AiWorkMode.REPLACE_SEEK -> {
+            val durDesc = when (vm.aiDurationSplit) {
+                AiDurationSplit.AUTO_1 -> "7 dtk"
+                AiDurationSplit.DOUBLE_5 -> "5×2 dtk"
+                AiDurationSplit.TRIPLE_35 -> "3.5×3 dtk"
+                else -> Fmt.one(plan.targetTotalSec) + " dtk"
+            }
+            "🎯 Generate ${candTag}Replace Seek (${durDesc})"
+        }
+        else -> "🔄 Generate ${candTag}Replace (${Fmt.one(plan.targetTotalSec)} dtk · ${plan.count} Video)"
     }
     if (vm.aiCandidates.isNotEmpty()) {
         Row(

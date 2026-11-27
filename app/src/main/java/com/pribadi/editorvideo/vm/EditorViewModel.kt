@@ -1891,6 +1891,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 blockReason = adj.blockReason,
                 note = note
             )
+        } else if (aiWorkMode == AiWorkMode.REPLACE_SEEK) {
+            // Replace Seek: generate di posisi seek dengan durasi yang dipilih
+            // Menggunakan aiSeekTimeSec sebagai referensi posisi
+            val seekDur = when (aiDurationSplit) {
+                AiDurationSplit.AUTO_1 -> 7.0  // 7 dtk tunggal
+                AiDurationSplit.DOUBLE_5 -> 10.0  // 5dtk × 2 = 10 dtk total
+                AiDurationSplit.TRIPLE_35 -> 10.5  // 3.5dtk × 3 = 10.5 dtk total
+                else -> aiReplaceTargetDurSec
+            }
+            AiPlanner.planReplaceWithSplit(seekDur, aiSeekTimeSec, aiDurationSplit)
         } else {
             AiPlanner.planReplaceWithSplit(aiReplaceTargetDurSec, selectedSceneDurationSec(), aiDurationSplit)
         }
@@ -2335,9 +2345,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Frame Akhir: bisa dari frame AWAL scene berikutnya (opsi item #4) atau frame akhir scene sendiri
         val finalTargetLastBmp: Bitmap? = when {
-            aiFirstFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
-                aiNeighborFirstBitmap?.takeIf { !it.isRecycled }
-                    ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }
             aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
                 aiNeighborLastBitmap?.takeIf { !it.isRecycled }
                     ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }

@@ -27,6 +27,10 @@ enum class AiWorkMode(val label: String, val sub: String) {
     REPLACE_SCENE(
         "Replace Scene",
         "Ganti klip terpilih (fleksibel ≤10 dtk ZeroGPU)"
+    ),
+    REPLACE_SEEK(
+        "Replace Seek",
+        "Generate di posisi Seek dengan durasi tetap (3.5×3 / 5×2 / 7 dtk)"
     )
 }
 
