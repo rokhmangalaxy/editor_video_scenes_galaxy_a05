@@ -303,6 +303,19 @@ object AiPlanner {
     const val ZEROGPU_MAX_REPLACE_SEC = 10.0
     const val ZEROGPU_MIN_REPLACE_SEC = 1.0
 
+    /**
+     * Aturan 1 Workflow:
+     * - Maksimal total durasi dalam 1 workflow adalah 10.0 detik.
+     * - Khusus jika seluruh segmen memakai durasi 3.5 detik, batas maksimal 1 workflow menjadi 10.5 detik (3 × 3.5 dtk).
+     */
+    const val MAX_WORKFLOW_SEC = 10.0
+    const val MAX_WORKFLOW_35_SEC = 10.5
+
+    fun maxWorkflowDurationFor(segDurs: List<Double>): Double {
+        val all35 = segDurs.isNotEmpty() && segDurs.all { kotlin.math.abs(it - 3.5) < 0.01 }
+        return if (all35) MAX_WORKFLOW_35_SEC else MAX_WORKFLOW_SEC
+    }
+
     /** Timeout menunggu workflow aktif = 3 menit (180 detik). */
     const val WORKFLOW_WAIT_TIMEOUT_SEC = 180
 
@@ -312,10 +325,10 @@ object AiPlanner {
     fun planInsert(preset: AiInsertPreset): AiExecutionPlan {
         val total = preset.segDurs.sum()
         val note = when (preset) {
-            AiInsertPreset.THREE_BY_35 -> "3 hasil × 3.5 dtk (total 10.5 dtk)"
-            AiInsertPreset.TWO_BY_5 -> "2 hasil × 5.0 dtk (total 10.0 dtk)"
-            AiInsertPreset.SINGLE_7 -> "1 hasil × 7.0 dtk"
-            AiInsertPreset.FULL_10 -> "2 segmen berantai × 5.0 dtk → digabung 10.0 dtk"
+            AiInsertPreset.THREE_BY_35 -> "1 Workflow · 3 × 3.5 dtk berurutan (maks 10.5 dtk)"
+            AiInsertPreset.TWO_BY_5 -> "1 Workflow · 2 × 5.0 dtk berurutan (total 10.0 dtk)"
+            AiInsertPreset.SINGLE_7 -> "1 Workflow · 1 × 7.0 dtk"
+            AiInsertPreset.FULL_10 -> "1 Workflow · 2 segmen berantai × 5.0 dtk → digabung 10.0 dtk"
         }
         return AiExecutionPlan(
             workMode = AiWorkMode.INSERT,
@@ -328,7 +341,7 @@ object AiPlanner {
 
     /**
      * Merencanakan segmen ZeroGPU (pilihan valid Space: 3.5s, 5.0s, 7.0s)
-     * untuk Mode Replace Scene dengan target durasi fleksibel [1.0 .. 10.0] detik.
+     * untuk Mode Replace Scene dengan target durasi fleksibel [1.0 .. 10.0] detik dalam 1 workflow tunggal.
      */
     fun planReplace(requestedSec: Double, sceneOrigLenSec: Double): AiExecutionPlan {
         val clamped = min(ZEROGPU_MAX_REPLACE_SEC, max(ZEROGPU_MIN_REPLACE_SEC, requestedSec))
@@ -339,33 +352,33 @@ object AiPlanner {
             rounded <= 3.5 -> {
                 segs = listOf(3.5)
                 note = if (rounded < 3.45) {
-                    "1 × 3.5 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
+                    "1 Workflow · 1 × 3.5 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
                 } else {
-                    "1 × 3.5 dtk pas"
+                    "1 Workflow · 1 × 3.5 dtk pas"
                 }
             }
             rounded <= 5.0 -> {
                 segs = listOf(5.0)
                 note = if (rounded < 4.95) {
-                    "1 × 5.0 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
+                    "1 Workflow · 1 × 5.0 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
                 } else {
-                    "1 × 5.0 dtk pas"
+                    "1 Workflow · 1 × 5.0 dtk pas"
                 }
             }
             rounded <= 7.0 -> {
                 segs = listOf(7.0)
                 note = if (rounded < 6.95) {
-                    "1 × 7.0 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
+                    "1 Workflow · 1 × 7.0 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
                 } else {
-                    "1 × 7.0 dtk pas"
+                    "1 Workflow · 1 × 7.0 dtk pas"
                 }
             }
             rounded <= 8.5 -> {
                 segs = listOf(5.0, 3.5)
                 note = if (rounded < 8.45) {
-                    "2 segmen berantai (5.0s + 3.5s) → auto-trim ke ${Fmt.one(rounded)} dtk"
+                    "1 Workflow · 2 segmen berurutan (5.0s + 3.5s) → auto-trim ke ${Fmt.one(rounded)} dtk"
                 } else {
-                    "2 segmen berantai (5.0s + 3.5s = 8.5 dtk)"
+                    "1 Workflow · 2 segmen berurutan (5.0s + 3.5s = 8.5 dtk)"
                 }
             }
             else -> {

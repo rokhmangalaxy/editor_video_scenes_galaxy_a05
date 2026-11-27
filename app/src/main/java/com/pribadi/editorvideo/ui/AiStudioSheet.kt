@@ -318,7 +318,7 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         Text(
-            text = "⏱ Timeout otomatis: Menunggu Workflow maks 3 menit · Buat Video maks 3 menit / video.",
+            text = "⚡ 1 Workflow tunggal (maks 10 dtk · khusus 3.5 dtk maks 10.5 dtk): setelah Video #1 berhasil, Video berikutnya otomatis digenerate di workflow yang sama · Timeout 3m workflow & 3m/video.",
             color = Ev.Muted,
             fontSize = 10.5.sp,
             lineHeight = 14.sp
@@ -1882,10 +1882,10 @@ private fun AiSideBySideReplacePreviewCard(
         }
     }
 
-    val origAspect = remember(origInfo, vm.rot) {
+    val origAspect = remember(origInfo, origSeg.rot) {
         val w = if (origInfo.dispW > 0) origInfo.dispW else 9
         val h = if (origInfo.dispH > 0) origInfo.dispH else 16
-        if (vm.rot % 180 != 0) h.toFloat() / w.toFloat() else w.toFloat() / h.toFloat()
+        if (origSeg.rot % 180 != 0) h.toFloat() / w.toFloat() else w.toFloat() / h.toFloat()
     }.coerceIn(0.35f, 2.6f)
 
     val aiAspect = remember(aiSeg.info) {
@@ -1954,7 +1954,7 @@ private fun AiSideBySideReplacePreviewCard(
                         modifier = Modifier
                             .aspectRatio(origAspect, matchHeightConstraintsFirst = true)
                             .graphicsLayer(
-                                rotationZ = vm.rot.toFloat(),
+                                rotationZ = origSeg.rot.toFloat(),
                                 scaleX = if (vm.flip) -1f else 1f
                             )
                     ) {

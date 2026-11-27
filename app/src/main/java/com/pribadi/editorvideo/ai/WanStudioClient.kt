@@ -27,6 +27,7 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
 import com.pribadi.editorvideo.export.VideoFrames
 import com.pribadi.editorvideo.export.VideoProbe
+import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.VideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -66,7 +67,8 @@ data class SingleTaskRequest(
     val safeMode: Boolean,
     val enableSafetyChecker: Boolean,
     val firstBmp: Bitmap,
-    val lastBmp: Bitmap?
+    val lastBmp: Bitmap?,
+    val chainFromPrev: Boolean = false
 )
 
 data class DownloadedAiVideo(
@@ -268,9 +270,17 @@ object WanStudioClient {
         tasks: List<SingleTaskRequest>,
         videoIndexOffset: Int = 0,
         overallTotalVideos: Int = tasks.size,
+        onSegmentReady: ((DownloadedAiVideo) -> Unit)? = null,
         onTick: (LiveProgressTick) -> Unit
     ): List<DownloadedAiVideo> = withContext(Dispatchers.IO) {
         require(tasks.isNotEmpty()) { "Daftar tugas AI kosong." }
+        val totalRequestedSec = tasks.sumOf { it.durationSec }
+        val maxWorkflowSec = AiPlanner.maxWorkflowDurationFor(tasks.map { it.durationSec })
+        if (totalRequestedSec > maxWorkflowSec + 0.05) {
+            throw IllegalArgumentException(
+                "Total durasi 1 workflow (${Fmt.one(totalRequestedSec)} dtk) melebihi batas maksimal ${Fmt.one(maxWorkflowSec)} dtk."
+            )
+        }
         val root = normalizeFirebaseUrl(cfg.firebaseUrl)
         val owner = cfg.githubOwner.trim()
         val repo = cfg.githubRepo.trim()
@@ -362,6 +372,9 @@ object WanStudioClient {
             if (lastId != null) {
                 itemObj.put("last_image", lastId)
             }
+            if (t.chainFromPrev) {
+                itemObj.put("chain_from_prev", true)
+            }
             itemsJson.put(t.taskKey, itemObj)
         }
 
@@ -429,6 +442,7 @@ object WanStudioClient {
         var activeLocalIdx = 1
         var videoTimerStartElapsed = SystemClock.elapsedRealtime()
         var finalStatusJson: JSONObject? = null
+        val streamedMap = LinkedHashMap<String, DownloadedAiVideo>()
 
         while (true) {
             currentCoroutineContext().ensureActive()
@@ -466,7 +480,7 @@ object WanStudioClient {
                             currentVideoNumber = videoIndexOffset + 1,
                             totalVideos = overallTotalVideos,
                             currentVideoSec = 0,
-                            statusDetail = "Menunggu GitHub Runner mengambil tugas… (${wfElapsedSec}s / 180s)"
+                            statusDetail = "Menunggu GitHub Runner mengambil 1 workflow (${tasks.size} segmen)… (${wfElapsedSec}s / 180s)"
                         )
                     )
                     continue
@@ -481,26 +495,57 @@ object WanStudioClient {
             // Runner sudah aktif ("running", "completed", atau "failed")
             if (stateStr == "running") {
                 val reportedIdx = stObj?.optInt("current_index", 1)?.coerceIn(1, tasks.size) ?: 1
+                // Jika workflow sudah menyelesaikan segmen sebelumnya dan lanjut men-generate segmen berikutnya,
+                // unduh segera segmen yang sudah selesai agar langsung tampil di Tab Status!
+                if (reportedIdx > 1) {
+                    val finishedBeforeCurrent = tasks.take(reportedIdx - 1)
+                        .filter { it.taskKey !in streamedMap }
+                    if (finishedBeforeCurrent.isNotEmpty()) {
+                        val newlyReady = downloadAvailableResults(
+                            context = context,
+                            root = root,
+                            projectId = projectId,
+                            tasks = finishedBeforeCurrent,
+                            statusSummary = stObj
+                        )
+                        for (dl in newlyReady) {
+                            streamedMap[dl.taskKey] = dl
+                            onSegmentReady?.invoke(dl)
+                        }
+                    }
+                }
                 if (reportedIdx != activeLocalIdx) {
                     activeLocalIdx = reportedIdx
-                    // Reset timer 3 menit setiap kali berpindah ke video berikutnya!
+                    // Reset timer 3 menit setiap kali berpindah ke video berikutnya di dalam 1 workflow yang sama!
                     videoTimerStartElapsed = SystemClock.elapsedRealtime()
                 }
                 val vidElapsedSec = ((SystemClock.elapsedRealtime() - videoTimerStartElapsed) / 1000L).toInt()
                 val globalVidNum = videoIndexOffset + activeLocalIdx
                 if (vidElapsedSec >= AiPlanner.VIDEO_GEN_TIMEOUT_SEC) {
                     // Selamatkan video-video sebelumnya yang sudah selesai bila ada
-                    val savedBeforeTimeout = downloadAvailableResults(
+                    val remainingDone = tasks.take(max(0, activeLocalIdx - 1))
+                        .filter { it.taskKey !in streamedMap }
+                    val newlySaved = downloadAvailableResults(
                         context = context,
                         root = root,
                         projectId = projectId,
-                        tasks = tasks.take(max(0, activeLocalIdx - 1))
+                        tasks = remainingDone,
+                        statusSummary = stObj
                     )
+                    for (dl in newlySaved) {
+                        streamedMap[dl.taskKey] = dl
+                    }
                     throw VideoGenerationTimeoutException(
                         timedOutVideoNumber = globalVidNum,
-                        partialDownloaded = savedBeforeTimeout,
+                        partialDownloaded = streamedMap.values.sortedBy { it.order },
                         message = "Pembuatan Video #$globalVidNum melewati batas 3 menit (180 detik) per video."
                     )
+                }
+                val doneSoFar = streamedMap.size
+                val statusPrefix = if (doneSoFar > 0) {
+                    "Video #1..#$doneSoFar berhasil ✓ · lanjut membuat Video #$globalVidNum/$overallTotalVideos"
+                } else {
+                    "ZeroGPU sedang membuat Video #$globalVidNum/$overallTotalVideos"
                 }
                 onTick(
                     LiveProgressTick(
@@ -509,7 +554,7 @@ object WanStudioClient {
                         currentVideoNumber = globalVidNum,
                         totalVideos = overallTotalVideos,
                         currentVideoSec = vidElapsedSec,
-                        statusDetail = "ZeroGPU sedang membuat Video #$globalVidNum/$overallTotalVideos… (${vidElapsedSec}s / 180s)"
+                        statusDetail = "$statusPrefix… (${vidElapsedSec}s / 180s)"
                     )
                 )
             } else if (stateStr == "completed" || stateStr == "failed") {
@@ -518,7 +563,7 @@ object WanStudioClient {
             }
         }
 
-        // 4. Unduh berkas MP4 hasil yang selesai
+        // 4. Unduh berkas MP4 hasil akhir yang belum terunduh saat live streaming
         onTick(
             LiveProgressTick(
                 phase = AiRunPhase.DOWNLOADING,
@@ -530,13 +575,19 @@ object WanStudioClient {
             )
         )
 
-        val downloaded = downloadAvailableResults(
+        val remainingTasks = tasks.filter { it.taskKey !in streamedMap }
+        val newlyDownloaded = downloadAvailableResults(
             context = context,
             root = root,
             projectId = projectId,
-            tasks = tasks,
+            tasks = remainingTasks,
             statusSummary = finalStatusJson
         )
+        for (dl in newlyDownloaded) {
+            streamedMap[dl.taskKey] = dl
+            onSegmentReady?.invoke(dl)
+        }
+        val downloaded = streamedMap.values.sortedBy { it.order }
 
         // Bersihkan node sementara di Firebase secara best-effort agar hemat ruang DB
         try {

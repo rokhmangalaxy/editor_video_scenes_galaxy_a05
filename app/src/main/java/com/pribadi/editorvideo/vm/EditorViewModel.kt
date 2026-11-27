@@ -49,6 +49,8 @@ import com.pribadi.editorvideo.export.ExportMode
 import com.pribadi.editorvideo.export.ExportPlan
 import com.pribadi.editorvideo.export.ExportPlanner
 import com.pribadi.editorvideo.export.ExportRequest
+import com.pribadi.editorvideo.export.ExportScaleFit
+import com.pribadi.editorvideo.export.ExportSpecRef
 import com.pribadi.editorvideo.export.ExportState
 import com.pribadi.editorvideo.export.MediaStoreSaver
 import com.pribadi.editorvideo.export.ReverseVideoRenderer
@@ -164,7 +166,10 @@ data class ExportInfo(
     val subAll: String,
     val subCurrent: String,
     val subByTag: String,
-    val canStart: Boolean = true
+    val canStart: Boolean = true,
+    val hasMixedSpecs: Boolean = false,
+    val mixedSpecsSummary: String = "",
+    val supportsPerClipNative: Boolean = false
 )
 
 /**
@@ -455,6 +460,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var exportSelectedTags by mutableStateOf<List<String>>(emptyList())
         private set
     var exportByTagStyle by mutableStateOf(ByTagExportStyle.MERGE_SINGLE)
+    var exportSpecRef by mutableStateOf(ExportSpecRef.MAIN_ORIGINAL)
+    var exportScaleFit by mutableStateOf(ExportScaleFit.FIT_LETTERBOX)
 
     val exportState = ExportCenter.state
 
@@ -544,7 +551,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         hasVideo = core.hasVideo && sources.isNotEmpty() && core.segs.isNotEmpty()
         canUndo = core.canUndo
         canRedo = core.canRedo
-        rot = core.rot
+        rot = core.selRot
         flip = core.flip
         selIndex = core.sel
         selSpeed = core.selSpeed
@@ -570,11 +577,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Aspect ratio tampilan untuk sumber ke-[srcIdx] (sudah memperhitungkan rotasi global). */
-    fun aspectOfSource(srcIdx: Int): Float {
+    /** Aspect ratio tampilan untuk sumber ke-[srcIdx] dengan rotasi potongan [segRot]. */
+    fun aspectOfSource(srcIdx: Int, segRot: Int = rot): Float {
         val inf = sources.getOrElse(srcIdx) { sources.firstOrNull() }?.info ?: info
         if (inf == null || inf.dispW <= 0 || inf.dispH <= 0) return 9f / 16f
-        return if (rot % 180 != 0) {
+        return if (segRot % 180 != 0) {
             inf.dispH.toFloat() / inf.dispW.toFloat()
         } else {
             inf.dispW.toFloat() / inf.dispH.toFloat()
@@ -1064,8 +1071,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         startMs = srcStartMs,
                         endMs = srcEndMs,
                         speed = g.sp.toFloat().coerceIn(0.2f, 4f),
-                        aspect = aspectOfSource(g.src),
-                        rot = rot,
+                        aspect = aspectOfSource(g.src, g.rot),
+                        rot = g.rot,
                         flip = flip,
                         freeze = g.fz
                     )
@@ -1088,8 +1095,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         startMs = startMs,
                         endMs = endMs,
                         speed = g.sp.toFloat().coerceIn(0.2f, 4f),
-                        aspect = aspectOfSource(g.src),
-                        rot = rot,
+                        aspect = aspectOfSource(g.src, g.rot),
+                        rot = g.rot,
                         flip = flip,
                         freeze = g.fz
                     )
@@ -1402,7 +1409,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val idx = core.sel.coerceIn(0, core.segs.lastIndex)
         val g = core.segs[idx]
         val src = sources.getOrElse(g.src) { sources.first() }
-        val curRot = rot
+        val curRot = g.rot
         val curFlip = flip
         val startSrcSec = g.a
         val replaceSpanSec = min(g.len, aiReplaceTargetDurSec)
@@ -1857,80 +1864,62 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val ctx = getApplication<Application>()
             val collected = ArrayList<AiGeneratedSegment>()
             try {
-                if (!useChain) {
-                    // 1 Video tunggal ATAU Variasi Take dari frame awal yang sama dalam 1 batch project
-                    val batchReqs = plan.segDurs.mapIndexed { idx, dur ->
-                        SingleTaskRequest(
-                            taskKey = "task-${idx + 1}",
-                            order = idx + 1,
-                            space = spaceSnap,
-                            prompt = promptsSnap[idx],
-                            durationSec = dur,
-                            safeMode = safeSnap,
-                            enableSafetyChecker = safetySnap,
-                            firstBmp = initialFirstBmp,
-                            lastBmp = finalTargetLastBmp
-                        )
+                // Semua segmen (maks 10.0 dtk, atau maks 10.5 dtk khusus 3 × 3.5 dtk) dikirim dalam
+                // 1 workflow tunggal. Begitu Video #1 berhasil, Video berikutnya otomatis digenerate
+                // berurutan di dalam workflow yang sama, sambil Video #1 langsung muncul di Tab Status!
+                val batchReqs = plan.segDurs.mapIndexed { idx, dur ->
+                    val isLastSeg = idx == plan.segDurs.lastIndex
+                    val segLastBmp = if (!useChain) {
+                        finalTargetLastBmp
+                    } else if (isLastSeg) {
+                        finalTargetLastBmp
+                    } else {
+                        null
                     }
-                    val outs = WanStudioClient.executeProjectBatch(
-                        context = ctx,
-                        cfg = cfgSnap,
-                        tasks = batchReqs,
-                        videoIndexOffset = 0,
-                        overallTotalVideos = plan.count
-                    ) { tick ->
-                        launch(Dispatchers.Main) { applyProgressTick(tick) }
+                    SingleTaskRequest(
+                        taskKey = "task-${idx + 1}",
+                        order = idx + 1,
+                        space = spaceSnap,
+                        prompt = promptsSnap[idx],
+                        durationSec = dur,
+                        safeMode = safeSnap,
+                        enableSafetyChecker = safetySnap,
+                        firstBmp = initialFirstBmp,
+                        lastBmp = segLastBmp,
+                        chainFromPrev = useChain && idx > 0
+                    )
+                }
+
+                val outs = WanStudioClient.executeProjectBatch(
+                    context = ctx,
+                    cfg = cfgSnap,
+                    tasks = batchReqs,
+                    videoIndexOffset = 0,
+                    overallTotalVideos = plan.count,
+                    onSegmentReady = { dl ->
+                        val segObj = dl.toGeneratedSegment(dl.order)
+                        launch(Dispatchers.Main) {
+                            if (collected.none { it.segNumber == segObj.segNumber }) {
+                                collected.add(segObj)
+                                collected.sortBy { it.segNumber }
+                                aiGeneratedSegments = collected.toList()
+                            }
+                        }
                     }
-                    for (dl in outs) {
+                ) { tick ->
+                    launch(Dispatchers.Main) { applyProgressTick(tick) }
+                }
+
+                for (dl in outs) {
+                    if (collected.none { it.segNumber == dl.order }) {
                         collected.add(dl.toGeneratedSegment(dl.order))
                     }
-                } else {
-                    // Mode Sambung Berantai (Chained Continuity):
-                    // Frame terakhir MP4 Segmen #k otomatis menjadi input_image Segmen #(k+1)!
-                    var rollingFirstBmp: Bitmap = initialFirstBmp
-                    for (idx in plan.segDurs.indices) {
-                        val segNum = idx + 1
-                        val isLastSeg = idx == plan.segDurs.lastIndex
-                        val segLastBmp = if (isLastSeg) finalTargetLastBmp else null
-                        val singleReq = SingleTaskRequest(
-                            taskKey = "task-1",
-                            order = 1,
-                            space = spaceSnap,
-                            prompt = promptsSnap[idx],
-                            durationSec = plan.segDurs[idx],
-                            safeMode = safeSnap,
-                            enableSafetyChecker = safetySnap,
-                            firstBmp = rollingFirstBmp,
-                            lastBmp = segLastBmp
-                        )
-                        val outs = WanStudioClient.executeProjectBatch(
-                            context = ctx,
-                            cfg = cfgSnap,
-                            tasks = listOf(singleReq),
-                            videoIndexOffset = idx,
-                            overallTotalVideos = plan.count
-                        ) { tick ->
-                            launch(Dispatchers.Main) { applyProgressTick(tick) }
-                        }
-                        val dl = outs.first()
-                        val segObj = dl.toGeneratedSegment(segNum)
-                        collected.add(segObj)
-                        aiGeneratedSegments = collected.toList()
-
-                        if (!isLastSeg) {
-                            val nextStart = withContext(Dispatchers.IO) {
-                                WanStudioClient.extractLastFrameOfMp4(ctx, dl.file, dl.info)
-                            }
-                            if (nextStart != null) {
-                                rollingFirstBmp = nextStart
-                            }
-                        }
-                    }
                 }
+                collected.sortBy { it.segNumber }
 
                 aiGeneratedSegments = collected.toList()
                 aiRunPhase = AiRunPhase.COMPLETED
-                aiRunStatusDetail = "Selesai! ${collected.size} hasil video AI siap diatur & dimasukkan ke timeline."
+                aiRunStatusDetail = "Selesai dalam 1 workflow! ${collected.size} hasil video AI siap diatur & dimasukkan ke timeline."
                 toast("${collected.size} video AI selesai dibuat!")
             } catch (ce: CancellationException) {
                 aiRunPhase = AiRunPhase.IDLE
@@ -1946,9 +1935,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 toast("Timeout 3 menit menunggu workflow aktif")
             } catch (vte: VideoGenerationTimeoutException) {
                 for (dl in vte.partialDownloaded) {
-                    val segNum = (collected.size + 1).coerceAtMost(plan.count)
-                    collected.add(dl.toGeneratedSegment(segNum))
+                    if (collected.none { it.segNumber == dl.order }) {
+                        collected.add(dl.toGeneratedSegment(dl.order))
+                    }
                 }
+                collected.sortBy { it.segNumber }
                 aiCurrentVideoNum = vte.timedOutVideoNumber
                 aiCurrentVideoSec = AiPlanner.VIDEO_GEN_TIMEOUT_SEC
                 aiRunPhase = AiRunPhase.VIDEO_TIMEOUT
@@ -2396,6 +2387,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val l = core.locate(core.t)
         curSeg = l.i
         val g = core.segs.getOrNull(l.i) ?: return
+        rot = g.rot
+        info = sources.getOrElse(g.src) { sources.first() }.info
         seekPlayerTo(g.src, l.s, 0.015, forceExact = forceExact)
     }
 
@@ -2445,6 +2438,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val l = core.locate(core.t)
         val g = core.segs[l.i]
         curSeg = l.i
+        rot = g.rot
+        info = sources.getOrElse(g.src) { sources.first() }.info
         playing = true
         setSeekFast(false)
         seekPlayerTo(g.src, l.s, 0.02, forceExact = true)
@@ -2498,6 +2493,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (!hasVideo || i !in core.segs.indices) return
         curSeg = i
         val g = core.segs[i]
+        rot = g.rot
+        info = sources.getOrElse(g.src) { sources.first() }.info
         if (g.fz) {
             setSeekFast(false)
             player.pause()
@@ -3181,7 +3178,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.15 (Terbaru)",
+            version = "v1.0.16 (Terbaru)",
+            date = "27/11/2026",
+            title = "Ekspor Campuran Asli + AI, Putar Khusus Scene Fokus & 1-Workflow Multi-Segmen AI",
+            items = listOf(
+                "✓ [Pengembangan] Penanganan Ekspor Campuran Video Asli + Hasil AI: deteksi otomatis perbedaan resolusi/FPS disertai pilihan Acuan Spesifikasi (Ikuti Video Utama, Kualitas Tertinggi, Terendah/Sesuai AI, atau Asli Tiap Klip) dan penyesuaian bingkai Fit Utuh / Isi Penuh (Crop).",
+                "✓ [Bug Fixed] Tombol Putar (Rotate) kini hanya memutar scene/potongan yang sedang fokus (tidak memutar seluruh scene lain di timeline, Mode Grid, Collage, maupun hasil Ekspor).",
+                "✓ [Pengembangan] Generasi Multi-Segmen AI dalam 1 Workflow Tunggal (maks 10.0 dtk, khusus durasi 3.5 dtk maks 10.5 dtk): begitu Video #1 berhasil, Video berikutnya langsung digenerate berurutan di dalam workflow yang sama dan tampil live di Tab Status."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.15",
             date = "27/11/2026",
             title = "Pratinjau Kiri-Kanan Replace AI, Audio Asli Replace, Maks Durasi Scene, Loop Scene & Share Video",
             items = listOf(
@@ -3663,14 +3670,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Mengembalikan bitmap frame pertama klip secara utuh (tanpa crop, sudah mengikuti rotasi & cermin)
+     * Mengembalikan bitmap frame pertama klip secara utuh (tanpa crop, sudah mengikuti rotasi scene & cermin)
      * agar tampilan thumbnail di Mode Grid 100% sesuai dengan tampilan video saat autoplay.
      */
-    fun gridFirstFrameAt(src: Int, firstFrameSec: Double): Bitmap? {
+    fun gridFirstFrameAt(src: Int, firstFrameSec: Double, segRot: Int = rot): Bitmap? {
         if (!hasVideo || src !in sources.indices) return null
         val bucket10ms = Math.round(max(0.0, firstFrameSec) * 1000.0) / 10L
         val baseKey = (src.toLong() shl 40) or (bucket10ms and 0xFFFFFFFFFFL)
-        val normRot = ((rot % 360) + 360) % 360
+        val normRot = ((segRot % 360) + 360) % 360
         val curFlip = flip
 
         synchronized(gridCacheLock) {
@@ -3836,10 +3843,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast("Kualitas & FPS disetel sesuai video asli")
     }
 
-    /** Ringkasan resolusi & FPS asli dari sumber video utama (sudah memperhitungkan rotasi). */
+    /** Ringkasan resolusi & FPS asli dari acuan ekspor yang aktif (sudah memperhitungkan rotasi scene). */
     fun originalSpecLabel(): String {
-        val inf = sources.firstOrNull()?.info ?: info ?: demoInfo()
-        val dims = ExportMath.origDims(inf.dispW, inf.dispH, rot)
+        val resolved = resolveExportReference()
+        if (exportSpecRef == ExportSpecRef.PER_CLIP_NATIVE && resolved.supportsPerClipNative) {
+            return "Asli tiap klip masing-masing"
+        }
+        val inf = resolved.refInfo
+        val dims = ExportMath.origDims(inf.width, inf.height, inf.rotation, resolved.refRot)
         val fpsVal = if (inf.fps > 1f) inf.fps.toDouble() else 30.0
         return "${dims[0]}×${dims[1]} · ${Fmt.fps(fpsVal)} fps"
     }
@@ -3917,10 +3928,160 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         ExportCenter.reset()
     }
 
+    private data class ResolvedExportRef(
+        val refInfo: VideoInfo,
+        val refRot: Int,
+        val hasMixedSpecs: Boolean,
+        val mixedSummary: String,
+        val supportsPerClipNative: Boolean,
+        val extraNote: String? = null
+    )
+
+    private fun resolveExportReference(): ResolvedExportRef {
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
+            return ResolvedExportRef(
+                refInfo = info ?: demoInfo(),
+                refRot = core.selRot,
+                hasMixedSpecs = false,
+                mixedSummary = "",
+                supportsPerClipNative = false
+            )
+        }
+        val activeJobs = ExportMath.buildJobs(
+            exportMode,
+            core.segs,
+            core.sel,
+            exportSelectedTags,
+            exportByTagStyle
+        )
+        val activeSegs = activeJobs.flatMap { it.segs }.ifEmpty { core.segs }
+        val supportsPerClip = activeJobs.size > 1 && activeJobs.all { it.segs.size == 1 }
+
+        data class ClipEffectiveSpec(
+            val w: Int,
+            val h: Int,
+            val fps: Float,
+            val hasAudio: Boolean,
+            val durationMs: Long
+        )
+
+        val clipSpecs = activeSegs.map { g ->
+            val ms = sources.getOrElse(g.src) { sources.first() }
+            val dims = ExportMath.origDims(ms.info.width, ms.info.height, ms.info.rotation, g.rot)
+            val fpsVal = if (ms.info.fps > 1f) ms.info.fps else 30f
+            ClipEffectiveSpec(dims[0], dims[1], fpsVal, ms.info.hasAudio, ms.info.durationMs)
+        }
+
+        val signatures = clipSpecs.map { cs ->
+            val roundedFps = Math.round(cs.fps * 10f) / 10f
+            "${cs.w}×${cs.h} @ ${Fmt.fps(roundedFps.toDouble())}fps"
+        }.distinct()
+        val mixed = signatures.size > 1
+        val summary = if (mixed) {
+            "Klip campuran: " + signatures.take(3).joinToString(" · ") +
+                (if (signatures.size > 3) " (+${signatures.size - 3} lainnya)" else "")
+        } else {
+            ""
+        }
+
+        // Bila hanya mengekspor 1 potongan aktif (Mode CURRENT), gunakan sumber & rotasi scene aktif tersebut!
+        if (exportMode == ExportMode.CURRENT) {
+            val curSegObj = core.segs.getOrElse(core.sel) { core.segs.first() }
+            val curSrc = sources.getOrElse(curSegObj.src) { sources.first() }
+            return ResolvedExportRef(
+                refInfo = curSrc.info,
+                refRot = curSegObj.rot,
+                hasMixedSpecs = false,
+                mixedSummary = "",
+                supportsPerClipNative = false
+            )
+        }
+
+        val primarySrc = sources.first()
+        val primaryRot = activeSegs.firstOrNull { it.src == 0 }?.rot ?: activeSegs.first().rot
+        val primaryDims = ExportMath.origDims(
+            primarySrc.info.width,
+            primarySrc.info.height,
+            primarySrc.info.rotation,
+            primaryRot
+        )
+        val primaryLandscape = primaryDims[0] >= primaryDims[1]
+
+        return when (exportSpecRef) {
+            ExportSpecRef.MAIN_ORIGINAL -> {
+                val note = if (mixed) {
+                    "Campuran video asli & AI disatukan mengikuti spesifikasi Video Utama (${primaryDims[0]}×${primaryDims[1]} · ${Fmt.fps((if (primarySrc.info.fps > 1f) primarySrc.info.fps else 30f).toDouble())} fps)."
+                } else null
+                ResolvedExportRef(primarySrc.info, primaryRot, mixed, summary, supportsPerClip, note)
+            }
+
+            ExportSpecRef.HIGHEST -> {
+                val bestPixels = clipSpecs.maxByOrNull { it.w.toLong() * it.h.toLong() } ?: clipSpecs.first()
+                val maxFps = clipSpecs.maxOf { it.fps }
+                val longSide = max(bestPixels.w, bestPixels.h)
+                val shortSide = min(bestPixels.w, bestPixels.h)
+                val outW = if (primaryLandscape) longSide else shortSide
+                val outH = if (primaryLandscape) shortSide else longSide
+                val synth = VideoInfo(
+                    width = outW,
+                    height = outH,
+                    rotation = 0,
+                    durationMs = primarySrc.info.durationMs,
+                    fps = maxFps,
+                    bitrate = primarySrc.info.bitrate,
+                    hasAudio = clipSpecs.any { it.hasAudio }
+                )
+                val note = if (mixed) {
+                    "Acuan Kualitas Tertinggi dipilih (${outW}×${outH} · ${Fmt.fps(maxFps.toDouble())} fps); klip resolusi lebih rendah disesuaikan ke kanvas ini."
+                } else null
+                ResolvedExportRef(synth, 0, mixed, summary, supportsPerClip, note)
+            }
+
+            ExportSpecRef.LOWEST_AI -> {
+                val minPixels = clipSpecs.minByOrNull { it.w.toLong() * it.h.toLong() } ?: clipSpecs.first()
+                val minFps = clipSpecs.minOf { it.fps }
+                val longSide = max(minPixels.w, minPixels.h)
+                val shortSide = min(minPixels.w, minPixels.h)
+                val outW = if (primaryLandscape) longSide else shortSide
+                val outH = if (primaryLandscape) shortSide else longSide
+                val synth = VideoInfo(
+                    width = outW,
+                    height = outH,
+                    rotation = 0,
+                    durationMs = primarySrc.info.durationMs,
+                    fps = minFps,
+                    bitrate = primarySrc.info.bitrate,
+                    hasAudio = clipSpecs.any { it.hasAudio }
+                )
+                val note = if (mixed) {
+                    "Acuan Terendah / Sesuai AI dipilih (${outW}×${outH} · ${Fmt.fps(minFps.toDouble())} fps) tanpa meng-upscale klip AI."
+                } else null
+                ResolvedExportRef(synth, 0, mixed, summary, supportsPerClip, note)
+            }
+
+            ExportSpecRef.PER_CLIP_NATIVE -> {
+                val note = if (supportsPerClip) {
+                    "Mode Asli Tiap Klip aktif: setiap berkas MP4 diekspor memakai resolusi, rotasi, & FPS asli klipnya masing-masing."
+                } else {
+                    "Karena beberapa klip digabung ke 1 berkas MP4, kanvas mengikuti Video Utama (1 file MP4 hanya mendukung 1 ukuran frame)."
+                }
+                ResolvedExportRef(primarySrc.info, primaryRot, mixed, summary, supportsPerClip, note)
+            }
+        }
+    }
+
     fun exportInfo(): ExportInfo {
         val _rev = rev
-        val inf = sources.firstOrNull()?.info ?: info ?: demoInfo()
-        val plan = ExportPlanner.plan(inf, rot, qIdx, fIdx) { w, h -> EncoderCaps.supportsH264(w, h) }
+        val resolved = resolveExportReference()
+        val basePlan = ExportPlanner.plan(resolved.refInfo, resolved.refRot, qIdx, fIdx) { w, h ->
+            EncoderCaps.supportsH264(w, h)
+        }
+        val mergedNotes = if (resolved.extraNote != null) {
+            listOf(resolved.extraNote) + basePlan.notes
+        } else {
+            basePlan.notes
+        }
+        val plan = basePlan.copy(notes = mergedNotes)
         val cur = core.segs.getOrNull(core.sel)?.len ?: 0.0
 
         val usedTags = usedTagsInTimeline()
@@ -3957,7 +4118,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             subAll = core.segs.size.toString() + " file · " + Fmt.time(core.total) + " total",
             subCurrent = "1 file · " + Fmt.time(cur),
             subByTag = subByTag,
-            canStart = canStart
+            canStart = canStart,
+            hasMixedSpecs = resolved.hasMixedSpecs,
+            mixedSpecsSummary = resolved.mixedSummary,
+            supportsPerClipNative = resolved.supportsPerClipNative
         )
     }
 
@@ -3981,14 +4145,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         val primary = sources.first()
+        val resolved = resolveExportReference()
         val specs = sources.map { SourceSpec(it.uri.toString(), it.info) }
         val req = ExportRequest(
             sourceUri = primary.uri.toString(),
-            info = primary.info,
+            info = resolved.refInfo,
             sources = specs,
             segs = core.segs,
             currentIndex = core.sel,
-            rot = core.rot,
+            rot = resolved.refRot,
             flip = core.flip,
             style1 = style1,
             style2 = style2,
@@ -3996,9 +4161,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             fIdx = fIdx,
             mode = exportMode,
             selectedExportTags = exportSelectedTags,
-            byTagStyle = exportByTagStyle
+            byTagStyle = exportByTagStyle,
+            specRef = exportSpecRef,
+            scaleFit = exportScaleFit
         )
-        val plan = ExportPlanner.plan(primary.info, core.rot, qIdx, fIdx) { w, h -> EncoderCaps.supportsH264(w, h) }
+        val basePlan = ExportPlanner.plan(resolved.refInfo, resolved.refRot, qIdx, fIdx) { w, h ->
+            EncoderCaps.supportsH264(w, h)
+        }
+        val plan = if (resolved.extraNote != null) {
+            basePlan.copy(notes = listOf(resolved.extraNote) + basePlan.notes)
+        } else {
+            basePlan
+        }
         ExportCenter.start(getApplication<Application>(), req, plan)
     }
 

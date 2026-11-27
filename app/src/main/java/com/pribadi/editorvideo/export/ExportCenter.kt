@@ -50,7 +50,13 @@ object ExportCenter {
     /** Memulai ekspor lewat foreground service. Mengembalikan false bila sudah ada ekspor berjalan. */
     fun start(context: Context, request: ExportRequest, plan: ExportPlan): Boolean {
         if (isRunning()) return false
-        val count = ExportMath.buildJobs(request.mode, request.segs, request.currentIndex).size
+        val count = ExportMath.buildJobs(
+            request.mode,
+            request.segs,
+            request.currentIndex,
+            request.selectedExportTags,
+            request.byTagStyle
+        ).size
         pendingRequest = request
         pendingPlan = plan
         mutableState.value = ExportState.Running(0, count, 0f, "Menyiapkan")

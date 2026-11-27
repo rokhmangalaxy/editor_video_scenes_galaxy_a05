@@ -267,7 +267,7 @@ class EditorCore {
         if (g.fz) return "Playhead berada di potongan beku"
         val s = L.s
         val edge = 0.1 * g.sp
-        val fz = Seg.freezeAt(s, g.src)
+        val fz = Seg.freezeAt(s, g.src, g.rot)
         val n = ArrayList(segs)
         val idx: Int
         if (s - g.a < edge) {
@@ -317,12 +317,22 @@ class EditorCore {
         return "Potongan diduplikat"
     }
 
+    /** Memutar HANYA scene/potongan yang sedang aktif terpilih (sel) sebesar +90°. */
     fun rotate(): String? {
         if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
-        rot = (rot + 90) % 360
+        val idx = sel.coerceIn(0, segs.size - 1)
+        val nextRot = (segs[idx].rot + 90) % 360
+        val n = ArrayList(segs)
+        n[idx] = segs[idx].copy(rot = nextRot)
+        segs = n
+        rot = nextRot
         push()
-        return null
+        build()
+        return "Scene #${idx + 1} diputar ${nextRot}°"
     }
+
+    /** Rotasi milik potongan/scene yang sedang fokus saat ini. */
+    val selRot: Int get() = segs.getOrNull(sel)?.rot ?: 0
 
     fun mirror(): String {
         if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
@@ -363,7 +373,8 @@ class EditorCore {
             origSrc = if (g.origSrc >= 0) g.origSrc else g.src,
             origA = if (g.origSrc >= 0) g.origA else g.a,
             origB = if (g.origSrc >= 0) g.origB else g.b,
-            tags = g.tags
+            tags = g.tags,
+            rot = g.rot
         )
         val n = ArrayList(segs)
         n[segIdx] = revSeg
@@ -395,7 +406,8 @@ class EditorCore {
             rev = false,
             revMode = Seg.REV_NONE,
             src = g.origSrc,
-            tags = g.tags
+            tags = g.tags,
+            rot = g.rot
         )
         val n = ArrayList(segs)
         n[segIdx] = restored

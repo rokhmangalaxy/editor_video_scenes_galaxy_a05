@@ -67,6 +67,8 @@ import com.pribadi.editorvideo.export.ByTagExportStyle
 import com.pribadi.editorvideo.export.DetectedScene
 import com.pribadi.editorvideo.export.ExportMath
 import com.pribadi.editorvideo.export.ExportMode
+import com.pribadi.editorvideo.export.ExportScaleFit
+import com.pribadi.editorvideo.export.ExportSpecRef
 import com.pribadi.editorvideo.export.ExportState
 import com.pribadi.editorvideo.export.OverlayRenderer
 import com.pribadi.editorvideo.model.Fmt
@@ -3271,6 +3273,92 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
                     color = if (origActive) Color.White else Ev.Text,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        if (info.hasMixedSpecs) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Ev.Bg)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                    .padding(11.dp)
+            ) {
+                Text(
+                    text = "PENANGANAN KLIP CAMPURAN (VIDEO ASLI + AI / ROTASI)",
+                    color = Ev.Yellow,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+                if (info.mixedSpecsSummary.isNotEmpty()) {
+                    Text(
+                        text = info.mixedSpecsSummary,
+                        color = Ev.Muted,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 6.dp)
+                    )
+                }
+
+                Text(
+                    text = "Acuan Kualitas & FPS:",
+                    color = Ev.Text,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 5.dp)
+                )
+                SimpleFlow(6.dp, 6.dp) {
+                    val specOptions = if (info.supportsPerClipNative) {
+                        ExportSpecRef.entries
+                    } else {
+                        ExportSpecRef.entries.filter { it != ExportSpecRef.PER_CLIP_NATIVE }
+                    }
+                    for (opt in specOptions) {
+                        Chip(
+                            on = vm.exportSpecRef == opt,
+                            enabled = !running,
+                            label = opt.label
+                        ) {
+                            vm.exportSpecRef = opt
+                        }
+                    }
+                }
+                Text(
+                    text = vm.exportSpecRef.sub,
+                    color = Ev.Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+                )
+
+                Text(
+                    text = "Penyesuaian Bingkai (bila rasio berbeda):",
+                    color = Ev.Text,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 5.dp)
+                )
+                SimpleFlow(6.dp, 6.dp) {
+                    for (fitOpt in ExportScaleFit.entries) {
+                        Chip(
+                            on = vm.exportScaleFit == fitOpt,
+                            enabled = !running,
+                            label = fitOpt.label
+                        ) {
+                            vm.exportScaleFit = fitOpt
+                        }
+                    }
+                }
+                Text(
+                    text = vm.exportScaleFit.sub,
+                    color = Ev.Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         }

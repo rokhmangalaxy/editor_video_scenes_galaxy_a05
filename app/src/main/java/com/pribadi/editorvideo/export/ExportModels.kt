@@ -22,6 +22,41 @@ enum class ByTagExportStyle(val label: String, val sub: String) {
     )
 }
 
+/**
+ * Acuan Kualitas & FPS saat timeline berisi campuran klip berbeda (mis. Video Asli 1080p 30/60fps
+ * dicampur klip Hasil AI 480p 16/24fps).
+ */
+enum class ExportSpecRef(val label: String, val sub: String) {
+    MAIN_ORIGINAL(
+        "Ikuti Video Utama",
+        "Kualitas & FPS mengikuti video asli utama; klip AI disesuaikan otomatis ke ukuran utama."
+    ),
+    HIGHEST(
+        "Kualitas Tertinggi",
+        "Mengambil resolusi & FPS tertinggi di antara seluruh klip yang ikut diekspor."
+    ),
+    LOWEST_AI(
+        "Terendah / Sesuai AI",
+        "Mengikuti resolusi & FPS terendah (klip AI tidak di-upscale, ukuran berkas lebih hemat)."
+    ),
+    PER_CLIP_NATIVE(
+        "Asli Tiap Klip",
+        "Khusus ekspor terpisah: tiap file memakai resolusi & FPS asli masing-masing klip."
+    )
+}
+
+/** Cara menyamakan bingkai ketika rasio klip AI atau scene berotasi berbeda dari kanvas utama. */
+enum class ExportScaleFit(val label: String, val sub: String) {
+    FIT_LETTERBOX(
+        "Fit Utuh",
+        "Seluruh gambar utuh tanpa terpotong (bar hitam tipis bila rasio berbeda)."
+    ),
+    FILL_CROP(
+        "Isi Penuh (Crop)",
+        "Memenuhi layar penuh tanpa bar hitam (memotong tepi bila rasio berbeda)."
+    )
+}
+
 /** Spesifikasi satu sumber video yang diimpor. */
 data class SourceSpec(
     val uri: String,
@@ -43,7 +78,9 @@ data class ExportRequest(
     val fIdx: Int,
     val mode: ExportMode,
     val selectedExportTags: List<String> = emptyList(),
-    val byTagStyle: ByTagExportStyle = ByTagExportStyle.MERGE_SINGLE
+    val byTagStyle: ByTagExportStyle = ByTagExportStyle.MERGE_SINGLE,
+    val specRef: ExportSpecRef = ExportSpecRef.MAIN_ORIGINAL,
+    val scaleFit: ExportScaleFit = ExportScaleFit.FIT_LETTERBOX
 )
 
 /** Satu file keluaran: sufiks nama file dan potongan yang dimuat. */

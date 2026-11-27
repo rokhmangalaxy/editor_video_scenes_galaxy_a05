@@ -107,12 +107,25 @@ object ExportEngine {
                 val outFile = File(dir, "hasil_" + idx + ".mp4")
                 var overlay: Bitmap? = null
                 try {
+                    val jobPlan = if (req.specRef == ExportSpecRef.PER_CLIP_NATIVE && job.segs.size == 1) {
+                        val singleSeg = job.segs.first()
+                        val singleSpec = resolveSource(req, singleSeg.src)
+                        ExportPlanner.plan(
+                            singleSpec.info,
+                            singleSeg.rot,
+                            req.qIdx,
+                            req.fIdx
+                        ) { w, h -> EncoderCaps.supportsH264(w, h) }
+                    } else {
+                        plan
+                    }
+
                     val prepared = withContext(Dispatchers.IO) {
-                        prepare(app, req, plan, job.segs, dir, idx)
+                        prepare(app, req, jobPlan, job.segs, dir, idx)
                     }
                     overlay = prepared.overlay
 
-                    runTransformer(app, prepared.composition, outFile.absolutePath, plan, notes) { f ->
+                    runTransformer(app, prepared.composition, outFile.absolutePath, jobPlan, notes) { f ->
                         progress(idx, jobs.size, f)
                     }
 
@@ -227,7 +240,7 @@ object ExportEngine {
         val speed = seg.sp
         val audio: List<AudioProcessor> =
             if (srcInfo.hasAudio && abs(speed - 1.0) > 0.0001) audioSpeed(speed) else emptyList()
-        val video = videoEffects(req, plan, speed, false, overlay)
+        val video = videoEffects(req, plan, speed, seg.rot, srcInfo.fps, false, overlay)
 
         val b = EditedMediaItem.Builder(mediaItem)
         if (!srcInfo.hasAudio) b.setRemoveAudio(true)
@@ -269,7 +282,7 @@ object ExportEngine {
         val durationUs = max(MIN_ITEM_US, Math.round(seg.len * 1_000_000.0))
         val frameRate = max(1, Math.round(plan.fps).toInt())
 
-        val video = videoEffects(req, plan, 1.0, true, overlay)
+        val video = videoEffects(req, plan, 1.0, seg.rot, srcInfo.fps, true, overlay)
         return EditedMediaItem.Builder(mediaItem)
             .setDurationUs(durationUs)
             .setFrameRate(frameRate)
@@ -287,30 +300,38 @@ object ExportEngine {
 
     /**
      * Rantai efek video per item:
-     *   [kecepatan] -> [buang frame] -> [putar] -> [cermin] -> [ukuran akhir] -> [teks]
+     *   [kecepatan] -> [buang frame per klip] -> [putar khusus scene ini] -> [cermin] -> [ukuran akhir Fit/Crop] -> [teks]
      */
     private fun videoEffects(
         req: ExportRequest,
         plan: ExportPlan,
         speed: Double,
+        segRot: Int,
+        srcFps: Float,
         isImage: Boolean,
         overlay: Bitmap?
     ): List<Effect> {
         val list = ArrayList<Effect>()
         if (!isImage) {
             if (abs(speed - 1.0) > 0.0001) list.add(SpeedChangeEffect(speed.toFloat()))
-            if (plan.dropFrames || speed > 1.0001) {
+            val clipFps = if (srcFps > 1f) srcFps.toDouble() else 30.0
+            if (plan.dropFrames || clipFps > plan.fps + 0.5 || speed > 1.0001) {
                 list.add(FrameDropEffect.createDefaultFrameDropEffect(plan.fps.toFloat()))
             }
         }
-        val ccw = (360 - (req.rot % 360)) % 360
+        val ccw = (360 - ((segRot % 360 + 360) % 360)) % 360
         if (ccw != 0) {
             list.add(ScaleAndRotateTransformation.Builder().setRotationDegrees(ccw.toFloat()).build())
         }
         if (req.flip) {
             list.add(ScaleAndRotateTransformation.Builder().setScale(-1f, 1f).build())
         }
-        list.add(Presentation.createForWidthAndHeight(plan.width, plan.height, Presentation.LAYOUT_STRETCH_TO_FIT))
+        val layoutMode = if (req.scaleFit == ExportScaleFit.FILL_CROP) {
+            Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+        } else {
+            Presentation.LAYOUT_SCALE_TO_FIT
+        }
+        list.add(Presentation.createForWidthAndHeight(plan.width, plan.height, layoutMode))
         if (overlay != null) {
             list.add(OverlayEffect(ImmutableList.of<TextureOverlay>(BitmapOverlay.createStaticBitmapOverlay(overlay))))
         }

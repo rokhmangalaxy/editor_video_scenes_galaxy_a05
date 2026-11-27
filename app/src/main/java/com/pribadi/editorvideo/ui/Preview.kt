@@ -581,6 +581,7 @@ fun VideoGridStage(
                                                 isActive = isActive,
                                                 selectionOrder = selOrder,
                                                 srcIndex = g.src,
+                                                segRot = g.rot,
                                                 thumbTimeSec = firstSrcTime,
                                                 topBadge = "$statusPrefix#${idx + 1}",
                                                 bottomBadge = Fmt.durLabel(g.len),
@@ -631,6 +632,7 @@ fun VideoGridStage(
                                                 isActive = isActive,
                                                 selectionOrder = selOrder,
                                                 srcIndex = g.src,
+                                                segRot = g.rot,
                                                 thumbTimeSec = locStart.s,
                                                 topBadge = "#${sIdx + 1}",
                                                 bottomBadge = Fmt.time(startT),
@@ -1039,6 +1041,7 @@ private fun GridVideoCell(
     isActive: Boolean,
     selectionOrder: Int,
     srcIndex: Int,
+    segRot: Int,
     thumbTimeSec: Double,
     topBadge: String,
     bottomBadge: String,
@@ -1084,11 +1087,11 @@ private fun GridVideoCell(
         val cellW = maxWidth
         val cellH = maxHeight
         val firstFrameBucket = Math.round(max(0.0, thumbTimeSec) * 1000.0) / 10L
-        LaunchedEffect(srcIndex, firstFrameBucket, vm.rot, vm.flip) {
+        LaunchedEffect(srcIndex, firstFrameBucket, segRot, vm.flip) {
             vm.ensureGridFirstFrame(srcIndex, thumbTimeSec)
         }
 
-        val firstBmp = vm.gridFirstFrameAt(srcIndex, thumbTimeSec)
+        val firstBmp = vm.gridFirstFrameAt(srcIndex, thumbTimeSec, segRot)
         if (firstBmp != null && !firstBmp.isRecycled) {
             Image(
                 bitmap = firstBmp.asImageBitmap(),
@@ -1110,7 +1113,7 @@ private fun GridVideoCell(
         }
 
         if (isActive) {
-            val videoAr = vm.aspectOfSource(srcIndex)
+            val videoAr = vm.aspectOfSource(srcIndex, segRot)
             var vw = cellW
             var vh = vw / videoAr
             if (vh > cellH) {
@@ -1122,7 +1125,7 @@ private fun GridVideoCell(
                 vm.refreshFrame()
             }
             Box(modifier = Modifier.size(vw, vh)) {
-                VideoSurface(vm, vw, vh)
+                VideoSurface(vm, vw, vh, segRot)
             }
         }
 
@@ -1382,8 +1385,8 @@ private fun EmptyPreviewState() {
  * Juga mendaftarkan TextureView aktif ke ViewModel agar panel AI dapat membaca buffer piksel yang 100% sama persis.
  */
 @Composable
-private fun VideoSurface(vm: EditorViewModel, boxW: Dp, boxH: Dp) {
-    val rot = vm.rot
+private fun VideoSurface(vm: EditorViewModel, boxW: Dp, boxH: Dp, rotOverride: Int = vm.rot) {
+    val rot = rotOverride
     val flip = vm.flip
     val r90 = rot % 180 != 0
     val preW = if (r90) boxH else boxW

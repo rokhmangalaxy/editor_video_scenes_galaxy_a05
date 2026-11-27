@@ -106,7 +106,8 @@ data class Seg(
     val origSrc: Int = -1,
     val origA: Double = 0.0,
     val origB: Double = 0.0,
-    val tags: List<String> = emptyList()
+    val tags: List<String> = emptyList(),
+    val rot: Int = 0
 ) {
     /** Durasi dasar (sebelum dibagi kecepatan). */
     val baseLen: Double get() = if (fz) d else b - a
@@ -122,8 +123,18 @@ data class Seg(
         const val REV_MUNDUR = 1
         const val REV_LOOP = 2
 
-        fun freezeAt(time: Double, src: Int = 0): Seg =
-            Seg(a = time, b = time, sp = 1.0, fz = true, d = Rules.FZ_DUR, rev = false, revMode = REV_NONE, src = src)
+        fun freezeAt(time: Double, src: Int = 0, rot: Int = 0): Seg =
+            Seg(
+                a = time,
+                b = time,
+                sp = 1.0,
+                fz = true,
+                d = Rules.FZ_DUR,
+                rev = false,
+                revMode = REV_NONE,
+                src = src,
+                rot = rot
+            )
     }
 }
 

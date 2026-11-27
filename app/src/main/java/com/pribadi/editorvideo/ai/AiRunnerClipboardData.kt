@@ -73,6 +73,7 @@ import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+import subprocess
 
 import requests
 from gradio_client import Client, handle_file
@@ -224,7 +225,24 @@ def load_project_items(root, project):
     return [("task-1", single)]
 
 
-def run_single_item(root, project, task_key, data, temp, image_cache, overall_running_at, workflow_wait_seconds, index, total, ok_count, fail_count, item_results=None):
+def extract_last_frame(video_path, directory, name):
+    out_jpg = Path(directory) / f"{name}_last.jpg"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-sseof", "-0.08", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(out_jpg)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        if out_jpg.is_file() and out_jpg.stat().st_size > 0:
+            return handle_file(str(out_jpg))
+    except Exception:
+        pass
+    return None
+
+
+def run_single_item(root, project, task_key, data, temp, image_cache, overall_running_at, workflow_wait_seconds, index, total, ok_count, fail_count, item_results=None, prev_last_frame=None):
     status_url = endpoint(root, project, "status")
     item_status_url = endpoint(root, project, f"items/{task_key}/status")
     result_url = endpoint(root, project, f"results/{task_key}")
@@ -254,7 +272,10 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
             image_cache[ref_id] = decoded
             return decoded
 
-        first = read_image(data.get("input_image"), "first")
+        if bool(data.get("chain_from_prev")) and prev_last_frame is not None:
+            first = prev_last_frame
+        else:
+            first = read_image(data.get("input_image"), "first")
         last = read_image(data["last_image"], "last") if data.get("last_image") else None
 
         item_running_at = int(time.time() * 1000)
@@ -323,8 +344,9 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
         }
         if item_wait is not None:
             item_completed["workflow_wait_seconds"] = item_wait
+        extracted_tail = extract_last_frame(path, temp, task_key)
         print(f"Item {task_key} selesai; hasil tersimpan di Realtime Database.", flush=True)
-        return True, item_completed
+        return True, item_completed, extracted_tail
     except Exception as exc:
         print(f"Item {task_key} gagal: {type(exc).__name__}", flush=True)
         try:
@@ -346,7 +368,7 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
             if workflow_wait_seconds is not None:
                 metrics["workflow_wait_seconds"] = workflow_wait_seconds
             failure["metrics"] = metrics
-        return False, failure
+        return False, failure, None
 
 
 def main():
@@ -359,6 +381,11 @@ def main():
     workflow_wait_seconds = None
     try:
         items = load_project_items(root, project)
+        item_durs = [float(d.get("duration_seconds", 0)) for _, d in items if type(d.get("duration_seconds")) in (int, float)]
+        max_wf_sec = 10.5 if (item_durs and all(abs(x - 3.5) < 0.01 for x in item_durs)) else 10.0
+        if sum(item_durs) > max_wf_sec + 0.05:
+            raise ValueError(f"Total durasi 1 workflow melebihi batas {max_wf_sec} detik")
+
         created_values = [
             data.get("created_at_ms")
             for _, data in items
@@ -375,8 +402,9 @@ def main():
 
         with tempfile.TemporaryDirectory() as temp:
             image_cache = {}
+            prev_last_frame = None
             for idx, (task_key, data) in enumerate(items):
-                ok, item_summary = run_single_item(
+                ok, item_summary, tail_frame = run_single_item(
                     root=root,
                     project=project,
                     task_key=task_key,
@@ -390,12 +418,15 @@ def main():
                     ok_count=ok_count,
                     fail_count=fail_count,
                     item_results=item_results,
+                    prev_last_frame=prev_last_frame,
                 )
                 item_results[task_key] = item_summary
                 if "metrics" in item_summary:
                     last_metrics = item_summary["metrics"]
                 if ok:
                     ok_count += 1
+                    if tail_frame is not None:
+                        prev_last_frame = tail_frame
                 else:
                     fail_count += 1
                 if total > 1:
@@ -403,6 +434,17 @@ def main():
                         write(endpoint(root, project, f"status/item_results/{task_key}"), item_summary)
                     except Exception:
                         pass
+                # Hanya lanjut ke video berikutnya di dalam workflow yang sama setelah video ini berhasil
+                if not ok:
+                    for rem_key, _ in items[idx + 1:]:
+                        skipped = {
+                            "state": "failed",
+                            "error_code": "previous_item_failed",
+                            "error": f"Dilewati karena {task_key} belum berhasil.",
+                        }
+                        item_results[rem_key] = skipped
+                        fail_count += 1
+                    break
 
         if total == 1:
             only_summary = item_results[items[0][0]]
