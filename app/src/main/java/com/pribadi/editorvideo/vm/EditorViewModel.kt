@@ -2335,9 +2335,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Frame Akhir: bisa dari frame AWAL scene berikutnya (opsi item #4) atau frame akhir scene sendiri
         val finalTargetLastBmp: Bitmap? = when {
-            aiFirstFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
-                aiNeighborFirstBitmap?.takeIf { !it.isRecycled }
-                    ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }
             aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
                 aiNeighborLastBitmap?.takeIf { !it.isRecycled }
                     ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }
