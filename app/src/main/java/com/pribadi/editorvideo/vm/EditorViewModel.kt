@@ -3178,7 +3178,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.16 (Terbaru)",
+            version = "v1.0.17 (Terbaru)",
             date = "27/11/2026",
             title = "Ekspor Campuran Asli + AI, Putar Khusus Scene Fokus & 1-Workflow Multi-Segmen AI",
             items = listOf(
@@ -3850,7 +3850,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return "Asli tiap klip masing-masing"
         }
         val inf = resolved.refInfo
-        val dims = ExportMath.origDims(inf.width, inf.height, inf.rotation, resolved.refRot)
+        val dims = ExportMath.origDims(inf.dispW, inf.dispH, resolved.refRot)
         val fpsVal = if (inf.fps > 1f) inf.fps.toDouble() else 30.0
         return "${dims[0]}×${dims[1]} · ${Fmt.fps(fpsVal)} fps"
     }
@@ -3967,7 +3967,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
         val clipSpecs = activeSegs.map { g ->
             val ms = sources.getOrElse(g.src) { sources.first() }
-            val dims = ExportMath.origDims(ms.info.width, ms.info.height, ms.info.rotation, g.rot)
+            val dims = ExportMath.origDims(ms.info.dispW, ms.info.dispH, g.rot)
             val fpsVal = if (ms.info.fps > 1f) ms.info.fps else 30f
             ClipEffectiveSpec(dims[0], dims[1], fpsVal, ms.info.hasAudio, ms.info.durationMs)
         }
@@ -4000,9 +4000,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val primarySrc = sources.first()
         val primaryRot = activeSegs.firstOrNull { it.src == 0 }?.rot ?: activeSegs.first().rot
         val primaryDims = ExportMath.origDims(
-            primarySrc.info.width,
-            primarySrc.info.height,
-            primarySrc.info.rotation,
+            primarySrc.info.dispW,
+            primarySrc.info.dispH,
             primaryRot
         )
         val primaryLandscape = primaryDims[0] >= primaryDims[1]
@@ -4028,7 +4027,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     rotation = 0,
                     durationMs = primarySrc.info.durationMs,
                     fps = maxFps,
-                    bitrate = primarySrc.info.bitrate,
                     hasAudio = clipSpecs.any { it.hasAudio }
                 )
                 val note = if (mixed) {
@@ -4050,7 +4048,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     rotation = 0,
                     durationMs = primarySrc.info.durationMs,
                     fps = minFps,
-                    bitrate = primarySrc.info.bitrate,
                     hasAudio = clipSpecs.any { it.hasAudio }
                 )
                 val note = if (mixed) {
