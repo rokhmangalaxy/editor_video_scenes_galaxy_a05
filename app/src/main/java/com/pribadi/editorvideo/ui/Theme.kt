@@ -1,9 +1,10 @@
 package com.pribadi.editorvideo.ui
 
 import androidx.annotation.DrawableRes
-import androidx.compose.foundation.Clip
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -28,7 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.unit.sp
 import com.pribadi.editorvideo.R
 
 /** 10 pilihan tema warna aplikasi (masing-masing punya versi gelap & terang). */
