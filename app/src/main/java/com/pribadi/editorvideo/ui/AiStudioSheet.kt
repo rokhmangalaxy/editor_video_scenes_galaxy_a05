@@ -77,7 +77,6 @@ import com.pribadi.editorvideo.ai.AiTab
 import com.pribadi.editorvideo.ai.AiTimelineJoinStyle
 import com.pribadi.editorvideo.ai.AiWorkMode
 import com.pribadi.editorvideo.ai.WorkerSyncStatus
-import com.pribadi.editorvideo.model.OverlayMode
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.VideoInfo
@@ -2176,31 +2175,6 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
                 onClick = { vm.applyAiResultsToTimeline(vm.aiTimelineJoinStyle) }
             )
         }
-
-        // Track Overlay (non-destruktif): scene asli TIDAK diubah, hasil AI jadi lapisan yang bisa dimatikan
-        Spacer(modifier = Modifier.height(7.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            AiMiniBtn(
-                label = "🎬 Overlay Penuh",
-                modifier = Modifier.weight(1f),
-                enabled = validSelectedCount > 0 && !vm.aiMergingClips && !vm.aiIsRunning
-            ) { vm.addAiResultsAsOverlay(OverlayMode.REPLACE_VISUAL) }
-            AiMiniBtn(
-                label = "🪟 Overlay PiP",
-                modifier = Modifier.weight(1f),
-                enabled = validSelectedCount > 0 && !vm.aiMergingClips && !vm.aiIsRunning
-            ) { vm.addAiResultsAsOverlay(OverlayMode.PIP_CORNER) }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Track overlay = non-destruktif: scene utama tetap utuh dan bisa ditampilkan kembali kapan pun (tombol 🎬 di Pratinjau).",
-            color = Ev.Muted,
-            fontSize = 9.5.sp,
-            lineHeight = 13.sp
-        )
     }
 }
 

@@ -80,8 +80,7 @@ fun EditorScreen(
         enabled = vm.collageOpen || vm.confirmText != null || vm.importSourceSheet ||
             vm.gridTagSheet || vm.gridSortSheet || vm.themeSheet || vm.aiSheet ||
             vm.speedSheet || vm.reverseSheet || vm.textSheet || vm.sceneDetectSheet ||
-            vm.noteSheet || vm.exportSheet || vm.fullscreen || vm.gridColSliderOpen || vm.gridMultiSelect ||
-            vm.overlaySheet
+            vm.noteSheet || vm.exportSheet || vm.fullscreen || vm.gridColSliderOpen || vm.gridMultiSelect
     ) {
         when {
             vm.collageOpen -> vm.closeMultiplayerCollage()
@@ -93,7 +92,6 @@ fun EditorScreen(
             vm.aiSheet -> vm.aiSheet = false
             vm.reverseSheet -> vm.reverseSheet = false
             vm.sceneDetectSheet -> vm.sceneDetectSheet = false
-            vm.overlaySheet -> vm.overlaySheet = false
             vm.speedSheet -> vm.speedSheet = false
             vm.textSheet -> vm.textSheet = false
             vm.noteSheet -> vm.noteSheet = false
@@ -186,10 +184,6 @@ fun EditorScreen(
 
             if (vm.sceneDetectSheet) {
                 SceneDetectSheet(vm) { vm.sceneDetectSheet = false }
-            }
-
-            if (vm.overlaySheet) {
-                OverlayTrackSheet(vm) { vm.overlaySheet = false }
             }
 
             if (vm.textSheet) {
@@ -708,11 +702,6 @@ private fun ToolBar(vm: EditorViewModel) {
             ) { vm.onTool(Tool.MARKER) }
             ToolItem("Scene", R.drawable.ic_scene_detect, vm.sceneDetectSheet) { vm.onTool(Tool.SCENE_DETECT) }
             ToolItem("AI", R.drawable.ic_ai, vm.aiSheet) { vm.onTool(Tool.AI) }
-            ToolItem(
-                if (vm.overlayCount > 0) "Overlay (${vm.overlayCount})" else "Overlay",
-                R.drawable.ic_layers,
-                vm.overlaySheet || vm.overlayCount > 0
-            ) { vm.overlaySheet = true }
             ToolItem(
                 if (sp == 1.0) "Kecepatan" else Fmt.one(sp) + "x",
                 R.drawable.ic_speed,
