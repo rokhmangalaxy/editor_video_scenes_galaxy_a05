@@ -51,6 +51,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 /** Kegagalan ekspor dengan pesan yang siap ditampilkan ke pengguna (bahasa Indonesia). */
 class ExportFailure(message: String) : Exception(message)
