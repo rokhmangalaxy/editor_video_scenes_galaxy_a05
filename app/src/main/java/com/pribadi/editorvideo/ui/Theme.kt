@@ -1,6 +1,7 @@
 package com.pribadi.editorvideo.ui
 
 import androidx.annotation.DrawableRes
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -627,15 +628,21 @@ fun ThemeLightDarkToggle(
             shape = RoundedCornerShape(8.dp),
             modifier = Modifier
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
-                .clickable { onToggle() }
-                .padding(10.dp),
-            contentAlignment = Alignment.Center
+                .clickable { onToggle() },
+            tonalElevation = 0.dp
         ) {
-            Text(
-                text = "🌙",
-                color = if (currentTheme.isLight) Ev.Muted else Ev.Text,
-                fontSize = 18.sp
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "🌙",
+                    color = if (currentTheme.isLight) Ev.Muted else Ev.Text,
+                    fontSize = 18.sp
+                )
+            }
         }
         // Label status
         Text(
@@ -650,15 +657,21 @@ fun ThemeLightDarkToggle(
             shape = RoundedCornerShape(8.dp),
             modifier = Modifier
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
-                .clickable { onToggle() }
-                .padding(10.dp),
-            contentAlignment = Alignment.Center
+                .clickable { onToggle() },
+            tonalElevation = 0.dp
         ) {
-            Text(
-                text = "☀️",
-                color = if (currentTheme.isLight) Ev.Text else Ev.Muted,
-                fontSize = 18.sp
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "☀️",
+                    color = if (currentTheme.isLight) Ev.Text else Ev.Muted,
+                    fontSize = 18.sp
+                )
+            }
         }
     }
 }
