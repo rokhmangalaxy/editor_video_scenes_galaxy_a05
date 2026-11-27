@@ -960,36 +960,11 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                     fontSize = 9.sp
                 )
             }
-
-            val useNeighborFirst = vm.aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI
-            val useNeighborLast = vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI
-            if (useNeighborFirst || useNeighborLast) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (useNeighborFirst) {
-                        NeighborFrameThumb(
-                            label = "Awal dari Sblm",
-                            bmp = vm.aiNeighborFirstBitmap,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    if (useNeighborLast) {
-                        NeighborFrameThumb(
-                            label = "Akhir dari Brkt",
-                            bmp = vm.aiNeighborLastBitmap,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
         }
         Spacer(modifier = Modifier.height(8.dp))
     }
 
-    // Pratinjau 2 Frame Scene: Frame Awal Scene (input_image) & Frame Akhir Scene (last_image)
+    // Pratinjau 2 Frame Scene: Frame Awal AI & Frame Akhir AI
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1004,7 +979,7 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                 .padding(7.dp)
         ) {
             Text(
-                text = "FRAME AWAL SCENE",
+                text = "FRAME AWAL AI",
                 color = Ev.Muted,
                 fontSize = 9.5.sp,
                 fontWeight = FontWeight.Bold
@@ -1018,11 +993,15 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                val fb = vm.aiReplaceFirstBitmap ?: vm.aiSeekBitmap
-                if (fb != null && !fb.isRecycled) {
+                // Jika using frame dari scene sebelumnya, tampilkan itu; else frame sendiri
+                val firstBmp = when (vm.aiFirstFrameSource) {
+                    AiEdgeFrameSource.SCENE_SEBELUMNYA -> vm.aiNeighborFirstBitmap
+                    else -> vm.aiReplaceFirstBitmap ?: vm.aiSeekBitmap
+                }
+                if (firstBmp != null && !firstBmp.isRecycled) {
                     Image(
-                        bitmap = fb.asImageBitmap(),
-                        contentDescription = "Frame Awal Scene",
+                        bitmap = firstBmp.asImageBitmap(),
+                        contentDescription = "Frame Awal AI",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -1030,9 +1009,22 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                     Text(text = "Belum ada video", color = Ev.Muted, fontSize = 10.sp)
                 }
             }
+            // Tampilkan label sumber frame
+            if (vm.aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Sumber: ${when (vm.aiFirstFrameSource) {
+                        AiEdgeFrameSource.SCENE_SEBELUMNYA -> "Akhir Scene Sebelumnya"
+                        AiEdgeFrameSource.SCENE_BERIKUTNYA -> "Awal Scene Berikutnya"
+                        else -> "Frame Sendiri"
+                    }}",
+                    color = Ev.Yellow,
+                    fontSize = 9.sp
+                )
+            }
         }
 
-        // Kartu Frame Akhir Scene (Jembatan Transisi)
+        // Kartu Frame Akhir AI (jika menggunakan frame dari scene berikutnya)
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -1047,14 +1039,18 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "FRAME AKHIR SCENE",
+                    text = "FRAME AKHIR AI",
                     color = Ev.Muted,
                     fontSize = 9.5.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = if (vm.aiReplaceBridgeLastFrame) "ON" else "OFF",
-                    color = if (vm.aiReplaceBridgeLastFrame) Color(0xFF6EE7B7) else Ev.Muted,
+                    text = if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                        "Dari Scene Berikutnya"
+                    } else if (vm.aiReplaceBridgeLastFrame) "ON" else "OFF",
+                    color = if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                        Color(0xFF6EE7B7)
+                    } else if (vm.aiReplaceBridgeLastFrame) Color(0xFF6EE7B7) else Ev.Muted,
                     fontSize = 9.5.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable { vm.toggleReplaceBridgeLastFrame() }
@@ -1070,11 +1066,15 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                     .clickable { vm.toggleReplaceBridgeLastFrame() },
                 contentAlignment = Alignment.Center
             ) {
-                val lb = vm.aiReplaceLastBitmap
-                if (vm.aiReplaceBridgeLastFrame && lb != null && !lb.isRecycled) {
+                // Jika using frame dari scene berikutnya, tampilkan itu
+                val lastBmp = when (vm.aiLastFrameSource) {
+                    AiEdgeFrameSource.SCENE_BERIKUTNYA -> vm.aiNeighborLastBitmap
+                    else -> vm.aiReplaceLastBitmap
+                }
+                if (vm.aiReplaceBridgeLastFrame && lastBmp != null && !lastBmp.isRecycled) {
                     Image(
-                        bitmap = lb.asImageBitmap(),
-                        contentDescription = "Frame Akhir Scene",
+                        bitmap = lastBmp.asImageBitmap(),
+                        contentDescription = "Frame Akhir AI",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -1087,6 +1087,19 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                         modifier = Modifier.padding(6.dp)
                     )
                 }
+            }
+            // Tampilkan label sumber frame
+            if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Sumber: ${when (vm.aiLastFrameSource) {
+                        AiEdgeFrameSource.SCENE_SEBELUMNYA -> "Akhir Scene Sebelumnya"
+                        AiEdgeFrameSource.SCENE_BERIKUTNYA -> "Awal Scene Berikutnya"
+                        else -> "Frame Sendiri"
+                    }}",
+                    color = Ev.Yellow,
+                    fontSize = 9.sp
+                )
             }
         }
     }
@@ -3143,34 +3156,6 @@ private fun AiSectionLabel(text: String) {
         fontSize = 11.sp,
         fontWeight = FontWeight.Bold
     )
-}
-
-@Composable
-private fun NeighborFrameThumb(label: String, bmp: android.graphics.Bitmap?, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(58.dp)
-                .clip(RoundedCornerShape(7.dp))
-                .background(Color.Black)
-                .border(1.dp, Ev.Line, RoundedCornerShape(7.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (bmp != null && !bmp.isRecycled) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = label,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Text(text = "Memuat…", color = Ev.Muted, fontSize = 9.sp)
-            }
-        }
-        Spacer(modifier = Modifier.height(3.dp))
-        Text(text = label, color = Ev.Muted, fontSize = 9.sp, maxLines = 1)
-    }
 }
 
 @Composable
