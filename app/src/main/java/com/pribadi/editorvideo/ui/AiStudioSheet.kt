@@ -1901,12 +1901,6 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
             Spacer(modifier = Modifier.height(8.dp))
         }
 
-        val applyLabel = when {
-            vm.aiMergingClips -> "⏳ Memproses & Menerapkan ke Timeline…"
-            vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE -> {
-                val targetSec = vm.aiSnapshotPlan?.targetTotalSec ?: vm.aiReplaceTargetDurSec
-                val audTag = if (vm.aiReplaceAudioMode == AiReplaceAudioMode.VIDEO_ONLY) {
-                    "Audio Asli"
         val activeCandLabel = vm.aiCandidates.getOrNull(vm.aiActiveCandidateIdx)?.let {
             "Kandidat #${it.candidateNumber} · "
         } ?: ""

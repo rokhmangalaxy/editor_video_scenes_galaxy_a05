@@ -3578,7 +3578,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.18 (Terbaru)",
+            version = "v1.0.19 (Terbaru)",
             date = "27/11/2026",
             title = "Kandidat AI, Mode Tunggal 10s, Fix Berantai & Rotasi AI, Tanda (Markers) + Gabung Scene Instan",
             items = listOf(
