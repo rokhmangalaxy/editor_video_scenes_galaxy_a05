@@ -202,9 +202,9 @@ object ExportEngine {
         val hasText = req.style1.isNotEmpty || req.style2.isNotEmpty
         val overlay: Bitmap? =
             if (hasText) OverlayRenderer.render(plan.width, plan.height, req.style1, req.style2) else null
-        val allBaked = ArrayList<Bitmap>()
         try {
             val items = ArrayList<EditedMediaItem>()
+            val allBaked = ArrayList<Bitmap>()
             // Posisi timeline awal tiap seg pada job ini
             val timelineBySeg = HashMap<Int, Double>()
             var cursorT = 0.0
