@@ -142,7 +142,7 @@ private fun Modifier.absorbTaps(): Modifier = this.pointerInput(Unit) { detectTa
  * - Scroll vertikal aktif (verticalScroll / scroll-y)
  */
 @Composable
-private fun FloatingSheetPanel(
+internal fun FloatingSheetPanel(
     onTapOutside: (() -> Unit)?,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -165,7 +165,7 @@ private fun FloatingSheetPanel(
 }
 
 @Composable
-private fun SmallIconButton(id: Int, onClick: () -> Unit) {
+internal fun SmallIconButton(id: Int, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clip(CircleShape)

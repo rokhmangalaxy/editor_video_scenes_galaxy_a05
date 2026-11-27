@@ -22,6 +22,23 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import com.pribadi.editorvideo.ai.AiExecutionPlan
+import com.pribadi.editorvideo.ai.AiGeneratedSegment
+import com.pribadi.editorvideo.ai.AiInsertPreset
+import com.pribadi.editorvideo.ai.AiMultiStrategy
+import com.pribadi.editorvideo.ai.AiPlanner
+import com.pribadi.editorvideo.ai.AiPromptItem
+import com.pribadi.editorvideo.ai.AiRunPhase
+import com.pribadi.editorvideo.ai.AiRunnerConfig
+import com.pribadi.editorvideo.ai.AiSpaceOption
+import com.pribadi.editorvideo.ai.AiTab
+import com.pribadi.editorvideo.ai.AiTimelineJoinStyle
+import com.pribadi.editorvideo.ai.AiWorkMode
+import com.pribadi.editorvideo.ai.DownloadedAiVideo
+import com.pribadi.editorvideo.ai.SingleTaskRequest
+import com.pribadi.editorvideo.ai.VideoGenerationTimeoutException
+import com.pribadi.editorvideo.ai.WanStudioClient
+import com.pribadi.editorvideo.ai.WorkflowWaitTimeoutException
 import com.pribadi.editorvideo.export.ByTagExportStyle
 import com.pribadi.editorvideo.export.DetectedScene
 import com.pribadi.editorvideo.export.EncoderCaps
@@ -32,6 +49,7 @@ import com.pribadi.editorvideo.export.ExportPlan
 import com.pribadi.editorvideo.export.ExportPlanner
 import com.pribadi.editorvideo.export.ExportRequest
 import com.pribadi.editorvideo.export.ExportState
+import com.pribadi.editorvideo.export.MediaStoreSaver
 import com.pribadi.editorvideo.export.ReverseVideoRenderer
 import com.pribadi.editorvideo.export.SceneDetector
 import com.pribadi.editorvideo.export.SceneScanResult
@@ -276,7 +294,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var exportSheet by mutableStateOf(false)
     var fullscreen by mutableStateOf(false)
 
-    // --- State UI Fitur AI (gambar presisi tinggi 100% sama dengan Preview) ---
+    // --- State Studio Video AI v2 (Mode Sisipkan, Replace Scene, Multi-Hasil, Prompt Mgmt & Runner) ---
     var aiSeekBitmap by mutableStateOf<Bitmap?>(null)
         private set
     var aiFrameLoading by mutableStateOf(false)
@@ -294,6 +312,104 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var aiPrompt by mutableStateOf("")
     var aiPreviewStatus by mutableStateOf<String?>(null)
     private var aiFrameJob: Job? = null
+
+    var aiActiveTab by mutableStateOf(AiTab.CREATE)
+    var aiWorkMode by mutableStateOf(AiWorkMode.INSERT)
+        private set
+    var aiInsertPreset by mutableStateOf(AiInsertPreset.THREE_BY_35)
+        private set
+    var aiMultiStrategy by mutableStateOf(AiMultiStrategy.CHAIN)
+    var aiTimelineJoinStyle by mutableStateOf(AiTimelineJoinStyle.SEPARATE)
+
+    // Mode Sisipkan: Frame Akhir opsional (last_image)
+    var aiInsertLastBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    var aiInsertLastTimeSec by mutableDoubleStateOf(-1.0)
+        private set
+
+    // Mode Replace Scene: input range durasi (1.0 .. 10.0 dtk) + shortcut durasi scene <=10s
+    var aiReplaceTargetDurSec by mutableDoubleStateOf(5.0)
+        private set
+    var aiReplaceBridgeLastFrame by mutableStateOf(true)
+        private set
+    var aiReplaceFirstBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    var aiReplaceLastBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    private var aiReplaceFrameJob: Job? = null
+
+    // Parameter Space & keamanan
+    var aiSpaceOption by mutableStateOf(AiSpaceOption.R3GM)
+        private set
+    var aiSafeMode by mutableStateOf(true)
+    var aiSafetyChecker by mutableStateOf(false)
+
+    // Pengaturan prompt per segmen (slot 0 = sama untuk semua, slot 1..3 = khusus Segmen #1..#3)
+    var aiPerSegmentPromptMode by mutableStateOf(false)
+        private set
+    var aiActivePromptSegSlot by mutableIntStateOf(0)
+        private set
+    var aiSegmentPrompts by mutableStateOf(
+        listOf(
+            AiPromptItem.defaultList().first().body,
+            AiPromptItem.defaultList().first().body,
+            AiPromptItem.defaultList().last().body,
+            AiPromptItem.defaultList()[1].body
+        )
+    )
+        private set
+
+    // Tab Management Prompt
+    var aiPromptLibrary by mutableStateOf<List<AiPromptItem>>(AiPromptItem.defaultList())
+        private set
+    var aiPromptFilterCategory by mutableStateOf("ALL")
+    var aiPromptSearchQuery by mutableStateOf("")
+    var aiEditingPromptId by mutableStateOf<String?>(null)
+        private set
+    var aiFormPromptTitle by mutableStateOf("")
+    var aiFormPromptCategory by mutableStateOf("Kamera")
+    var aiFormPromptBody by mutableStateOf("")
+    var aiPromptImportMergeMode by mutableStateOf(true)
+
+    // Tab Status: Dual Watchdog Timeout (3m workflow + 3m/video) & Pengatur Multi-Hasil
+    var aiRunPhase by mutableStateOf(AiRunPhase.IDLE)
+        private set
+    var aiWorkflowWaitSec by mutableIntStateOf(0)
+        private set
+    var aiCurrentVideoNum by mutableIntStateOf(0)
+        private set
+    var aiTotalVideosInRun by mutableIntStateOf(0)
+        private set
+    var aiCurrentVideoSec by mutableIntStateOf(0)
+        private set
+    var aiRunStatusDetail by mutableStateOf("Siap membuat video AI.")
+        private set
+    var aiGeneratedSegments by mutableStateOf<List<AiGeneratedSegment>>(emptyList())
+        private set
+    var aiPreviewResultIndex by mutableIntStateOf(0)
+    var aiSnapshotWorkMode by mutableStateOf(AiWorkMode.INSERT)
+        private set
+    var aiSnapshotInsertSeekSec by mutableDoubleStateOf(0.0)
+        private set
+    var aiSnapshotReplaceSegIdx by mutableIntStateOf(0)
+        private set
+    var aiSnapshotPlan by mutableStateOf<AiExecutionPlan?>(null)
+        private set
+    var aiMergingClips by mutableStateOf(false)
+        private set
+    private var aiRunJob: Job? = null
+
+    // Tab Runner: Koneksi Firebase & GitHub + Checklist Repo Runner Clipboards
+    var aiRunnerConfig by mutableStateOf(AiRunnerConfig())
+        private set
+    var aiTestingConnection by mutableStateOf(false)
+        private set
+    var aiConnectionTestMessage by mutableStateOf<String?>(null)
+        private set
+    var aiConnectionTestOk by mutableStateOf(false)
+        private set
+    var aiCopiedRunnerIds by mutableStateOf<Set<String>>(emptySet())
+        private set
 
     private var activeTextureViewRef: WeakReference<TextureView>? = null
     private var renderedFrameSeq by mutableIntStateOf(0)
@@ -403,6 +519,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         sceneScanJob?.cancel()
         reverseJob?.cancel()
         aiFrameJob?.cancel()
+        aiReplaceFrameJob?.cancel()
+        aiRunJob?.cancel()
         clearGridFrameCaches()
         try {
             player.release()
@@ -1031,8 +1149,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun openAiPanel() {
         pause() // pause() juga menyinkronkan core.t tepat ke milidetik posisi frame di Preview
         aiPreviewStatus = null
+        if (aiPrompt.isBlank()) {
+            aiPrompt = aiSegmentPrompts.firstOrNull().orEmpty()
+        }
         aiSheet = true
         captureAiSeekFrame(waitSeekSettle = false)
+        if (aiWorkMode == AiWorkMode.REPLACE_SCENE) {
+            syncReplaceSceneSelection(autoMatchDurationIfEligible = false)
+        }
     }
 
     /** Menggeser posisi seek maju/mundur per frame video secara presisi dari dalam panel AI. */
@@ -1156,14 +1280,1025 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun onAiGenerateClicked() {
-        val promptClean = aiPrompt.trim()
-        if (promptClean.isEmpty()) {
-            toast("Masukkan prompt terlebih dahulu")
+    val aiIsRunning: Boolean
+        get() = aiRunPhase == AiRunPhase.UPLOADING ||
+            aiRunPhase == AiRunPhase.WAITING_WORKFLOW ||
+            aiRunPhase == AiRunPhase.GENERATING_VIDEO ||
+            aiRunPhase == AiRunPhase.DOWNLOADING
+
+    /** Durasi scene aktif di timeline (detik). */
+    fun selectedSceneDurationSec(): Double =
+        core.segs.getOrNull(core.sel)?.len ?: 5.0
+
+    /** Apakah shortcut "Sesuai Durasi Scene" dapat diaktifkan (aktif bila durasi scene <= 10.0 detik). */
+    fun canUseSceneDurationShortcut(): Boolean =
+        hasVideo &&
+            core.segs.isNotEmpty() &&
+            selectedSceneDurationSec() <= AiPlanner.ZEROGPU_MAX_REPLACE_SEC + 0.001
+
+    /** Apakah nilai range slider saat ini sudah sama dengan durasi scene terpilih. */
+    fun isSceneDurationShortcutActive(): Boolean =
+        canUseSceneDurationShortcut() &&
+            abs(aiReplaceTargetDurSec - (Math.round(selectedSceneDurationSec() * 10.0) / 10.0)) < 0.06
+
+    /** Shortcut 1-ketuk untuk menyamakan range durasi Replace Scene dengan durasi scene terpilih (<=10 dtk). */
+    fun applySceneDurationShortcut() {
+        if (!canUseSceneDurationShortcut()) {
+            toast("Durasi scene melebihi batas 10.0 detik ZeroGPU")
             return
         }
-        aiPreviewStatus = "Prompt siap diselipkan tepat di posisi seek ${Fmt.preciseTime(aiSeekTimeSec)} (Klip #${aiSeekClipIndex + 1}) — pemrosesan backend AI segera hadir."
-        toast("UI AI siap di posisi ${Fmt.preciseTime(aiSeekTimeSec)}")
+        val exact = clampD(
+            Math.round(selectedSceneDurationSec() * 10.0) / 10.0,
+            AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
+            AiPlanner.ZEROGPU_MAX_REPLACE_SEC
+        )
+        aiReplaceTargetDurSec = exact
+        captureReplaceSceneFrames()
+        bump()
+        toast("Durasi replace disetel sesuai scene (${Fmt.one(exact)} dtk)")
+    }
+
+    /** Mengubah nilai slider input range durasi pada Mode Replace Scene (1.0 .. 10.0 dtk). */
+    fun updateReplaceTargetDuration(sec: Double, refreshEndFrame: Boolean = false) {
+        val clamped = clampD(
+            Math.round(sec * 10.0) / 10.0,
+            AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
+            AiPlanner.ZEROGPU_MAX_REPLACE_SEC
+        )
+        aiReplaceTargetDurSec = clamped
+        if (refreshEndFrame) {
+            captureReplaceSceneFrames()
+        }
+        bump()
+    }
+
+    fun toggleReplaceBridgeLastFrame() {
+        aiReplaceBridgeLastFrame = !aiReplaceBridgeLastFrame
+        if (aiReplaceBridgeLastFrame) {
+            captureReplaceSceneFrames()
+        }
+        bump()
+    }
+
+    /** Mengganti Mode Kerja AI (Mode Sisipkan vs Replace Scene). */
+    fun selectAiWorkMode(mode: AiWorkMode) {
+        aiWorkMode = mode
+        if (mode == AiWorkMode.REPLACE_SCENE) {
+            syncReplaceSceneSelection(autoMatchDurationIfEligible = true)
+        } else {
+            captureAiSeekFrame(waitSeekSettle = false)
+        }
+        bump()
+    }
+
+    /** Berpindah ke klip/scene sebelumnya atau sesudahnya untuk Mode Replace Scene. */
+    fun stepReplaceTargetScene(deltaClip: Int) {
+        if (!hasVideo || core.segs.isEmpty()) return
+        pause()
+        val nextIdx = (core.sel + deltaClip).coerceIn(0, core.segs.lastIndex)
+        core.sel = nextIdx
+        val targetStart = core.lay.off.getOrElse(nextIdx) { 0.0 }
+        setSeekFast(false)
+        core.setTime(targetStart)
+        seekVideoToEdit(forceExact = true)
+        refreshDerived()
+        syncReplaceSceneSelection(autoMatchDurationIfEligible = true)
+        bump()
+    }
+
+    private fun syncReplaceSceneSelection(autoMatchDurationIfEligible: Boolean) {
+        if (!hasVideo || core.segs.isEmpty()) return
+        val sceneLen = selectedSceneDurationSec()
+        if (autoMatchDurationIfEligible) {
+            aiReplaceTargetDurSec = clampD(
+                Math.round(min(AiPlanner.ZEROGPU_MAX_REPLACE_SEC, sceneLen) * 10.0) / 10.0,
+                AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
+                AiPlanner.ZEROGPU_MAX_REPLACE_SEC
+            )
+        } else {
+            aiReplaceTargetDurSec = clampD(
+                aiReplaceTargetDurSec,
+                AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
+                AiPlanner.ZEROGPU_MAX_REPLACE_SEC
+            )
+        }
+        captureReplaceSceneFrames()
+    }
+
+    /** Menangkap Frame Awal Scene dan Frame Akhir bagian yang akan di-replace pada Mode Replace Scene. */
+    fun captureReplaceSceneFrames() {
+        aiReplaceFrameJob?.cancel()
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
+            aiReplaceFirstBitmap = null
+            aiReplaceLastBitmap = null
+            return
+        }
+        val idx = core.sel.coerceIn(0, core.segs.lastIndex)
+        val g = core.segs[idx]
+        val src = sources.getOrElse(g.src) { sources.first() }
+        val curRot = rot
+        val curFlip = flip
+        val startSrcSec = g.a
+        val replaceSpanSec = min(g.len, aiReplaceTargetDurSec)
+        val endSrcSec = if (g.fz) g.a else clampD(g.a + max(0.0, replaceSpanSec - 0.04) * g.sp, g.a, g.b)
+        val wantLast = aiReplaceBridgeLastFrame
+
+        aiReplaceFrameJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val pair = withContext(Dispatchers.IO) {
+                val startUs = Math.round(max(0.0, startSrcSec) * 1_000_000.0)
+                val rawFirst = VideoFrames.grabExactFrame(ctx, src.uri, startUs, src.info)
+                    ?: VideoFrames.grabFrame(ctx, src.uri, Math.round(max(0.0, startSrcSec) * 1000.0), src.info)
+                val firstBmp = rawFirst?.let {
+                    transformPreviewBitmap(VideoFrames.limitLongSide(it, 1080), curRot, curFlip)
+                }
+                val lastBmp = if (wantLast) {
+                    val endUs = Math.round(max(0.0, endSrcSec) * 1_000_000.0)
+                    val rawLast = VideoFrames.grabExactFrame(ctx, src.uri, endUs, src.info)
+                        ?: VideoFrames.grabFrame(ctx, src.uri, Math.round(max(0.0, endSrcSec) * 1000.0), src.info)
+                    rawLast?.let {
+                        transformPreviewBitmap(VideoFrames.limitLongSide(it, 1080), curRot, curFlip)
+                    }
+                } else {
+                    null
+                }
+                firstBmp to lastBmp
+            }
+            aiReplaceFirstBitmap = pair.first
+            aiReplaceLastBitmap = pair.second
+        }
+    }
+
+    /** Mengunci frame pada posisi seek saat ini sebagai Frame Akhir opsional untuk Mode Sisipkan. */
+    fun captureInsertLastFrame() {
+        val curBmp = aiSeekBitmap ?: grabLivePreviewBitmap()
+        if (curBmp == null || curBmp.isRecycled) {
+            toast("Frame pratinjau belum siap")
+            return
+        }
+        aiInsertLastBitmap = curBmp.copy(Bitmap.Config.ARGB_8888, false)
+        aiInsertLastTimeSec = aiSeekTimeSec
+        bump()
+        toast("Frame Akhir dikunci pada ${Fmt.preciseTime(aiInsertLastTimeSec)}")
+    }
+
+    fun clearInsertLastFrame() {
+        aiInsertLastBitmap = null
+        aiInsertLastTimeSec = -1.0
+        bump()
+    }
+
+    /** memilih paket durasi Mode Sisipkan (3×3.5 dtk, 2×5 dtk, 7 dtk, 10 dtk). */
+    fun selectAiInsertPreset(preset: AiInsertPreset) {
+        aiInsertPreset = preset
+        aiTimelineJoinStyle = if (preset.autoMergeDefault) {
+            AiTimelineJoinStyle.MERGED
+        } else {
+            AiTimelineJoinStyle.SEPARATE
+        }
+        val segCount = preset.segDurs.size
+        if (segCount <= 1) {
+            aiPerSegmentPromptMode = false
+            aiActivePromptSegSlot = 0
+            aiPrompt = aiSegmentPrompts[0]
+        } else if (aiActivePromptSegSlot > segCount) {
+            aiActivePromptSegSlot = 1
+            aiPrompt = aiSegmentPrompts[1]
+        }
+        bump()
+    }
+
+    fun selectAiSpace(space: AiSpaceOption) {
+        aiSpaceOption = space
+        if (!space.supportsSafetyChecker) {
+            aiSafetyChecker = false
+        }
+        bump()
+    }
+
+    fun currentAiExecutionPlan(): AiExecutionPlan =
+        if (aiWorkMode == AiWorkMode.INSERT) {
+            AiPlanner.planInsert(aiInsertPreset)
+        } else {
+            AiPlanner.planReplace(aiReplaceTargetDurSec, selectedSceneDurationSec())
+        }
+
+    // --- Pengaturan Prompt Tunggal / Per-Segmen (Segmen 1..3) ---
+
+    fun selectPromptSegmentSlot(slot: Int) {
+        if (slot <= 0) {
+            aiPerSegmentPromptMode = false
+            aiActivePromptSegSlot = 0
+            aiPrompt = aiSegmentPrompts[0]
+        } else {
+            val safeSlot = slot.coerceIn(1, 3)
+            aiPerSegmentPromptMode = true
+            aiActivePromptSegSlot = safeSlot
+            aiPrompt = aiSegmentPrompts[safeSlot]
+        }
+        bump()
+    }
+
+    fun updateActiveAiPromptText(text: String) {
+        aiPrompt = text
+        aiPreviewStatus = null
+        val mutable = aiSegmentPrompts.toMutableList()
+        while (mutable.size < 4) mutable.add("")
+        if (!aiPerSegmentPromptMode || aiActivePromptSegSlot == 0) {
+            mutable[0] = text
+            mutable[1] = text
+            mutable[2] = text
+            mutable[3] = text
+        } else {
+            mutable[aiActivePromptSegSlot.coerceIn(1, 3)] = text
+        }
+        aiSegmentPrompts = mutable
+    }
+
+    private fun promptForSegmentOneBased(segNum: Int): String {
+        return if (!aiPerSegmentPromptMode) {
+            aiPrompt.trim().ifEmpty { aiSegmentPrompts.getOrElse(0) { "" }.trim() }
+        } else {
+            aiSegmentPrompts.getOrElse(segNum.coerceIn(1, 3)) { aiPrompt }.trim()
+                .ifEmpty { aiPrompt.trim() }
+        }
+    }
+
+    // --- Tab Management Prompt (Simpan, Edit, Hapus, Favorit, Kategori, JSON/Clipboard) ---
+
+    fun filteredAiPrompts(): List<AiPromptItem> {
+        val q = aiPromptSearchQuery.trim().lowercase(Locale.ROOT)
+        return aiPromptLibrary.filter { item ->
+            val catOk = when (aiPromptFilterCategory) {
+                "ALL" -> true
+                "FAV" -> item.favorite
+                else -> item.category.equals(aiPromptFilterCategory, ignoreCase = true)
+            }
+            val qOk = q.isEmpty() ||
+                item.title.lowercase(Locale.ROOT).contains(q) ||
+                item.body.lowercase(Locale.ROOT).contains(q) ||
+                item.category.lowercase(Locale.ROOT).contains(q)
+            catOk && qOk
+        }
+    }
+
+    fun fillPromptFormFromActiveEditor() {
+        aiFormPromptBody = aiPrompt
+        if (aiFormPromptTitle.isBlank()) {
+            aiFormPromptTitle = "Prompt " + SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        }
+        toast("Isi editor prompt disalin ke form")
+    }
+
+    fun startEditingPromptItem(item: AiPromptItem) {
+        aiEditingPromptId = item.id
+        aiFormPromptTitle = item.title
+        aiFormPromptCategory = item.category
+        aiFormPromptBody = item.body
+    }
+
+    fun cancelEditingPromptItem() {
+        aiEditingPromptId = null
+        aiFormPromptTitle = ""
+        aiFormPromptBody = ""
+    }
+
+    fun savePromptLibraryEntry() {
+        val title = aiFormPromptTitle.trim()
+        val body = aiFormPromptBody.trim()
+        val cat = aiFormPromptCategory.trim().ifEmpty { "Kustom" }
+        if (title.isEmpty() || body.isEmpty()) {
+            toast("Isi judul dan teks prompt terlebih dahulu")
+            return
+        }
+        val editId = aiEditingPromptId
+        val nextList = if (editId != null) {
+            aiPromptLibrary.map {
+                if (it.id == editId) it.copy(title = title, category = cat, body = body) else it
+            }
+        } else {
+            listOf(
+                AiPromptItem(
+                    id = "pm_" + System.currentTimeMillis(),
+                    title = title,
+                    category = cat,
+                    body = body,
+                    favorite = false
+                )
+            ) + aiPromptLibrary
+        }
+        aiPromptLibrary = nextList
+        persistPromptLibrary()
+        aiEditingPromptId = null
+        aiFormPromptTitle = ""
+        aiFormPromptBody = ""
+        toast(if (editId != null) "Prompt diperbarui" else "Prompt disimpan ke Management Prompt")
+    }
+
+    fun toggleFavoritePrompt(id: String) {
+        aiPromptLibrary = aiPromptLibrary.map {
+            if (it.id == id) it.copy(favorite = !it.favorite) else it
+        }
+        persistPromptLibrary()
+    }
+
+    fun deletePromptLibraryEntry(id: String) {
+        aiPromptLibrary = aiPromptLibrary.filterNot { it.id == id }
+        persistPromptLibrary()
+        if (aiEditingPromptId == id) cancelEditingPromptItem()
+        toast("Prompt dihapus")
+    }
+
+    /** Memasang item koleksi prompt ke semua segmen (slot=0) atau ke segmen tertentu (slot=1..3). */
+    fun applyLibraryPromptToSegment(item: AiPromptItem, slot: Int) {
+        val mutable = aiSegmentPrompts.toMutableList()
+        while (mutable.size < 4) mutable.add("")
+        if (slot <= 0) {
+            aiPerSegmentPromptMode = false
+            aiActivePromptSegSlot = 0
+            mutable[0] = item.body
+            mutable[1] = item.body
+            mutable[2] = item.body
+            mutable[3] = item.body
+            aiPrompt = item.body
+            toast("Prompt \"${item.title}\" dipasang ke semua segmen")
+        } else {
+            val s = slot.coerceIn(1, 3)
+            aiPerSegmentPromptMode = true
+            aiActivePromptSegSlot = s
+            mutable[s] = item.body
+            aiPrompt = item.body
+            toast("Prompt \"${item.title}\" dipasang ke Segmen #$s")
+        }
+        aiSegmentPrompts = mutable
+        aiActiveTab = AiTab.CREATE
+        bump()
+    }
+
+    private fun persistPromptLibrary() {
+        prefs.edit().putString(KEY_AI_PROMPTS_JSON, AiPromptItem.toJsonString(aiPromptLibrary)).apply()
+    }
+
+    fun defaultPromptsFileName(): String {
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+        return "koleksi_prompt_ai_$stamp.json"
+    }
+
+    fun buildPromptsExportJson(): String = AiPromptItem.toJsonString(aiPromptLibrary)
+
+    fun exportPromptsToUri(uri: Uri) {
+        val payload = buildPromptsExportJson()
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = try {
+                getApplication<Application>().contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(payload.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } != null
+            } catch (_: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) {
+                toast(
+                    if (ok) "Koleksi ${aiPromptLibrary.size} prompt berhasil diekspor (.json)"
+                    else "Gagal menyimpan berkas prompt"
+                )
+            }
+        }
+    }
+
+    fun importPromptsFromUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = try {
+                getApplication<Application>().contentResolver.openInputStream(uri)
+                    ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+            } catch (_: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (text.isNullOrBlank()) {
+                    toast("Berkas JSON prompt kosong atau tidak terbaca")
+                } else {
+                    importPromptsFromRawJson(text)
+                }
+            }
+        }
+    }
+
+    fun importPromptsFromRawJson(rawJson: String) {
+        val parsed = AiPromptItem.parseJsonString(rawJson)
+        if (parsed.isNullOrEmpty()) {
+            toast("Format JSON koleksi prompt tidak valid")
+            return
+        }
+        aiPromptLibrary = if (aiPromptImportMergeMode) {
+            val existingBodies = aiPromptLibrary.map { it.body.trim().lowercase(Locale.ROOT) }.toHashSet()
+            val fresh = parsed.filter { it.body.trim().lowercase(Locale.ROOT) !in existingBodies }
+            fresh + aiPromptLibrary
+        } else {
+            parsed
+        }
+        persistPromptLibrary()
+        toast("${parsed.size} prompt berhasil diimpor")
+    }
+
+    // --- Tab Runner: Koneksi Firebase & GitHub + Repo Runner Clipboards ---
+
+    fun updateAiRunnerConfigField(
+        firebaseUrl: String = aiRunnerConfig.firebaseUrl,
+        githubOwner: String = aiRunnerConfig.githubOwner,
+        githubRepo: String = aiRunnerConfig.githubRepo,
+        githubBranch: String = aiRunnerConfig.githubBranch,
+        workflowFile: String = aiRunnerConfig.workflowFile,
+        githubToken: String = aiRunnerConfig.githubToken
+    ) {
+        aiRunnerConfig = AiRunnerConfig(
+            firebaseUrl = firebaseUrl,
+            githubOwner = githubOwner,
+            githubRepo = githubRepo,
+            githubBranch = githubBranch,
+            workflowFile = workflowFile,
+            githubToken = githubToken
+        )
+        aiConnectionTestMessage = null
+    }
+
+    fun saveAiRunnerConfig() {
+        val obj = JSONObject()
+            .put("firebaseUrl", aiRunnerConfig.firebaseUrl.trim())
+            .put("githubOwner", aiRunnerConfig.githubOwner.trim())
+            .put("githubRepo", aiRunnerConfig.githubRepo.trim())
+            .put("githubBranch", aiRunnerConfig.githubBranch.trim().ifEmpty { "main" })
+            .put("workflowFile", aiRunnerConfig.workflowFile.trim().ifEmpty { "wanvideo-r3gm-test.yml" })
+            .put("githubToken", aiRunnerConfig.githubToken.trim())
+        prefs.edit().putString(KEY_AI_RUNNER_CFG, obj.toString()).apply()
+        toast("Pengaturan koneksi Firebase & GitHub disimpan")
+    }
+
+    fun runAiConnectionTest() {
+        if (aiTestingConnection) return
+        saveAiRunnerConfig()
+        aiTestingConnection = true
+        aiConnectionTestMessage = "Menghubungi Firebase & GitHub API…"
+        viewModelScope.launch {
+            val res = WanStudioClient.testConnection(aiRunnerConfig)
+            aiTestingConnection = false
+            res.fold(
+                onSuccess = { msg ->
+                    aiConnectionTestOk = true
+                    aiConnectionTestMessage = msg
+                    toast("Tes koneksi berhasil!")
+                },
+                onFailure = { err ->
+                    aiConnectionTestOk = false
+                    aiConnectionTestMessage = err.message ?: "Koneksi gagal."
+                    toast("Tes koneksi gagal")
+                }
+            )
+        }
+    }
+
+    fun markRunnerClipboardCopied(itemId: String, label: String) {
+        val updated = aiCopiedRunnerIds + itemId
+        aiCopiedRunnerIds = updated
+        prefs.edit().putStringSet(KEY_AI_COPIED_CLIPS, updated).apply()
+        toast("$label disalin ke clipboard ✓")
+    }
+
+    fun resetRunnerClipboardChecklist() {
+        aiCopiedRunnerIds = emptySet()
+        prefs.edit().remove(KEY_AI_COPIED_CLIPS).apply()
+        toast("Checklist 0/4 direset")
+    }
+
+    // --- Eksekusi Generasi AI, Dual Timeout (3m Workflow + 3m/Video) & Multi-Hasil ---
+
+    fun onAiGenerateClicked() {
+        startAiGeneration()
+    }
+
+    fun startAiGeneration() {
+        if (aiIsRunning) {
+            toast("Generasi AI sedang berjalan")
+            return
+        }
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
+            toast("Impor video terlebih dahulu untuk mengambil frame sumber")
+            return
+        }
+        val plan = currentAiExecutionPlan()
+        for (i in 1..plan.count) {
+            if (promptForSegmentOneBased(i).isBlank()) {
+                toast("Isi teks prompt untuk Segmen #$i terlebih dahulu")
+                return
+            }
+        }
+        if (!aiRunnerConfig.isComplete) {
+            aiActiveTab = AiTab.RUNNER
+            toast("Lengkapi koneksi Firebase & GitHub Runner terlebih dahulu")
+            return
+        }
+
+        val initialFirstBmp: Bitmap? = if (aiWorkMode == AiWorkMode.INSERT) {
+            aiSeekBitmap ?: grabLivePreviewBitmap()
+        } else {
+            aiReplaceFirstBitmap ?: aiSeekBitmap ?: grabLivePreviewBitmap()
+        }
+        if (initialFirstBmp == null || initialFirstBmp.isRecycled) {
+            toast("Frame sumber belum siap, ketuk Sinkron terlebih dahulu")
+            return
+        }
+        val finalTargetLastBmp: Bitmap? = if (aiWorkMode == AiWorkMode.INSERT) {
+            aiInsertLastBitmap?.takeIf { !it.isRecycled }
+        } else if (aiReplaceBridgeLastFrame) {
+            aiReplaceLastBitmap?.takeIf { !it.isRecycled }
+        } else {
+            null
+        }
+
+        saveAiRunnerConfig()
+
+        // Snapshot target posisi agar bila pengguna menggeser timeline selama menunggu, titik sisip tetap akurat
+        aiSnapshotWorkMode = aiWorkMode
+        aiSnapshotInsertSeekSec = aiSeekTimeSec
+        aiSnapshotReplaceSegIdx = core.sel.coerceIn(0, core.segs.lastIndex)
+        aiSnapshotPlan = plan
+        if (plan.autoMergeDefault) {
+            aiTimelineJoinStyle = AiTimelineJoinStyle.MERGED
+        }
+
+        aiGeneratedSegments = emptyList()
+        aiPreviewResultIndex = 0
+        aiWorkflowWaitSec = 0
+        aiCurrentVideoNum = 1
+        aiTotalVideosInRun = plan.count
+        aiCurrentVideoSec = 0
+        aiRunPhase = AiRunPhase.UPLOADING
+        aiRunStatusDetail = "Menyiapkan tugas AI (${plan.count} video)…"
+        aiActiveTab = AiTab.STATUS
+
+        val useChain = plan.count >= 2 &&
+            (aiWorkMode == AiWorkMode.REPLACE_SCENE ||
+                aiInsertPreset == AiInsertPreset.FULL_10 ||
+                aiMultiStrategy == AiMultiStrategy.CHAIN)
+        val cfgSnap = aiRunnerConfig
+        val spaceSnap = aiSpaceOption
+        val safeSnap = aiSafeMode
+        val safetySnap = aiSafetyChecker
+        val promptsSnap = (1..plan.count).map { promptForSegmentOneBased(it) }
+
+        aiRunJob?.cancel()
+        aiRunJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val collected = ArrayList<AiGeneratedSegment>()
+            try {
+                if (!useChain) {
+                    // 1 Video tunggal ATAU Variasi Take dari frame awal yang sama dalam 1 batch project
+                    val batchReqs = plan.segDurs.mapIndexed { idx, dur ->
+                        SingleTaskRequest(
+                            taskKey = "task-${idx + 1}",
+                            order = idx + 1,
+                            space = spaceSnap,
+                            prompt = promptsSnap[idx],
+                            durationSec = dur,
+                            safeMode = safeSnap,
+                            enableSafetyChecker = safetySnap,
+                            firstBmp = initialFirstBmp,
+                            lastBmp = finalTargetLastBmp
+                        )
+                    }
+                    val outs = WanStudioClient.executeProjectBatch(
+                        context = ctx,
+                        cfg = cfgSnap,
+                        tasks = batchReqs,
+                        videoIndexOffset = 0,
+                        overallTotalVideos = plan.count
+                    ) { tick ->
+                        launch(Dispatchers.Main) { applyProgressTick(tick) }
+                    }
+                    for (dl in outs) {
+                        collected.add(dl.toGeneratedSegment(dl.order))
+                    }
+                } else {
+                    // Mode Sambung Berantai (Chained Continuity):
+                    // Frame terakhir MP4 Segmen #k otomatis menjadi input_image Segmen #(k+1)!
+                    var rollingFirstBmp: Bitmap = initialFirstBmp
+                    for (idx in plan.segDurs.indices) {
+                        val segNum = idx + 1
+                        val isLastSeg = idx == plan.segDurs.lastIndex
+                        val segLastBmp = if (isLastSeg) finalTargetLastBmp else null
+                        val singleReq = SingleTaskRequest(
+                            taskKey = "task-1",
+                            order = 1,
+                            space = spaceSnap,
+                            prompt = promptsSnap[idx],
+                            durationSec = plan.segDurs[idx],
+                            safeMode = safeSnap,
+                            enableSafetyChecker = safetySnap,
+                            firstBmp = rollingFirstBmp,
+                            lastBmp = segLastBmp
+                        )
+                        val outs = WanStudioClient.executeProjectBatch(
+                            context = ctx,
+                            cfg = cfgSnap,
+                            tasks = listOf(singleReq),
+                            videoIndexOffset = idx,
+                            overallTotalVideos = plan.count
+                        ) { tick ->
+                            launch(Dispatchers.Main) { applyProgressTick(tick) }
+                        }
+                        val dl = outs.first()
+                        val segObj = dl.toGeneratedSegment(segNum)
+                        collected.add(segObj)
+                        aiGeneratedSegments = collected.toList()
+
+                        if (!isLastSeg) {
+                            val nextStart = withContext(Dispatchers.IO) {
+                                WanStudioClient.extractLastFrameOfMp4(ctx, dl.file, dl.info)
+                            }
+                            if (nextStart != null) {
+                                rollingFirstBmp = nextStart
+                            }
+                        }
+                    }
+                }
+
+                aiGeneratedSegments = collected.toList()
+                aiRunPhase = AiRunPhase.COMPLETED
+                aiRunStatusDetail = "Selesai! ${collected.size} hasil video AI siap diatur & dimasukkan ke timeline."
+                toast("${collected.size} video AI selesai dibuat!")
+            } catch (ce: CancellationException) {
+                aiRunPhase = AiRunPhase.IDLE
+                aiRunStatusDetail = "Proses AI dibatalkan oleh pengguna."
+                toast("Generasi AI dibatalkan")
+            } catch (wte: WorkflowWaitTimeoutException) {
+                aiWorkflowWaitSec = AiPlanner.WORKFLOW_WAIT_TIMEOUT_SEC
+                aiRunPhase = AiRunPhase.WORKFLOW_TIMEOUT
+                aiRunStatusDetail = wte.message ?: "Timeout menunggu workflow (3 menit)."
+                if (collected.isNotEmpty()) {
+                    populateRemainingFailedSlots(plan, promptsSnap, initialFirstBmp, finalTargetLastBmp, collected, wte.message)
+                }
+                toast("Timeout 3 menit menunggu workflow aktif")
+            } catch (vte: VideoGenerationTimeoutException) {
+                for (dl in vte.partialDownloaded) {
+                    val segNum = (collected.size + 1).coerceAtMost(plan.count)
+                    collected.add(dl.toGeneratedSegment(segNum))
+                }
+                aiCurrentVideoNum = vte.timedOutVideoNumber
+                aiCurrentVideoSec = AiPlanner.VIDEO_GEN_TIMEOUT_SEC
+                aiRunPhase = AiRunPhase.VIDEO_TIMEOUT
+                aiRunStatusDetail = vte.message ?: "Timeout 3 menit pembuatan video."
+                populateRemainingFailedSlots(
+                    plan = plan,
+                    prompts = promptsSnap,
+                    fallbackFirst = initialFirstBmp,
+                    fallbackLast = finalTargetLastBmp,
+                    collected = collected,
+                    errMsg = vte.message ?: "Melewati batas 3 menit/video"
+                )
+                toast("Timeout 3 menit pada Video #${vte.timedOutVideoNumber}")
+            } catch (e: Exception) {
+                aiRunPhase = AiRunPhase.FAILED
+                aiRunStatusDetail = e.message ?: "Generasi AI gagal."
+                if (collected.isNotEmpty()) {
+                    populateRemainingFailedSlots(plan, promptsSnap, initialFirstBmp, finalTargetLastBmp, collected, e.message)
+                }
+                toast("Generasi AI gagal")
+            }
+        }
+    }
+
+    private fun DownloadedAiVideo.toGeneratedSegment(segNumber: Int): AiGeneratedSegment =
+        AiGeneratedSegment(
+            id = "aiseg_${System.currentTimeMillis()}_$segNumber",
+            segNumber = segNumber,
+            requestedDurSec = requestedDurSec,
+            actualDurSec = actualDurSec,
+            mp4File = file,
+            info = info,
+            previewBmp = previewBmp ?: firstBmp,
+            seed = seed,
+            promptUsed = promptUsed,
+            inputFirstBmp = firstBmp,
+            inputLastBmp = lastBmp,
+            selected = true,
+            failed = false,
+            errorMessage = null
+        )
+
+    private fun populateRemainingFailedSlots(
+        plan: AiExecutionPlan,
+        prompts: List<String>,
+        fallbackFirst: Bitmap,
+        fallbackLast: Bitmap?,
+        collected: MutableList<AiGeneratedSegment>,
+        errMsg: String?
+    ) {
+        val ctx = getApplication<Application>()
+        while (collected.size < plan.count) {
+            val nextIdx = collected.size
+            val prevSeg = collected.lastOrNull { !it.failed && it.mp4File != null && it.info != null }
+            val nextFirst = if (prevSeg?.mp4File != null && prevSeg.info != null) {
+                WanStudioClient.extractLastFrameOfMp4(ctx, prevSeg.mp4File, prevSeg.info) ?: fallbackFirst
+            } else {
+                fallbackFirst
+            }
+            collected.add(
+                AiGeneratedSegment(
+                    id = "aiseg_err_${System.currentTimeMillis()}_${nextIdx + 1}",
+                    segNumber = nextIdx + 1,
+                    requestedDurSec = plan.segDurs[nextIdx],
+                    actualDurSec = plan.segDurs[nextIdx],
+                    mp4File = null,
+                    info = null,
+                    previewBmp = nextFirst,
+                    seed = "-",
+                    promptUsed = prompts.getOrElse(nextIdx) { aiPrompt },
+                    inputFirstBmp = nextFirst,
+                    inputLastBmp = if (nextIdx == plan.segDurs.lastIndex) fallbackLast else null,
+                    selected = false,
+                    failed = true,
+                    errorMessage = errMsg ?: "Gagal / Timeout — ketuk ↻ untuk mengulang segmen ini"
+                )
+            )
+        }
+        aiGeneratedSegments = collected.toList()
+    }
+
+    private fun applyProgressTick(tick: com.pribadi.editorvideo.ai.LiveProgressTick) {
+        aiRunPhase = tick.phase
+        aiWorkflowWaitSec = tick.workflowWaitSec
+        aiCurrentVideoNum = tick.currentVideoNumber
+        aiTotalVideosInRun = tick.totalVideos
+        aiCurrentVideoSec = tick.currentVideoSec
+        aiRunStatusDetail = tick.statusDetail
+    }
+
+    fun cancelAiGeneration() {
+        aiRunJob?.cancel()
+        aiRunPhase = AiRunPhase.IDLE
+        aiRunStatusDetail = "Dibatalkan."
+    }
+
+    /** Regenerate hanya 1 segmen tertentu (hemat waktu & kuota ZeroGPU bila segmen lain sudah bagus). */
+    fun regenerateSingleAiSegment(index: Int) {
+        if (aiIsRunning) {
+            toast("Tunggu proses saat ini selesai")
+            return
+        }
+        val target = aiGeneratedSegments.getOrNull(index) ?: return
+        val firstBmp = target.inputFirstBmp ?: aiSeekBitmap ?: grabLivePreviewBitmap()
+        if (firstBmp == null || firstBmp.isRecycled) {
+            toast("Frame referensi segmen tidak tersedia")
+            return
+        }
+        if (!aiRunnerConfig.isComplete) {
+            aiActiveTab = AiTab.RUNNER
+            toast("Lengkapi pengaturan koneksi terlebih dahulu")
+            return
+        }
+
+        val cfgSnap = aiRunnerConfig
+        val spaceSnap = aiSpaceOption
+        val safeSnap = aiSafeMode
+        val safetySnap = aiSafetyChecker
+        val promptUse = target.promptUsed.ifBlank { promptForSegmentOneBased(target.segNumber) }
+
+        aiWorkflowWaitSec = 0
+        aiCurrentVideoNum = target.segNumber
+        aiTotalVideosInRun = aiGeneratedSegments.size
+        aiCurrentVideoSec = 0
+        aiRunPhase = AiRunPhase.UPLOADING
+        aiRunStatusDetail = "Mengulang Segmen #${target.segNumber}…"
+
+        aiRunJob?.cancel()
+        aiRunJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            try {
+                val req = SingleTaskRequest(
+                    taskKey = "task-1",
+                    order = 1,
+                    space = spaceSnap,
+                    prompt = promptUse,
+                    durationSec = target.requestedDurSec,
+                    safeMode = safeSnap,
+                    enableSafetyChecker = safetySnap,
+                    firstBmp = firstBmp,
+                    lastBmp = target.inputLastBmp
+                )
+                val outs = WanStudioClient.executeProjectBatch(
+                    context = ctx,
+                    cfg = cfgSnap,
+                    tasks = listOf(req),
+                    videoIndexOffset = target.segNumber - 1,
+                    overallTotalVideos = aiGeneratedSegments.size
+                ) { tick ->
+                    launch(Dispatchers.Main) { applyProgressTick(tick) }
+                }
+                val fresh = outs.first().toGeneratedSegment(target.segNumber)
+                val updated = aiGeneratedSegments.toMutableList()
+                if (index in updated.indices) {
+                    updated[index] = fresh
+                }
+                aiGeneratedSegments = updated
+                aiPreviewResultIndex = index
+                aiRunPhase = AiRunPhase.COMPLETED
+                aiRunStatusDetail = "Segmen #${target.segNumber} berhasil dibuat ulang!"
+                toast("Segmen #${target.segNumber} diperbarui ✓")
+            } catch (ce: CancellationException) {
+                aiRunPhase = AiRunPhase.IDLE
+                aiRunStatusDetail = "Regenerate dibatalkan."
+            } catch (wte: WorkflowWaitTimeoutException) {
+                aiWorkflowWaitSec = AiPlanner.WORKFLOW_WAIT_TIMEOUT_SEC
+                aiRunPhase = AiRunPhase.WORKFLOW_TIMEOUT
+                aiRunStatusDetail = wte.message ?: "Timeout menunggu workflow (3 menit)."
+                toast("Timeout 3 menit menunggu workflow")
+            } catch (vte: VideoGenerationTimeoutException) {
+                aiCurrentVideoSec = AiPlanner.VIDEO_GEN_TIMEOUT_SEC
+                aiRunPhase = AiRunPhase.VIDEO_TIMEOUT
+                aiRunStatusDetail = vte.message ?: "Timeout 3 menit pembuatan video."
+                toast("Timeout 3 menit pada Segmen #${target.segNumber}")
+            } catch (e: Exception) {
+                aiRunPhase = AiRunPhase.FAILED
+                aiRunStatusDetail = e.message ?: "Gagal mengulang segmen."
+                toast("Gagal mengulang Segmen #${target.segNumber}")
+            }
+        }
+    }
+
+    fun toggleSelectAiResult(index: Int) {
+        val cur = aiGeneratedSegments.getOrNull(index) ?: return
+        if (cur.failed || cur.mp4File == null) return
+        val updated = aiGeneratedSegments.toMutableList()
+        updated[index] = cur.copy(selected = !cur.selected)
+        aiGeneratedSegments = updated
+    }
+
+    fun moveAiResult(index: Int, delta: Int) {
+        val next = index + delta
+        if (index !in aiGeneratedSegments.indices || next !in aiGeneratedSegments.indices) return
+        val updated = aiGeneratedSegments.toMutableList()
+        val tmp = updated[index]
+        updated[index] = updated[next]
+        updated[next] = tmp
+        aiGeneratedSegments = updated
+        aiPreviewResultIndex = next
+    }
+
+    /** Menyimpan seluruh hasil MP4 terpilih ke folder Galeri (Movies/EditorVideo). */
+    fun saveSelectedAiResultsToGallery() {
+        val valid = aiGeneratedSegments.filter { it.selected && !it.failed && it.mp4File != null }
+        if (valid.isEmpty()) {
+            toast("Pilih minimal 1 hasil video AI yang selesai")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ctx = getApplication<Application>()
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            var savedCount = 0
+            for ((idx, sg) in valid.withIndex()) {
+                val f = sg.mp4File ?: continue
+                try {
+                    val name = if (valid.size == 1) {
+                        "AI_Wan_${stamp}.mp4"
+                    } else {
+                        "AI_Wan_${stamp}_${idx + 1}.mp4"
+                    }
+                    MediaStoreSaver.save(ctx, f, name)
+                    savedCount++
+                } catch (_: Exception) {
+                }
+            }
+            withContext(Dispatchers.Main) {
+                toast(
+                    if (savedCount > 0) "$savedCount video AI disimpan ke Movies/EditorVideo"
+                    else "Gagal menyimpan ke Galeri"
+                )
+            }
+        }
+    }
+
+    /**
+     * Memasukkan hasil video AI terpilih ke Timeline (mendukung Mode Sisipkan & Mode Replace Scene,
+     * baik sebagai Klip Terpisah Berurutan maupun Gabung Jadi 1 Klip Utuh, lengkap dengan Undo/Redo).
+     */
+    fun applyAiResultsToTimeline(joinStyle: AiTimelineJoinStyle) {
+        if (aiMergingClips) return
+        val chosen = aiGeneratedSegments.filter {
+            it.selected && !it.failed && it.mp4File != null && it.info != null
+        }
+        if (chosen.isEmpty()) {
+            toast("Pilih minimal 1 hasil video AI terlebih dahulu")
+            return
+        }
+
+        pause()
+        val mode = aiSnapshotWorkMode
+        val plan = aiSnapshotPlan ?: currentAiExecutionPlan()
+
+        // Hitung durasi pakai per segmen agar pada Mode Replace Scene totalnya presisi sesuai slider/scene!
+        val targetCap = if (mode == AiWorkMode.REPLACE_SCENE) plan.targetTotalSec else Double.MAX_VALUE
+        var remainingAllowance = targetCap
+        val clippedChosen = ArrayList<Triple<File, VideoInfo, Double>>()
+        for (sg in chosen) {
+            if (remainingAllowance < Rules.MIN) break
+            val useSec = min(sg.actualDurSec, remainingAllowance)
+            clippedChosen.add(Triple(sg.mp4File!!, sg.info!!, max(Rules.MIN, useSec)))
+            remainingAllowance -= useSec
+        }
+        if (clippedChosen.isEmpty()) {
+            toast("Durasi hasil tidak mencukupi")
+            return
+        }
+
+        aiMergingClips = true
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            try {
+                // Pastikan tag "AI" terdaftar di daftar tag aplikasi agar siap dipakai Filter Grid & Ekspor By Tag
+                if (availableTags.none { it.equals("AI", ignoreCase = true) }) {
+                    val nextTags = availableTags + "AI"
+                    availableTags = nextTags
+                    val arr = JSONArray()
+                    nextTags.forEach { arr.put(it) }
+                    prefs.edit().putString(KEY_CUSTOM_TAGS, arr.toString()).apply()
+                }
+
+                val finalFilesToRegister: List<Triple<File, VideoInfo, Double>> =
+                    if (joinStyle == AiTimelineJoinStyle.MERGED && clippedChosen.size >= 2) {
+                        val outDir = File(ctx.filesDir, "ai_videos")
+                        if (!outDir.exists()) outDir.mkdirs()
+                        val mergedFile = File(outDir, "ai_merged_${System.currentTimeMillis()}.mp4")
+                        val ok = WanStudioClient.mergeSegmentsToSingleMp4(ctx, clippedChosen, mergedFile)
+                        val mergedInfo = if (ok) {
+                            withContext(Dispatchers.IO) { VideoProbe.probe(ctx, Uri.fromFile(mergedFile)) }
+                        } else {
+                            null
+                        }
+                        if (mergedInfo != null && mergedInfo.durationMs > 0L) {
+                            val dur = max(Rules.MIN, mergedInfo.durationMs / 1000.0)
+                            listOf(Triple(mergedFile, mergedInfo, dur))
+                        } else {
+                            clippedChosen
+                        }
+                    } else {
+                        clippedChosen
+                    }
+
+                val firstNewSrcIdx = sources.size
+                val addedDurPairs = ArrayList<Pair<Int, Double>>()
+                val segSpecs = ArrayList<Triple<Int, Double, Double>>()
+
+                for ((f, inf, useDur) in finalFilesToRegister) {
+                    val newIdx = sources.size
+                    val fullDur = max(Rules.MIN, inf.durationMs / 1000.0)
+                    sources.add(MediaSource(Uri.fromFile(f), inf))
+                    val uniq = min(150, max(10, ceil(fullDur * 3.0).toInt()))
+                    sourceThumbs.add(arrayOfNulls(uniq))
+                    sourceThumbReady.add(0)
+                    addedDurPairs.add(newIdx to fullDur)
+                    segSpecs.add(Triple(newIdx, fullDur, min(fullDur, useDur)))
+                }
+
+                core.registerAddedSourceDurs(addedDurPairs)
+
+                val msg = if (mode == AiWorkMode.REPLACE_SCENE && hasVideo && core.segs.isNotEmpty()) {
+                    val segIdx = aiSnapshotReplaceSegIdx.coerceIn(0, core.segs.lastIndex)
+                    val origSceneLen = core.segs[segIdx].len
+                    val keepTailFrom = if (origSceneLen > AiPlanner.ZEROGPU_MAX_REPLACE_SEC + 0.05) {
+                        min(origSceneLen, plan.targetTotalSec)
+                    } else {
+                        null
+                    }
+                    core.replaceSceneWithAiSegments(
+                        targetSegIdx = segIdx,
+                        newSegSpecs = segSpecs,
+                        keepOverflowFromSec = keepTailFrom,
+                        tagName = "AI"
+                    )
+                } else {
+                    core.insertAiSegmentsAtTime(
+                        insertTimeSec = aiSnapshotInsertSeekSec,
+                        newSegSpecs = segSpecs,
+                        tagName = "AI"
+                    )
+                }
+
+                setSeekFast(false)
+                player.setMediaItems(sources.map { MediaItem.fromUri(it.uri) })
+                player.prepare()
+                player.pause()
+                seekVideoToEdit(forceExact = true)
+                refreshDerived()
+                aiMergingClips = false
+                aiSheet = false
+                bump()
+                toast(msg)
+                startThumbsFrom(firstNewSrcIdx)
+            } catch (e: Exception) {
+                aiMergingClips = false
+                toast("Gagal menerapkan video AI: " + (e.message ?: "Error"))
+            }
+        }
     }
 
     // ------------------------------------------------------------------ pemutar
@@ -1940,7 +3075,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.12 (Terbaru)",
+            version = "v1.0.13 (Terbaru)",
+            date = "27/11/2026",
+            title = "Studio Video AI v2: Mode Sisipkan & Replace Scene, Multi-Hasil, Management Prompt & Runner",
+            items = listOf(
+                "✓ [Pengembangan] Dua Mode Kerja AI: Mode Sisipkan di titik Seek (paket durasi 3×3.5 dtk, 2×5 dtk, 7 dtk, 10 dtk) & Mode Replace Scene (input range durasi 1.0–10.0 dtk + shortcut \"Sesuai Durasi Scene\" bila durasi scene ≤10 dtk).",
+                "✓ [Pengembangan] Pengatur 2 atau 3 Hasil Video AI: opsi Sambung Berantai / Variasi Take, prompt per segmen, pilih/urutkan/regenerate satuan, serta sisip berurutan atau gabung 1 klip.",
+                "✓ [Pengembangan] Tab Management Prompt (simpan, kategori, favorit, eksport/import JSON & Clipboard) serta Tab Koneksi & Repo Runner Clipboards dengan watchdog timeout 3 menit menunggu workflow dan 3 menit per video."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.12",
             date = "27/11/2026",
             title = "Ekspor Berdasarkan Tag, Toggle Loop Preview & Shortcut Sesuai Video Asli",
             items = listOf(
@@ -1958,15 +3103,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 "✓ [Pengembangan] Seek Auto Seleksi di Timeline (klik klip sesudahnya -> frame awal, klik klip sebelumnya -> akhir frame).",
                 "✓ [Pengembangan] Eksport & Import Tagging (.json File Manager & Clipboard)."
             )
-        ),
-        UpdateLogEntry(
-            version = "v1.0.9",
-            date = "27/11/2026",
-            title = "Frame Pertama Utuh di Mode Grid, Floating Range Kolom & 12 Warna Custom Tag Transparan",
-            items = listOf(
-                "✓ [Bug Fixed] Thumbnail setiap item di Mode Grid menampilkan frame pertama klip secara utuh sesuai autoplay.",
-                "✓ [Pengembangan] Floating range kolom (3–9) & Custom Tag 12 warna dengan label transparan."
-            )
         )
     )
 
@@ -1977,6 +3113,42 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
         gridColumns = prefs.getInt(KEY_GRID_COLS, 3).coerceIn(3, 9)
         previewLoop = prefs.getBoolean(KEY_PREVIEW_LOOP, false)
+
+        // Muat koleksi Management Prompt
+        val savedPromptsRaw = prefs.getString(KEY_AI_PROMPTS_JSON, null)
+        if (!savedPromptsRaw.isNullOrEmpty()) {
+            val parsedPrompts = AiPromptItem.parseJsonString(savedPromptsRaw)
+            if (!parsedPrompts.isNullOrEmpty()) {
+                aiPromptLibrary = parsedPrompts
+            }
+        }
+        val firstPromptBody = aiPromptLibrary.firstOrNull()?.body ?: ""
+        if (aiPrompt.isEmpty() && firstPromptBody.isNotEmpty()) {
+            aiPrompt = firstPromptBody
+        }
+
+        // Muat konfigurasi koneksi Firebase & GitHub Runner
+        val savedRunnerRaw = prefs.getString(KEY_AI_RUNNER_CFG, null)
+        if (!savedRunnerRaw.isNullOrEmpty()) {
+            try {
+                val ro = JSONObject(savedRunnerRaw)
+                aiRunnerConfig = AiRunnerConfig(
+                    firebaseUrl = ro.optString("firebaseUrl", ""),
+                    githubOwner = ro.optString("githubOwner", ""),
+                    githubRepo = ro.optString("githubRepo", ""),
+                    githubBranch = ro.optString("githubBranch", "main").ifEmpty { "main" },
+                    workflowFile = ro.optString("workflowFile", "wanvideo-r3gm-test.yml")
+                        .ifEmpty { "wanvideo-r3gm-test.yml" },
+                    githubToken = ro.optString("githubToken", "")
+                )
+            } catch (_: Exception) {
+            }
+        }
+
+        val savedCopied = prefs.getStringSet(KEY_AI_COPIED_CLIPS, null)
+        if (savedCopied != null) {
+            aiCopiedRunnerIds = savedCopied.toSet()
+        }
 
         val savedTagsJson = prefs.getString(KEY_CUSTOM_TAGS, null)
         if (!savedTagsJson.isNullOrEmpty()) {
@@ -2685,5 +3857,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private const val KEY_TAG_COLORS_JSON = "custom_tag_colors_json"
         private const val KEY_SCENE_SENS = "scene_sensitivity"
         private const val KEY_SCENE_MINDUR = "scene_min_dur"
+        private const val KEY_AI_PROMPTS_JSON = "ai_prompt_library_json"
+        private const val KEY_AI_RUNNER_CFG = "ai_runner_config_json"
+        private const val KEY_AI_COPIED_CLIPS = "ai_runner_copied_ids"
     }
 }

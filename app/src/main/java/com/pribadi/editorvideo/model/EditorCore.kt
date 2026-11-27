@@ -481,6 +481,173 @@ class EditorCore {
         return changed
     }
 
+    /** Mendaftarkan durasi sumber-sumber video baru (mis. MP4 hasil AI) ke srcDurs. */
+    fun registerAddedSourceDurs(added: List<Pair<Int, Double>>) {
+        if (added.isEmpty()) return
+        val updated = ArrayList(srcDurs)
+        for ((srcIdx, durSec) in added) {
+            val safeDur = max(Rules.MIN, durSec)
+            while (updated.size <= srcIdx) {
+                updated.add(safeDur)
+            }
+            updated[srcIdx] = safeDur
+        }
+        srcDurs = updated
+    }
+
+    /**
+     * Menyisipkan 1..N potongan hasil AI tepat pada posisi waktu timeline [insertTimeSec]
+     * (membelah klip di posisi seek secara otomatis bila berada di tengah klip, mendukung Undo/Redo).
+     * Mengembalikan pesan status untuk toast.
+     */
+    fun insertAiSegmentsAtTime(
+        insertTimeSec: Double,
+        newSegSpecs: List<Triple<Int, Double, Double>>,
+        tagName: String = "AI"
+    ): String {
+        if (newSegSpecs.isEmpty()) return "Tidak ada hasil AI yang dipilih"
+        onPause()
+
+        val aiSegs = newSegSpecs.map { (srcIdx, fullSrcDur, useDur) ->
+            val endB = clampD(useDur, Rules.MIN, max(Rules.MIN, fullSrcDur))
+            Seg(
+                a = 0.0,
+                b = endB,
+                sp = 1.0,
+                fz = false,
+                d = 0.0,
+                src = srcIdx,
+                tags = listOf(tagName)
+            )
+        }
+
+        if (!hasVideo || segs.isEmpty()) {
+            hasVideo = true
+            segs = aiSegs
+            calc()
+            sel = 0
+            t = 0.0
+            push()
+            build()
+            return "${aiSegs.size} video AI ditambahkan ke timeline"
+        }
+
+        val clampedT = clampD(insertTimeSec, 0.0, lay.total)
+        val L = locate(clampedT)
+        val g = segs[L.i]
+        val leftTimelineLen = L.u
+        val rightTimelineLen = g.len - L.u
+
+        val n = ArrayList<Seg>(segs.size + aiSegs.size + 1)
+        var insertedFirstIdx = L.i
+
+        for (k in segs.indices) {
+            if (k != L.i) {
+                n.add(segs[k])
+                continue
+            }
+            when {
+                leftTimelineLen < Rules.MIN -> {
+                    insertedFirstIdx = n.size
+                    n.addAll(aiSegs)
+                    n.add(g)
+                }
+                rightTimelineLen < Rules.MIN -> {
+                    n.add(g)
+                    insertedFirstIdx = n.size
+                    n.addAll(aiSegs)
+                }
+                g.fz -> {
+                    val leftPart = g.copy(d = max(Rules.MIN * g.sp, leftTimelineLen * g.sp))
+                    val rightPart = g.copy(d = max(Rules.MIN * g.sp, rightTimelineLen * g.sp))
+                    n.add(leftPart)
+                    insertedFirstIdx = n.size
+                    n.addAll(aiSegs)
+                    n.add(rightPart)
+                }
+                else -> {
+                    val splitSrc = clampD(L.s, g.a + Rules.MIN * g.sp, g.b - Rules.MIN * g.sp)
+                    val leftPart = g.copy(b = splitSrc)
+                    val rightPart = g.copy(a = splitSrc)
+                    n.add(leftPart)
+                    insertedFirstIdx = n.size
+                    n.addAll(aiSegs)
+                    n.add(rightPart)
+                }
+            }
+        }
+
+        segs = n
+        calc()
+        sel = insertedFirstIdx.coerceIn(0, segs.size - 1)
+        t = lay.off[sel]
+        push()
+        build()
+        return "${aiSegs.size} video AI disisipkan di ${Fmt.time(clampedT)}"
+    }
+
+    /**
+     * Mengganti (Replace Scene) potongan ke-[targetSegIdx] dengan 1..N potongan hasil AI.
+     * Bila potongan asli melebihi batas 10.0 detik ZeroGPU ([keepOverflowFromSec] > 0),
+     * sisa durasi potongan setelah [keepOverflowFromSec] dipertahankan utuh di sebelah kanannya.
+     */
+    fun replaceSceneWithAiSegments(
+        targetSegIdx: Int,
+        newSegSpecs: List<Triple<Int, Double, Double>>,
+        keepOverflowFromSec: Double?,
+        tagName: String = "AI"
+    ): String {
+        if (!hasVideo || segs.isEmpty() || newSegSpecs.isEmpty()) return "Potongan tidak ditemukan"
+        onPause()
+        val idx = targetSegIdx.coerceIn(0, segs.size - 1)
+        val orig = segs[idx]
+        val mergedTags = (orig.tags + tagName).distinct()
+
+        val aiSegs = newSegSpecs.map { (srcIdx, fullSrcDur, useDur) ->
+            val endB = clampD(useDur, Rules.MIN, max(Rules.MIN, fullSrcDur))
+            Seg(
+                a = 0.0,
+                b = endB,
+                sp = 1.0,
+                fz = false,
+                d = 0.0,
+                src = srcIdx,
+                tags = mergedTags
+            )
+        }
+
+        val n = ArrayList<Seg>(segs.size + aiSegs.size)
+        for (k in segs.indices) {
+            if (k != idx) {
+                n.add(segs[k])
+                continue
+            }
+            n.addAll(aiSegs)
+            if (keepOverflowFromSec != null && orig.len - keepOverflowFromSec >= Rules.MIN) {
+                if (orig.fz) {
+                    val remD = max(Rules.MIN * orig.sp, (orig.len - keepOverflowFromSec) * orig.sp)
+                    n.add(orig.copy(d = remD))
+                } else {
+                    val nextA = clampD(orig.a + keepOverflowFromSec * orig.sp, orig.a, orig.b - Rules.MIN * orig.sp)
+                    n.add(orig.copy(a = nextA))
+                }
+            }
+        }
+
+        segs = n
+        calc()
+        sel = idx.coerceIn(0, segs.size - 1)
+        t = lay.off[sel]
+        push()
+        build()
+        val totalAiSec = aiSegs.sumOf { it.len }
+        return if (keepOverflowFromSec != null && orig.len - keepOverflowFromSec >= Rules.MIN) {
+            "Scene #${idx + 1}: ${Fmt.one(totalAiSec)}s diganti AI, sisa dipertahankan"
+        } else {
+            "Scene #${idx + 1} berhasil diganti dengan video AI (${Fmt.one(totalAiSec)} dtk)"
+        }
+    }
+
     /** Menghapus beberapa potongan sekaligus (menyisakan minimal 1 potongan di timeline). */
     fun deleteSegments(indices: Set<Int>): String {
         if (!hasVideo || segs.isEmpty()) return "Impor video dulu"

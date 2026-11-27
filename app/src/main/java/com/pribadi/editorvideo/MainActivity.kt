@@ -76,6 +76,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val exportPromptsDoc = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            vm.exportPromptsToUri(uri)
+        }
+    }
+
+    private val importPromptsDoc = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            vm.importPromptsFromUri(uri)
+        }
+    }
+
     private val askNotifications = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -99,6 +115,8 @@ class MainActivity : ComponentActivity() {
                     onPickFileManager = { openFileManagerPicker() },
                     onExportTaggingFile = { openExportTagging() },
                     onImportTaggingFile = { openImportTagging() },
+                    onExportPromptsFile = { openExportPrompts() },
+                    onImportPromptsFile = { openImportPrompts() },
                     onStartExport = { startExport() }
                 )
             }
@@ -147,6 +165,22 @@ class MainActivity : ComponentActivity() {
             importTaggingDoc.launch(arrayOf("application/json", "text/*", "*/*"))
         } catch (e: Exception) {
             vm.toast("Gagal membuka File Manager untuk import tagging")
+        }
+    }
+
+    private fun openExportPrompts() {
+        try {
+            exportPromptsDoc.launch(vm.defaultPromptsFileName())
+        } catch (e: Exception) {
+            vm.toast("Gagal membuka dialog simpan koleksi prompt")
+        }
+    }
+
+    private fun openImportPrompts() {
+        try {
+            importPromptsDoc.launch(arrayOf("application/json", "text/*", "*/*"))
+        } catch (e: Exception) {
+            vm.toast("Gagal membuka File Manager untuk import koleksi prompt")
         }
     }
 

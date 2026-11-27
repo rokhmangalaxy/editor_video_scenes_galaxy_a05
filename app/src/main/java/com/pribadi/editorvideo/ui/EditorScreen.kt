@@ -70,6 +70,8 @@ fun EditorScreen(
     onPickFileManager: () -> Unit,
     onExportTaggingFile: () -> Unit,
     onImportTaggingFile: () -> Unit,
+    onExportPromptsFile: () -> Unit,
+    onImportPromptsFile: () -> Unit,
     onStartExport: () -> Unit
 ) {
     val requestImportOptions = { vm.importSourceSheet = true }
@@ -144,7 +146,12 @@ fun EditorScreen(
             }
 
             if (vm.aiSheet) {
-                AiSheet(vm) { vm.aiSheet = false }
+                AiStudioSheet(
+                    vm = vm,
+                    onExportPromptsFile = onExportPromptsFile,
+                    onImportPromptsFile = onImportPromptsFile,
+                    onClose = { vm.aiSheet = false }
+                )
             }
 
             if (vm.gridTagSheet) {

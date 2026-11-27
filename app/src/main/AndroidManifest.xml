@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Koneksi ke Firebase Realtime Database & GitHub Actions Runner untuk fitur Studio Video AI. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Ekspor berjalan di foreground service (tipe dataSync, valid untuk targetSdk 34). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
