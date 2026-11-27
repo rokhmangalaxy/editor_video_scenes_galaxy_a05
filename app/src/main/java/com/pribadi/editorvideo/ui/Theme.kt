@@ -1,10 +1,7 @@
 package com.pribadi.editorvideo.ui
 
 import androidx.annotation.DrawableRes
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -14,7 +11,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -25,12 +21,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
-import androidx.compose.material3.Text
+import androidx.compose.ui.text.Text
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clip
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import com.pribadi.editorvideo.R
 
 /** 10 pilihan tema warna aplikasi (masing-masing punya versi gelap & terang). */
@@ -623,26 +623,20 @@ fun ThemeLightDarkToggle(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Panel untuk tombol gelap
-        Surface(
-            color = if (currentTheme.isLight) Ev.Ghost else Ev.Panel,
-            shape = RoundedCornerShape(8.dp),
+        Box(
             modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (currentTheme.isLight) Ev.Ghost else Ev.Panel)
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
-                .clickable { onToggle() },
-            tonalElevation = 0.dp
+                .clickable { onToggle() }
+                .padding(10.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "🌙",
-                    color = if (currentTheme.isLight) Ev.Muted else Ev.Text,
-                    fontSize = 18.sp
-                )
-            }
+            Text(
+                text = "🌙",
+                color = if (currentTheme.isLight) Ev.Muted else Ev.Text,
+                fontSize = 18.sp
+            )
         }
         // Label status
         Text(
@@ -652,26 +646,20 @@ fun ThemeLightDarkToggle(
             fontWeight = FontWeight.Medium
         )
         // Panel untuk tombol terang
-        Surface(
-            color = if (currentTheme.isLight) Ev.Accent else Ev.Ghost,
-            shape = RoundedCornerShape(8.dp),
+        Box(
             modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (currentTheme.isLight) Ev.Accent else Ev.Ghost)
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
-                .clickable { onToggle() },
-            tonalElevation = 0.dp
+                .clickable { onToggle() }
+                .padding(10.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "☀️",
-                    color = if (currentTheme.isLight) Ev.Text else Ev.Muted,
-                    fontSize = 18.sp
-                )
-            }
+            Text(
+                text = "☀️",
+                color = if (currentTheme.isLight) Ev.Text else Ev.Muted,
+                fontSize = 18.sp
+            )
         }
     }
 }
