@@ -41,6 +41,60 @@ enum class AiGenerationMode(val label: String, val sub: String) {
     )
 }
 
+/**
+ * Pembagian durasi AI menjadi beberapa video seimbang ("durasi sama"):
+ *  - [AUTO_1]: 1 video utuh (maks 10.0 dtk).
+ *  - [DOUBLE_5]: dibagi rata 2 video, tiap video maksimal 5.0 dtk (total maks 10.0 dtk).
+ *  - [TRIPLE_35]: dibagi rata 3 video, tiap video maksimal 3.5 dtk (total maks 10.5 dtk).
+ */
+enum class AiDurationSplit(
+    val id: String,
+    val label: String,
+    val shortLabel: String,
+    val sub: String,
+    val maxSegs: Int,
+    val maxSegSec: Double
+) {
+    AUTO_1(
+        id = "auto1",
+        label = "Mode Tunggal (1 Video)",
+        shortLabel = "1 Video",
+        sub = "Langsung 1 video utuh · maks 10.0 dtk",
+        maxSegs = 1,
+        maxSegSec = 10.0
+    ),
+    DOUBLE_5(
+        id = "double5",
+        label = "Dobel (maks 5 dtk × 2)",
+        shortLabel = "2 × ≤5 dtk",
+        sub = "Dibagi rata jadi 2 video, tiap video maks 5.0 dtk · total maks 10.0 dtk",
+        maxSegs = 2,
+        maxSegSec = 5.0
+    ),
+    TRIPLE_35(
+        id = "triple35",
+        label = "Tripel (maks 3.5 dtk × 3)",
+        shortLabel = "3 × ≤3.5 dtk",
+        sub = "Dibagi rata jadi 3 video, tiap video maks 3.5 dtk · total maks 10.5 dtk",
+        maxSegs = 3,
+        maxSegSec = 3.5
+    );
+
+    /** Total durasi maksimal yang boleh diminta untuk pembagian ini. */
+    val maxTotalSec: Double get() = maxSegs * maxSegSec
+
+    /** Mode generasi yang sesuai (Tunggal bila 1 video, Multi-Segmen bila > 1 video). */
+    val genMode: AiGenerationMode
+        get() = if (maxSegs <= 1) AiGenerationMode.SINGLE else AiGenerationMode.MULTI_SEGMENT
+
+    companion object {
+        fun fromGenMode(mode: AiGenerationMode): AiDurationSplit =
+            if (mode == AiGenerationMode.SINGLE) AUTO_1 else DOUBLE_5
+
+        fun fromId(id: String?): AiDurationSplit = entries.firstOrNull { it.id == id } ?: AUTO_1
+    }
+}
+
 /** Paket durasi khusus Mode Sisipkan: mendukung paket Multi-Segmen maupun 1 Video Tunggal. */
 enum class AiInsertPreset(
     val id: String,
@@ -333,7 +387,11 @@ data class AiCandidateBatch(
     val snapshotInsertSeekSec: Double,
     val snapshotReplaceSegIdx: Int,
     val segments: List<AiGeneratedSegment>,
-    val isFavorite: Boolean = false
+    val isFavorite: Boolean = false,
+    /** Pembagian durasi yang dipakai (Tunggal / Dobel ≤5×2 / Tripel ≤3.5×3). */
+    val split: AiDurationSplit = AiDurationSplit.AUTO_1,
+    /** Rencana Replace Multi-Scene Berurutan (null bila hanya 1 scene). */
+    val multiScenePlan: AiMultiScenePlan? = null
 )
 
 /** Status sinkronisasi firebase_worker.py v3 di repositori GitHub Runner pengguna. */
@@ -344,6 +402,33 @@ enum class WorkerSyncStatus {
     AUTO_UPDATED,
     NEEDS_MANUAL_COPY,
     ERROR
+}
+
+/**
+ * Sumber Frame Awal / Frame Akhir AI untuk Mode Multi-Scene & Replace Scene:
+ *  - FRAME_SENDIRI: frame dari klip/scene yang sedang diproses (default, seperti perilaku lama).
+ *  - SCENE_SEBELUMNYA: frame PALING AKHIR dari scene tepat sebelum scene target (untuk nyambung dari adegan sebelumnya).
+ *  - SCENE_BERIKUTNYA: frame PALING AWAL dari scene tepat setelah scene target (untuk nyambung ke adegan berikutnya).
+ */
+enum class AiEdgeFrameSource(val label: String, val shortLabel: String) {
+    FRAME_SENDIRI("Frame Sendiri", "Sendiri"),
+    SCENE_SEBELUMNYA("Scene Sebelumnya", "Sblm"),
+    SCENE_BERIKUTNYA("Scene Berikutnya", "Brkt")
+}
+
+/**
+ * Rencana Replace Multi-Scene Berurutan: mengganti beberapa scene sekaligus (berurutan) mulai dari scene terpilih.
+ */
+data class AiMultiScenePlan(
+    val startSegIdx: Int,
+    val count: Int,
+    val perSceneDurs: List<Double>,
+    val split: AiDurationSplit,
+    val totalSec: Double,
+    val overLimit: Boolean = false,
+    val note: String = ""
+) {
+    val endSegIdx: Int get() = startSegIdx + count - 1
 }
 
 /** Perencana durasi & aturan timeout ZeroGPU. */
@@ -363,6 +448,136 @@ object AiPlanner {
     fun maxWorkflowDurationFor(segDurs: List<Double>): Double {
         val all35 = segDurs.isNotEmpty() && segDurs.all { kotlin.math.abs(it - 3.5) < 0.01 }
         return if (all35) MAX_WORKFLOW_35_SEC else MAX_WORKFLOW_SEC
+    }
+
+    /** Batas total durasi absolut yang bisa diminta AI = 10.5 dtk (batas 3 × 3.5 dtk). */
+    const val ABSOLUTE_MAX_TOTAL_SEC = 10.5
+
+    /**
+     * Membagi total durasi menjadi [parts] segmen dengan durasi SAMA (dibulatkan 0.1 dtk, sisa dibagikan
+     * ke segmen-segmen awal) dengan batas maksimum per segmen [maxSegSec].
+     * Contoh: 10.0 dtk dibagi 2 → 5.0 + 5.0 · 10.5 dtk dibagi 3 → 3.5 + 3.5 + 3.5 · 7.0 dtk dibagi 3 → 2.4/2.3/2.3.
+     */
+    fun splitEvenly(totalSec: Double, parts: Int, maxSegSec: Double): List<Double> {
+        val n = parts.coerceIn(1, 3)
+        val safeTotal = min(ABSOLUTE_MAX_TOTAL_SEC, max(1.0, totalSec)).coerceAtMost(n * maxSegSec)
+        if (n == 1) return listOf(Math.round(safeTotal * 10.0) / 10.0)
+        val baseTenths = Math.floor(safeTotal * 10.0 / n).toInt()
+        val remainder = Math.round(safeTotal * 10.0).toInt() - baseTenths * n
+        val out = ArrayList<Double>(n)
+        for (i in 0 until n) {
+            val tenths = baseTenths + if (i < remainder) 1 else 0
+            val v = tenths / 10.0
+            out.add(Math.round(min(v, maxSegSec) * 10.0) / 10.0)
+        }
+        return out
+    }
+
+    /**
+     * Merencanakan pembagian durasi sesuai [split] (Tunggal / Dobel ≤5×2 / Tripel ≤3.5×3) untuk Mode Sisipkan.
+     */
+    fun planInsertWithSplit(totalSec: Double, split: AiDurationSplit): AiExecutionPlan {
+        val perSeg = splitEvenly(totalSec, split.maxSegs, split.maxSegSec)
+        val total = perSeg.sum()
+        val note = when (split) {
+            AiDurationSplit.AUTO_1 -> "Mode Tunggal · 1 video utuh ${Fmt.one(total)} dtk (tanpa dipecah)"
+            AiDurationSplit.DOUBLE_5 ->
+                "Dobel · ${perSeg.size} video durasi sama (${perSeg.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(total)} dtk, maks 5 dtk/video)"
+            AiDurationSplit.TRIPLE_35 ->
+                "Tripel · ${perSeg.size} video durasi sama (${perSeg.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(total)} dtk, maks 3.5 dtk/video)"
+        }
+        return AiExecutionPlan(
+            workMode = AiWorkMode.INSERT,
+            segDurs = perSeg,
+            targetTotalSec = total,
+            autoMergeDefault = false,
+            note = note
+        )
+    }
+
+    /**
+     * Merencanakan pembagian durasi sesuai [split] untuk Mode Replace Scene (target durasi bebas 1.0..10.0 dtk).
+     * Mode Dobel/Tripel otomatis membatasi tiap video (maks 5 dtk / 3.5 dtk) dan menyisakan sisa durasi scene
+     * bila scene asli lebih panjang dari total yang bisa dibuat AI.
+     */
+    fun planReplaceWithSplit(
+        requestedSec: Double,
+        sceneOrigLenSec: Double,
+        split: AiDurationSplit
+    ): AiExecutionPlan {
+        val clamped = min(ABSOLUTE_MAX_TOTAL_SEC, max(ZEROGPU_MIN_REPLACE_SEC, requestedSec))
+        val capped = min(clamped, split.maxTotalSec)
+        val perSeg = splitEvenly(capped, split.maxSegs, split.maxSegSec)
+        val total = perSeg.sum()
+        val note = when (split) {
+            AiDurationSplit.AUTO_1 ->
+                if (total < 3.45) {
+                    "Mode Tunggal · 1 × 3.5 dtk → auto-trim presisi ke ${Fmt.one(total)} dtk"
+                } else {
+                    "Mode Tunggal · 1 video utuh ${Fmt.one(total)} dtk (bukan ${split.maxSegs} segmen)"
+                }
+            else -> buildString {
+                append(split.label)
+                append(" · ")
+                append(perSeg.joinToString(" + ") { Fmt.one(it) })
+                append(" = ${Fmt.one(total)} dtk")
+                if (capped + 0.05 < clamped) {
+                    append(" (dibatasi maks ${Fmt.one(split.maxTotalSec)} dtk untuk ${split.shortLabel})")
+                }
+            }
+        }
+        return AiExecutionPlan(
+            workMode = AiWorkMode.REPLACE_SCENE,
+            segDurs = perSeg,
+            targetTotalSec = total,
+            autoMergeDefault = false,
+            sceneOrigLenSec = sceneOrigLenSec,
+            overZeroGpuLimit = sceneOrigLenSec > ZERO_GPU_HARD_MAX_SEC + 0.05,
+            note = note
+        )
+    }
+
+    /** Batas keras durasi scene yang bisa diganti seluruhnya tanpa menyisakan sisa. */
+    const val ZERO_GPU_HARD_MAX_SEC = 10.5
+
+    /**
+     * Rencana Replace Multi-Scene berurutan: mengganti [count] scene mulai dari [startSegIdx].
+     * Tiap scene memakai pembagian durasi sesuai [split] (maks 5 dtk bila Dobel, 3.5 dtk bila Tripel, 10 dtk bila Tunggal).
+     */
+    fun planMultiSceneReplace(
+        sceneLens: List<Double>,
+        startSegIdx: Int,
+        count: Int,
+        split: AiDurationSplit
+    ): AiMultiScenePlan {
+        val safeStart = startSegIdx.coerceAtLeast(0)
+        val available = (sceneLens.size - safeStart).coerceAtLeast(0)
+        val n = count.coerceIn(1, max(1, available))
+        val perScene = ArrayList<Double>(n)
+        var total = 0.0
+        var over = false
+        for (i in 0 until n) {
+            val len = sceneLens.getOrElse(safeStart + i) { 3.5 }
+            val want = min(len, split.maxSegSec)
+            if (len > split.maxTotalSec + 0.05) over = true
+            val rounded = Math.round(max(ZEROGPU_MIN_REPLACE_SEC, want) * 10.0) / 10.0
+            perScene.add(rounded)
+            total += rounded
+        }
+        val note = if (split.maxSegs == 1) {
+            "Multi-Scene Berurutan · $n scene × 1 video (maks 10 dtk/scene) = ${Fmt.one(total)} dtk"
+        } else {
+            "Multi-Scene Berurutan · $n scene × ${split.shortLabel} = ${Fmt.one(total)} dtk"
+        }
+        return AiMultiScenePlan(
+            startSegIdx = safeStart,
+            count = n,
+            perSceneDurs = perScene,
+            split = split,
+            totalSec = total,
+            overLimit = over,
+            note = note
+        )
     }
 
     /** Timeout menunggu workflow aktif = 3 menit (180 detik). */

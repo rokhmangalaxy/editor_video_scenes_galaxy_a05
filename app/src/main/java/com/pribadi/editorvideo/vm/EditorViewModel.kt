@@ -23,10 +23,13 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import com.pribadi.editorvideo.ai.AiCandidateBatch
+import com.pribadi.editorvideo.ai.AiDurationSplit
+import com.pribadi.editorvideo.ai.AiEdgeFrameSource
 import com.pribadi.editorvideo.ai.AiExecutionPlan
 import com.pribadi.editorvideo.ai.AiGeneratedSegment
 import com.pribadi.editorvideo.ai.AiGenerationMode
 import com.pribadi.editorvideo.ai.AiInsertPreset
+import com.pribadi.editorvideo.ai.AiMultiScenePlan
 import com.pribadi.editorvideo.ai.AiMultiStrategy
 import com.pribadi.editorvideo.ai.AiPlanner
 import com.pribadi.editorvideo.ai.AiPromptItem
@@ -67,6 +70,7 @@ import com.pribadi.editorvideo.model.EditorCore
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.ProjectedMarker
 import com.pribadi.editorvideo.model.Rules
+import com.pribadi.editorvideo.model.SceneAiReplace
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.TextOverlayConfig
 import com.pribadi.editorvideo.model.VideoInfo
@@ -77,6 +81,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -340,6 +345,30 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var aiInsertPreset by mutableStateOf(AiInsertPreset.SINGLE_10)
         private set
+
+    /** Pembagian durasi sama: 1 video / Dobel maks 5 dtk×2 / Tripel maks 3.5 dtk×3 (item #1). */
+    var aiDurationSplit by mutableStateOf(AiDurationSplit.AUTO_1)
+        internal set
+
+    /** Total durasi target untuk pembagian Dobel/Tripel Mode Sisipkan (1.0 .. 10.5 dtk). */
+    var aiSplitTotalSec by mutableDoubleStateOf(10.0)
+        private set
+
+    /** Replace Multi-Scene Berurutan (item #3). */
+    var aiMultiSceneMode by mutableStateOf(false)
+    var aiMultiSceneCount by mutableIntStateOf(2)
+        private set
+
+    /** Opsi Frame Awal dari scene sebelumnya & Frame Akhir dari scene berikutnya (item #4). */
+    var aiFirstFrameSource by mutableStateOf(AiEdgeFrameSource.FRAME_SENDIRI)
+        private set
+    var aiLastFrameSource by mutableStateOf(AiEdgeFrameSource.FRAME_SENDIRI)
+        private set
+    var aiNeighborFirstBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    var aiNeighborLastBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    private var aiNeighborFrameJob: Job? = null
     var aiMultiStrategy by mutableStateOf(AiMultiStrategy.CHAIN)
     var aiTimelineJoinStyle by mutableStateOf(AiTimelineJoinStyle.SEPARATE)
 
@@ -418,6 +447,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var aiSnapshotPlan by mutableStateOf<AiExecutionPlan?>(null)
         private set
+    /** Snapshot rencana Replace Multi-Scene Berurutan saat generate (null bila mode tunggal-scene). */
+    var aiSnapshotMultiScenePlan by mutableStateOf<AiMultiScenePlan?>(null)
+        internal set
     var aiMergingClips by mutableStateOf(false)
         private set
     private var aiRunJob: Job? = null
@@ -1072,6 +1104,24 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast(msg)
     }
 
+    /** Melompat ke scene lain (untuk memeriksa Frame Awal/Akhir tetangga & target multi-scene). */
+    fun jumpToScene(index: Int) {
+        if (!hasVideo || core.segs.isEmpty()) return
+        pause()
+        val target = index.coerceIn(0, core.segs.lastIndex)
+        core.sel = target
+        setSeekFast(false)
+        core.setTime(core.lay.off[target])
+        seekVideoToEdit(forceExact = true)
+        refreshDerived()
+        if (aiWorkMode == AiWorkMode.REPLACE_SCENE) {
+            syncReplaceSceneSelection(autoMatchDurationIfEligible = false)
+        }
+        captureNeighborFrames(wantFirst = true)
+        captureNeighborFrames(wantFirst = false)
+        bump()
+    }
+
     // ------------------------------------------------------------------ kontrol Tanda (Markers) & Split by Tanda
 
     fun timelineProjectedMarkers(): List<ProjectedMarker> = core.projectedMarkers()
@@ -1477,6 +1527,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         seekVideoToEdit(forceExact = true)
         refreshDerived()
         syncReplaceSceneSelection(autoMatchDurationIfEligible = true)
+        // Perbarui frame tetangga (scene sebelumnya / berikutnya) untuk opsi Frame Awal & Akhir AI
+        if (aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) captureNeighborFrames(wantFirst = true)
+        if (aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) captureNeighborFrames(wantFirst = false)
         bump()
     }
 
@@ -1581,10 +1634,198 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         aiInsertSingleDurSec = clampD(
             Math.round(sec * 10.0) / 10.0,
             AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
-            AiPlanner.MAX_WORKFLOW_SEC
+            AiPlanner.ABSOLUTE_MAX_TOTAL_SEC
         )
+        aiSplitTotalSec = aiInsertSingleDurSec
         bump()
     }
+
+    /**
+     * Memilih pembagian durasi sama (item #1):
+     *  - AUTO_1 (1 video), DOUBLE_5 (dobel maks 5 dtk × 2), TRIPLE_35 (tripel maks 3.5 dtk × 3).
+     * Mode kerja & jumlah prompt per-segmen otomatis disesuaikan.
+     */
+    fun selectAiDurationSplit(split: AiDurationSplit) {
+        aiDurationSplit = split
+        aiGenMode = split.genMode
+        // Sesuaikan total durasi bila melebihi batas pembagian yang dipilih
+        if (aiSplitTotalSec > split.maxTotalSec + 0.001) {
+            aiSplitTotalSec = split.maxTotalSec
+        }
+        if (split.maxSegs == 1) {
+            aiInsertSingleDurSec = min(aiInsertSingleDurSec, AiPlanner.MAX_WORKFLOW_SEC)
+        }
+        val plan = currentAiExecutionPlan()
+        if (plan.count <= 1) {
+            aiPerSegmentPromptMode = false
+            aiActivePromptSegSlot = 0
+            aiPrompt = aiSegmentPrompts[0]
+        } else if (aiActivePromptSegSlot > plan.count) {
+            aiActivePromptSegSlot = 1
+            aiPrompt = aiSegmentPrompts[1]
+        }
+        bump()
+        toast("${split.shortLabel} · ${plan.count} video (${Fmt.one(plan.targetTotalSec)} dtk total)")
+    }
+
+    /** Mengubah total durasi yang akan dibagi rata pada pembagian Dobel/Tripel (1.0 .. 10.5 dtk). */
+    fun updateAiSplitTotalSec(sec: Double) {
+        val cap = aiDurationSplit.maxTotalSec
+        aiSplitTotalSec = clampD(
+            Math.round(sec * 10.0) / 10.0,
+            AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
+            cap
+        )
+        aiInsertSingleDurSec = aiSplitTotalSec
+        bump()
+    }
+
+    // --- Replace Multi-Scene Berurutan (item #3) ---
+
+    /** Mengaktifkan/mematikan Mode Replace Multi-Scene Berurutan. */
+    fun toggleAiMultiSceneMode() {
+        aiMultiSceneMode = !aiMultiSceneMode
+        if (aiMultiSceneMode) {
+            aiWorkMode = AiWorkMode.REPLACE_SCENE
+            aiMultiSceneCount = aiMultiSceneCount.coerceIn(2, maxMultiSceneAllowed())
+            syncReplaceSceneSelection(autoMatchDurationIfEligible = false)
+        }
+        bump()
+    }
+
+    /** Jumlah scene maksimal yang bisa diganti berurutan dari scene terpilih. */
+    fun maxMultiSceneAllowed(): Int {
+        if (!hasVideo || core.segs.isEmpty()) return 1
+        return (core.segs.size - core.sel.coerceIn(0, core.segs.lastIndex)).coerceAtLeast(1)
+    }
+
+    /** Menambah/mengurangi jumlah scene yang akan diganti berurutan (2 .. scene tersisa). */
+    fun stepAiMultiSceneCount(delta: Int) {
+        val maxCount = maxMultiSceneAllowed()
+        aiMultiSceneCount = (aiMultiSceneCount + delta).coerceIn(1, max(1, maxCount))
+        bump()
+    }
+
+    /** Rencana Replace Multi-Scene berurutan saat ini (null bila tidak aktif). */
+    fun currentAiMultiScenePlan(): AiMultiScenePlan? {
+        if (!hasVideo || core.segs.isEmpty()) return null
+        val lens = core.segs.map { it.len }
+        return AiPlanner.planMultiSceneReplace(
+            sceneLens = lens,
+            startSegIdx = core.sel,
+            count = aiMultiSceneCount,
+            split = aiDurationSplit
+        )
+    }
+
+    // --- Opsi Frame Awal / Frame Akhir dari scene tetangga (item #4) ---
+
+    /** Mengatur sumber Frame Awal AI (frame sendiri / frame terakhir scene sebelumnya). */
+    fun selectAiFirstFrameSource(src: AiEdgeFrameSource) {
+        aiFirstFrameSource = src
+        if (src == AiEdgeFrameSource.FRAME_SENDIRI) {
+            aiNeighborFirstBitmap = null
+        } else {
+            captureNeighborFrames(wantFirst = true)
+        }
+        bump()
+        if (src == AiEdgeFrameSource.SCENE_BERIKUTNYA) {
+            toast("Frame Awal dari frame AWAL scene berikutnya")
+        }
+    }
+
+    /** Mengatur sumber Frame Akhir AI (frame sendiri / frame awal scene berikutnya). */
+    fun selectAiLastFrameSource(src: AiEdgeFrameSource) {
+        aiLastFrameSource = src
+        if (src == AiEdgeFrameSource.FRAME_SENDIRI) {
+            aiNeighborLastBitmap = null
+        } else {
+            captureNeighborFrames(wantFirst = false)
+        }
+        bump()
+    }
+
+    /** Menangkap frame scene TETANGGA: frame terakhir scene sebelum target, atau frame awal scene sesudah target. */
+    fun captureNeighborFrames(wantFirst: Boolean = true) {
+        aiNeighborFrameJob?.cancel()
+        if (!hasVideo || core.segs.isEmpty()) return
+        val idx = if (aiMultiSceneMode) core.sel else core.sel
+        val cur = core.segs.getOrNull(idx) ?: return
+        val curRot = cur.rot
+        val curFlip = flip
+
+        val prevSeg: Seg? = core.segs.getOrNull(idx - 1)
+        val nextSeg: Seg? = core.segs.getOrNull(idx + 1)
+        val needFirst = wantFirst &&
+            aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI &&
+            prevSeg != null
+        val needLast = !wantFirst &&
+            aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA &&
+            nextSeg != null
+        if (!needFirst && !needLast) {
+            if (wantFirst) aiNeighborFirstBitmap = null else aiNeighborLastBitmap = null
+            return
+        }
+
+        aiNeighborFrameJob = viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val out = withContext(Dispatchers.IO) {
+                var firstBmp: Bitmap? = null
+                var lastBmp: Bitmap? = null
+                if (needFirst && prevSeg != null) {
+                    val src = sources.getOrElse(prevSeg.src) { sources.firstOrNull() }
+                    if (src != null) {
+                        val sec = if (prevSeg.fz) prevSeg.a else prevSeg.b
+                        val raw = VideoFrames.grabExactFrame(ctx, src.uri, Math.round(max(0.0, sec) * 1e6), src.info)
+                            ?: VideoFrames.grabFrame(ctx, src.uri, Math.round(max(0.0, sec) * 1000.0), src.info)
+                        firstBmp = raw?.let { transformPreviewBitmap(VideoFrames.limitLongSide(it, 1080), curRot, curFlip) }
+                    }
+                }
+                if (needLast && nextSeg != null) {
+                    val src = sources.getOrElse(nextSeg.src) { sources.firstOrNull() }
+                    if (src != null) {
+                        val raw = VideoFrames.grabExactFrame(ctx, src.uri, Math.round(max(0.0, nextSeg.a) * 1e6), src.info)
+                            ?: VideoFrames.grabFrame(ctx, src.uri, Math.round(max(0.0, nextSeg.a) * 1000.0), src.info)
+                        lastBmp = raw?.let { transformPreviewBitmap(VideoFrames.limitLongSide(it, 1080), curRot, curFlip) }
+                    }
+                }
+                firstBmp to lastBmp
+            }
+            if (wantFirst) {
+                aiNeighborFirstBitmap = out.first
+                if (out.first == null && aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                    aiFirstFrameSource = AiEdgeFrameSource.FRAME_SENDIRI
+                    toast("Tidak ada scene sebelumnya — Frame Awal kembali ke frame sendiri")
+                }
+            } else {
+                aiNeighborLastBitmap = out.second
+                if (out.second == null && aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                    aiLastFrameSource = AiEdgeFrameSource.FRAME_SENDIRI
+                    toast("Tidak ada scene berikutnya — Frame Akhir kembali ke frame sendiri")
+                }
+            }
+            bump()
+        }
+    }
+
+    /** Frame Awal efektif untuk generasi AI (mempertimbangkan opsi scene tetangga). */
+    fun effectiveAiFirstBitmap(): Bitmap? =
+        if (aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+            aiNeighborFirstBitmap?.takeIf { !it.isRecycled }
+                ?: aiReplaceFirstBitmap
+                ?: aiSeekBitmap
+        } else {
+            aiReplaceFirstBitmap ?: aiSeekBitmap
+        }
+
+    /** Frame Akhir efektif untuk generasi AI (mempertimbangkan opsi scene tetangga). */
+    fun effectiveAiLastBitmap(): Bitmap? =
+        if (aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+            aiNeighborLastBitmap?.takeIf { !it.isRecycled }
+                ?: aiReplaceLastBitmap
+        } else {
+            aiReplaceLastBitmap
+        }
 
     fun selectAiInsertPreset(preset: AiInsertPreset) {
         aiInsertPreset = preset
@@ -1621,9 +1862,32 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun currentAiExecutionPlan(): AiExecutionPlan =
         if (aiWorkMode == AiWorkMode.INSERT) {
-            AiPlanner.planInsert(aiInsertPreset, aiGenMode, aiInsertSingleDurSec)
+            if (aiDurationSplit == AiDurationSplit.AUTO_1) {
+                AiPlanner.planInsertWithSplit(aiSplitTotalSec.coerceAtMost(AiPlanner.MAX_WORKFLOW_SEC), AiDurationSplit.AUTO_1)
+            } else {
+                AiPlanner.planInsertWithSplit(aiSplitTotalSec, aiDurationSplit)
+            }
+        } else if (aiMultiSceneMode) {
+            // Replace Multi-Scene Berurutan: total video = jumlah scene × jumlah segmen per scene
+            val mp = currentAiMultiScenePlan()
+            val split = aiDurationSplit
+            val perSceneTotal = mp?.totalSec ?: aiReplaceTargetDurSec
+            val perSceneList = mp?.perSceneDurs ?: listOf(aiReplaceTargetDurSec)
+            val segDurs = ArrayList<Double>()
+            for (sceneDur in perSceneList) {
+                segDurs.addAll(AiPlanner.splitEvenly(sceneDur, split.maxSegs, split.maxSegSec))
+            }
+            AiExecutionPlan(
+                workMode = AiWorkMode.REPLACE_SCENE,
+                segDurs = segDurs,
+                targetTotalSec = perSceneTotal,
+                autoMergeDefault = false,
+                sceneOrigLenSec = selectedSceneDurationSec(),
+                overZeroGpuLimit = perSceneTotal > AiPlanner.ABSOLUTE_MAX_TOTAL_SEC + 0.05,
+                note = (mp?.note ?: "") + " · ${segDurs.size} video AI"
+            )
         } else {
-            AiPlanner.planReplace(aiReplaceTargetDurSec, selectedSceneDurationSec(), aiGenMode)
+            AiPlanner.planReplaceWithSplit(aiReplaceTargetDurSec, selectedSceneDurationSec(), aiDurationSplit)
         }
 
     // --- Pengaturan Prompt Tunggal / Per-Segmen (Segmen 1..3) ---
@@ -1953,6 +2217,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         aiSnapshotPlan = cand.plan
         aiSnapshotInsertSeekSec = cand.snapshotInsertSeekSec
         aiSnapshotReplaceSegIdx = cand.snapshotReplaceSegIdx
+        aiDurationSplit = cand.split
+        aiSnapshotMultiScenePlan = cand.multiScenePlan
         aiPreviewResultIndex = 0
         if (cand.plan.autoMergeDefault) {
             aiTimelineJoinStyle = AiTimelineJoinStyle.MERGED
@@ -2043,19 +2309,36 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        val initialFirstBmp: Bitmap? = if (aiWorkMode == AiWorkMode.INSERT) {
-            aiSeekBitmap ?: grabLivePreviewBitmap()
-        } else {
-            aiReplaceFirstBitmap ?: aiSeekBitmap ?: grabLivePreviewBitmap()
+        // Frame Awal: bisa dari frame sendiri (default) atau frame TERAKHIR scene sebelumnya (opsi item #4)
+        val initialFirstBmp: Bitmap? = when {
+            aiFirstFrameSource == AiEdgeFrameSource.SCENE_SEBELUMNYA ->
+                aiNeighborFirstBitmap?.takeIf { !it.isRecycled }
+                    ?: aiReplaceFirstBitmap?.takeIf { !it.isRecycled }
+                    ?: aiSeekBitmap
+                    ?: grabLivePreviewBitmap()
+            aiWorkMode == AiWorkMode.INSERT -> aiSeekBitmap ?: grabLivePreviewBitmap()
+            else -> aiReplaceFirstBitmap ?: aiSeekBitmap ?: grabLivePreviewBitmap()
         }
         if (initialFirstBmp == null || initialFirstBmp.isRecycled) {
             toast("Frame sumber belum siap, ketuk Sinkron terlebih dahulu")
             return
         }
-        val finalTargetLastBmp: Bitmap? = if (aiWorkMode == AiWorkMode.INSERT) {
-            aiInsertLastBitmap?.takeIf { !it.isRecycled }
-        } else if (aiReplaceBridgeLastFrame) {
-            aiReplaceLastBitmap?.takeIf { !it.isRecycled }
+        // Frame Akhir: bisa dari frame AWAL scene berikutnya (opsi item #4) atau frame akhir scene sendiri
+        val finalTargetLastBmp: Bitmap? = when {
+            aiFirstFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
+                aiNeighborFirstBitmap?.takeIf { !it.isRecycled }
+                    ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }
+            aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
+                aiNeighborLastBitmap?.takeIf { !it.isRecycled }
+                    ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }
+            aiWorkMode == AiWorkMode.INSERT -> aiInsertLastBitmap?.takeIf { !it.isRecycled }
+            aiReplaceBridgeLastFrame -> aiReplaceLastBitmap?.takeIf { !it.isRecycled }
+            else -> null
+        }
+
+        // Snapshot rencana Replace Multi-Scene Berurutan (item #3)
+        val multiScenePlan = if (aiWorkMode == AiWorkMode.REPLACE_SCENE && aiMultiSceneMode) {
+            currentAiMultiScenePlan()
         } else {
             null
         }
@@ -2064,6 +2347,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
         val snapMode = aiWorkMode
         val snapGenMode = aiGenMode
+        aiSnapshotMultiScenePlan = multiScenePlan
         val snapInsertSeekSec = aiSeekTimeSec
         val snapReplaceSegIdx = core.sel.coerceIn(0, core.segs.lastIndex)
         aiSnapshotWorkMode = snapMode
@@ -2096,7 +2380,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         aiRunStatusDetail = "Menyiapkan Kandidat #$candNum (${plan.count} video)…"
         aiActiveTab = AiTab.STATUS
 
-        val useChain = plan.count >= 2 &&
+        // Mode berantai: segmen ke-2 dst melanjutkan frame TERAKHIR hasil AI sebelumnya.
+        // Untuk banyak scene berurutan (multi-scene / dobel / tripel) berantai hanya dipakai DI DALAM 1 scene,
+        // sedangkan antar-scene selalu memakai frame pembuka scene-nya sendiri agar tetap nyambung ke adegan asli.
+        val splitSegsPerScene = if (multiScenePlan != null) (aiDurationSplit.maxSegs) else plan.count
+        val useChain = splitSegsPerScene >= 2 &&
             (snapMode == AiWorkMode.REPLACE_SCENE ||
                 aiInsertPreset == AiInsertPreset.FULL_10 ||
                 aiMultiStrategy == AiMultiStrategy.CHAIN)
@@ -2121,7 +2409,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         plan = plan,
                         snapshotInsertSeekSec = snapInsertSeekSec,
                         snapshotReplaceSegIdx = snapReplaceSegIdx,
-                        segments = segsNow
+                        segments = segsNow,
+                        split = aiDurationSplit,
+                        multiScenePlan = multiScenePlan
                     )
                 )
             }
@@ -2185,6 +2475,73 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                                 rollingFirstBmp = nextStart
                             }
                         }
+                    }
+                }
+
+                if (multiScenePlan != null) {
+                    // ============================================================
+                    // REPLACE MULTI-SCENE BERURUTAN (item #3)
+                    // Setiap scene digenerate dalam workflow tersendiri (maks 10.0/10.5 dtk per workflow),
+                    // sehingga total bisa lebih dari 10.5 dtk. Frame pembuka tiap scene diambil dari
+                    // frame ASLI scene tersebut agar hasil tetap menyambung ke adegan berikutnya.
+                    // ============================================================
+                    val perSceneCount = aiDurationSplit.maxSegs
+                    var segCounter = 1
+                    for (sceneOffset in 0 until multiScenePlan.count) {
+                        currentCoroutineContext().ensureActive()
+                        val sceneIdx = multiScenePlan.startSegIdx + sceneOffset
+                        val sceneSeg = core.segs.getOrNull(sceneIdx) ?: continue
+                        val sceneSrc = sources.getOrElse(sceneSeg.src) { sources.firstOrNull() } ?: continue
+                        val sceneSplitDurs = AiPlanner.splitEvenly(
+                            multiScenePlan.perSceneDurs.getOrElse(sceneOffset) { 3.5 },
+                            perSceneCount,
+                            aiDurationSplit.maxSegSec
+                        )
+                        val sceneFirstBmp: Bitmap? = withContext(Dispatchers.IO) {
+                            val raw = VideoFrames.grabExactFrame(
+                                ctx, sceneSrc.uri, Math.round(max(0.0, sceneSeg.a) * 1e6), sceneSrc.info
+                            ) ?: VideoFrames.grabFrame(
+                                ctx, sceneSrc.uri, Math.round(max(0.0, sceneSeg.a) * 1000.0), sceneSrc.info
+                            )
+                            raw?.let {
+                                transformPreviewBitmap(VideoFrames.limitLongSide(it, 1080), sceneSeg.rot, flip)
+                            }
+                        } ?: initialFirstBmp
+
+                        val isLastScene = sceneOffset == multiScenePlan.count - 1
+                        val sceneLastBmp: Bitmap? = if (isLastScene) finalTargetLastBmp else null
+
+                        val sceneReqs = sceneSplitDurs.mapIndexed { k, dur ->
+                            val globalIdx = segCounter + k - 1
+                            val isLastInScene = k == sceneSplitDurs.lastIndex
+                            SingleTaskRequest(
+                                taskKey = "task-${k + 1}",
+                                order = k + 1,
+                                space = spaceSnap,
+                                prompt = promptsSnap.getOrElse(globalIdx) { promptsSnap.first() },
+                                durationSec = dur,
+                                safeMode = safeSnap,
+                                enableSafetyChecker = safetySnap,
+                                firstBmp = sceneFirstBmp,
+                                lastBmp = if (isLastInScene) sceneLastBmp else null,
+                                chainFromPrev = useChain && k > 0
+                            )
+                        }
+                        val outs = WanStudioClient.executeProjectBatch(
+                            context = ctx,
+                            cfg = cfgSnap,
+                            tasks = sceneReqs,
+                            videoIndexOffset = segCounter - 1,
+                            overallTotalVideos = plan.count
+                        ) { tick ->
+                            launch(Dispatchers.Main) { applyProgressTick(tick) }
+                        }
+                        for ((k, dl) in outs.withIndex()) {
+                            collected.add(dl.toGeneratedSegment(segCounter + k))
+                        }
+                        collected.sortBy { it.segNumber }
+                        segCounter += sceneSplitDurs.size
+                        publishCandidateProgress(collected.toList())
                     }
                 } else {
                     // 1 Workflow Tunggal (maks 10.0 dtk, atau maks 10.5 dtk khusus 3 × 3.5 dtk):
@@ -2578,6 +2935,143 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
                 val outDir = File(ctx.filesDir, "ai_videos")
                 if (!outDir.exists()) outDir.mkdirs()
+                val firstNewSrcIdx = sources.size
+                val addedDurPairs = ArrayList<Pair<Int, Double>>()
+
+                // ============================================================
+                // REPLACE MULTI-SCENE BERURUTAN — terapkan hasil per scene, berurutan
+                // ============================================================
+                val snapMulti = aiSnapshotMultiScenePlan
+                if (snapMulti != null && mode == AiWorkMode.REPLACE_SCENE) {
+                    val snapshotSplit = aiCandidates.getOrNull(aiActiveCandidateIdx)?.split ?: aiDurationSplit
+                    val perSceneSegs = snapshotSplit.maxSegs
+                    val replacements = ArrayList<SceneAiReplace>()
+                    var cursor = 0
+                    for (sceneOffset in 0 until snapMulti.count) {
+                        val sceneIdx = snapMulti.startSegIdx + sceneOffset
+                        if (sceneIdx !in core.segs.indices) break
+                        val scenePieces = chosen.drop(cursor).take(perSceneSegs)
+                        cursor += perSceneSegs
+                        if (scenePieces.isEmpty()) continue
+                        val origSeg = core.segs[sceneIdx]
+                        val origSrc = sources.getOrElse(origSeg.src) { sources.first() }
+
+                        // 1) Kumpulkan berkas hasil AI scene ini (gabung bila diminta & >1 potongan)
+                        val sceneTriples = scenePieces.map {
+                            Triple(it.mp4File!!, it.info!!, max(Rules.MIN, min(it.actualDurSec, snapshotSplit.maxSegSec)))
+                        }
+                        val effectiveTriples: List<Triple<File, VideoInfo, Double>> =
+                            if (joinStyle == AiTimelineJoinStyle.MERGED && sceneTriples.size >= 2) {
+                                val mergeFile = File(outDir, "ai_mscene_${System.currentTimeMillis()}_${sceneIdx}.mp4")
+                                val ok = WanStudioClient.mergeSegmentsToSingleMp4(ctx, sceneTriples, mergeFile)
+                                val mergedInfo = if (ok) {
+                                    withContext(Dispatchers.IO) { VideoProbe.probe(ctx, Uri.fromFile(mergeFile)) }
+                                } else {
+                                    null
+                                }
+                                if (mergedInfo != null && mergedInfo.durationMs > 0L) {
+                                    listOf(Triple(mergeFile, mergedInfo, max(Rules.MIN, mergedInfo.durationMs / 1000.0)))
+                                } else {
+                                    sceneTriples
+                                }
+                            } else {
+                                sceneTriples
+                            }
+
+                        // 2) Opsional: pertahankan audio asli scene untuk tiap potongan
+                        val finishedTriples: List<Triple<File, VideoInfo, Double>> =
+                            if (audioModeSnap == AiReplaceAudioMode.VIDEO_ONLY && !origSeg.fz) {
+                                var consumed = 0.0
+                                val out = ArrayList<Triple<File, VideoInfo, Double>>(effectiveTriples.size)
+                                for ((pieceIdx, triple) in effectiveTriples.withIndex()) {
+                                    val (vidFile, vidInfo, useDur) = triple
+                                    val origSliceStart = clampD(
+                                        origSeg.a + consumed * origSeg.sp,
+                                        origSeg.a,
+                                        max(origSeg.a, origSeg.b - 0.02)
+                                    )
+                                    val muxOut = File(
+                                        outDir,
+                                        "ai_msaud_${System.currentTimeMillis()}_${sceneIdx}_${pieceIdx + 1}.mp4"
+                                    )
+                                    val resultFile = WanStudioClient.attachOriginalAudioToAiClip(
+                                        context = ctx,
+                                        aiVideoFile = vidFile,
+                                        aiVideoInfo = vidInfo,
+                                        clipDurSec = useDur,
+                                        origSourceUri = origSrc.uri,
+                                        origInfo = origSrc.info,
+                                        origStartSec = origSliceStart,
+                                        origSpeed = origSeg.sp,
+                                        outFile = muxOut
+                                    )
+                                    val resultInfo = if (resultFile === vidFile) {
+                                        vidInfo
+                                    } else {
+                                        withContext(Dispatchers.IO) { VideoProbe.probe(ctx, Uri.fromFile(resultFile)) } ?: vidInfo
+                                    }
+                                    out.add(Triple(resultFile, resultInfo, useDur))
+                                    consumed += useDur
+                                }
+                                out
+                            } else {
+                                effectiveTriples
+                            }
+
+                        // 3) Daftarkan sebagai sumber baru + susun spesifikasi segmen
+                        val origInfo = origSrc.info
+                        val effDims = ExportMath.origDims(origInfo.dispW, origInfo.dispH, origSeg.rot)
+                        val wantPortrait = effDims[1] > effDims[0]
+                        val specs = ArrayList<Triple<Int, Double, Double>>()
+                        for (triple in finishedTriples) {
+                            val (fRaw, infRaw, useDur) = triple
+                            val (f, inf) = WanStudioClient.ensureExpectedOrientation(
+                                context = ctx,
+                                mp4File = fRaw,
+                                probedInfo = infRaw,
+                                expectedPortrait = wantPortrait,
+                                outDir = outDir
+                            )
+                            val newIdx = sources.size
+                            val fullDur = max(Rules.MIN, inf.durationMs / 1000.0)
+                            sources.add(MediaSource(Uri.fromFile(f), inf))
+                            val uniq = min(150, max(10, ceil(fullDur * 3.0).toInt()))
+                            sourceThumbs.add(arrayOfNulls(uniq))
+                            sourceThumbReady.add(0)
+                            addedDurPairs.add(newIdx to fullDur)
+                            specs.add(Triple(newIdx, fullDur, min(fullDur, useDur)))
+                        }
+
+                        val keepTail = if (origSeg.len > AiPlanner.ZEROGPU_MAX_REPLACE_SEC + 0.05) {
+                            min(origSeg.len, snapMulti.perSceneDurs.getOrElse(sceneOffset) { AiPlanner.ZEROGPU_MAX_REPLACE_SEC })
+                        } else {
+                            null
+                        }
+                        replacements.add(SceneAiReplace(sceneIdx, specs, keepTail))
+                    }
+
+                    if (replacements.isEmpty()) {
+                        aiMergingClips = false
+                        toast("Tidak ada scene yang bisa diganti")
+                        return@launch
+                    }
+
+                    core.registerAddedSourceDurs(addedDurPairs)
+                    val multiMsg = core.replaceScenesWithAiSegments(replacements, tagName = "AI")
+
+                    setSeekFast(false)
+                    player.setMediaItems(sources.map { MediaItem.fromUri(it.uri) })
+                    player.prepare()
+                    player.pause()
+                    seekVideoToEdit(forceExact = true)
+                    refreshDerived()
+                    aiMergingClips = false
+                    aiSheet = false
+                    bump()
+                    toast(multiMsg)
+                    startThumbsFrom(firstNewSrcIdx)
+                    return@launch
+                }
 
                 val baseFiles: List<Triple<File, VideoInfo, Double>> =
                     if (joinStyle == AiTimelineJoinStyle.MERGED && clippedChosen.size >= 2) {
@@ -2652,8 +3146,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         baseFiles
                     }
 
-                val firstNewSrcIdx = sources.size
-                val addedDurPairs = ArrayList<Pair<Int, Double>>()
                 val segSpecs = ArrayList<Triple<Int, Double, Double>>()
 
                 // Tentukan orientasi tegak/mendatar yang diharapkan dari referensi klip/scene agar 100% bebas auto-rotate!
@@ -3586,6 +4078,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
             version = "$installedVersionLabel (Terbaru)",
+            date = "27/11/2026",
+            title = "Pembagian Durasi Sama (Dobel/Tripel), Label Seek 2 Durasi, Replace Multi-Scene Berurutan & Frame dari Scene Tetangga",
+            items = listOf(
+                "✓ [Pengembangan] Pembagian Durasi Sama: 1 Video (maks 10.0 dtk), Dobel (maks 5 dtk × 2 = 10.0 dtk), atau Tripel (maks 3.5 dtk × 3 = 10.5 dtk) — durasi dibagi RATA otomatis (mis. 7.0 dtk → 3.5 + 3.5, 10.5 dtk → 3.5 × 3) dan bisa diatur lewat slider total durasi.",
+                "✓ [Pengembangan] Label Seek menampilkan 2 durasi sekaligus: durasi dari AWAL VIDEO ke posisi seek, serta durasi dari AWAL SCENE yang sedang fokus ke posisi seek.",
+                "✓ [Pengembangan] AI Replace Multi-Scene Berurutan: ganti beberapa scene sekaligus (mulai scene terpilih) dalam satu kali generate — tiap scene dijalankan sebagai workflow terpisah sehingga total durasi bisa melebihi 10.5 dtk.",
+                "✓ [Pengembangan] Opsi Frame Awal AI dari frame TERAKHIR scene sebelumnya dan Frame Akhir AI dari frame AWAL scene berikutnya, lengkap dengan pratinjau thumbnail & navigasi scene sebelumnya/berikutnya."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.21",
             date = "27/11/2026",
             title = "Kandidat AI, Mode Tunggal 10s, Fix Berantai & Rotasi AI, Tanda (Markers) + Gabung Scene Instan",
             items = listOf(

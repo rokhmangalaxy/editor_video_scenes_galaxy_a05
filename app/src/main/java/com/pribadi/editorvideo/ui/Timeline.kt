@@ -144,6 +144,13 @@ private class TlPaints(val d: Float, palette: EvPalette) {
         typeface = Typeface.create(Typeface.DEFAULT, 600, false)
         textAlign = Paint.Align.RIGHT
     }
+    /** Label kecil "dari awal video / dari awal klip" di bawah posisi playhead. */
+    val seekText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = palette.yellow.toArgb()
+        textSize = 8.5f * d
+        typeface = Typeface.create(Typeface.DEFAULT, 600, false)
+        textAlign = Paint.Align.CENTER
+    }
     val emptyHint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = palette.muted.copy(alpha = 0.75f).toArgb()
         textSize = 12f * d
@@ -212,7 +219,7 @@ fun Timeline(vm: EditorViewModel, onImport: () -> Unit, modifier: Modifier = Mod
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(150.dp)
+            .height(158.dp)
             .background(Ev.Bg)
     ) {
         Canvas(
@@ -600,6 +607,14 @@ private fun drawTimeline(
         p.clipDurText
     )
     cv.drawText(Fmt.time(t), cx, base, p.curText)
+
+    // Info seek: durasi dari AWAL VIDEO + durasi dari AWAL SCENE yang sedang fokus (di bawah playhead)
+    val seekSegIdx = core.locate(t).i.coerceIn(0, segs.size - 1)
+    val sceneStartTimelineSec = core.lay.off[seekSegIdx]
+    val seekInsideScene = (t - sceneStartTimelineSec).coerceAtLeast(0.0)
+    val seekInfoText = "dari awal video ${Fmt.time2(t)} · dari awal klip #${seekSegIdx + 1} ${Fmt.time2(seekInsideScene)}"
+    cv.drawText(seekInfoText, cx, base + 12f * d, p.seekText)
+
     cv.drawText("Total " + Fmt.time(core.total), w - 14f * d, base, p.totText)
 }
 

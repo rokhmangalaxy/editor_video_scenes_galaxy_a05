@@ -191,6 +191,16 @@ data class ProjectedMarker(
     val label: String
 )
 
+/**
+ * Rencana penggantian 1 scene dengan hasil AI (dipakai untuk Replace Multi-Scene Berurutan).
+ * [newSegSpecs] berisi Triple(srcIdx, durasiPenuhSumber, durasiDipakai).
+ */
+data class SceneAiReplace(
+    val segIdx: Int,
+    val newSegSpecs: List<Triple<Int, Double, Double>>,
+    val keepOverflowFromSec: Double? = null
+)
+
 /** Satu langkah riwayat undo/redo. */
 data class Snap(
     val segs: List<Seg>,
@@ -220,6 +230,15 @@ object Fmt {
         val sec = (msTotal % 60000L) / 1000L
         val ms = msTotal % 1000L
         return String.format(Locale.US, "%d:%02d.%03d", m, sec, ms)
+    }
+
+    /** Format waktu ringkas dengan 2 desimal untuk label seek: m:ss.cc */
+    fun time2(s: Double): String {
+        val centis = max(0L, Math.round(s * 100.0))
+        val m = centis / 6000L
+        val sec = (centis % 6000L) / 100L
+        val cc = centis % 100L
+        return String.format(Locale.US, "%d:%02d.%02d", m, sec, cc)
     }
 
     /** Label durasi ringkas pada tiap potongan di timeline: "4.2s" atau "1:05.2" bila >= 60s. */

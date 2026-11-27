@@ -992,6 +992,72 @@ class EditorCore {
         }
     }
 
+    /**
+     * Mengganti BEBERAPA scene berurutan sekaligus dengan hasil AI (Replace Multi-Scene Berurutan).
+     * Setiap [replacements] menunjuk scene asli (indeks SEBELUM penggantian) beserta hasil AI-nya.
+     * Scene yang indeksnya tidak disebut tetap utuh & urutannya dipertahankan. Mendukung Undo/Redo.
+     */
+    fun replaceScenesWithAiSegments(
+        replacements: List<SceneAiReplace>,
+        tagName: String = "AI"
+    ): String {
+        if (!hasVideo || segs.isEmpty()) return "Potongan tidak ditemukan"
+        val valid = replacements
+            .filter { it.segIdx in segs.indices && it.newSegSpecs.isNotEmpty() }
+            .sortedBy { it.segIdx }
+        if (valid.isEmpty()) return "Tidak ada scene yang bisa diganti"
+        onPause()
+
+        val byIdx = valid.associateBy { it.segIdx }
+        val n = ArrayList<Seg>(segs.size + valid.size * 2)
+        var firstAiIdx = -1
+        var replacedCount = 0
+        var totalAiSec = 0.0
+        for (k in segs.indices) {
+            val rep = byIdx[k]
+            if (rep == null) {
+                n.add(segs[k])
+                continue
+            }
+            val orig = segs[k]
+            val mergedTags = (orig.tags + tagName).distinct()
+            val aiSegs = rep.newSegSpecs.map { (srcIdx, fullSrcDur, useDur) ->
+                val endB = clampD(useDur, Rules.MIN, max(Rules.MIN, fullSrcDur))
+                Seg(
+                    a = 0.0,
+                    b = endB,
+                    sp = 1.0,
+                    fz = false,
+                    d = 0.0,
+                    src = srcIdx,
+                    tags = mergedTags
+                )
+            }
+            if (firstAiIdx < 0) firstAiIdx = n.size
+            n.addAll(aiSegs)
+            replacedCount++
+            totalAiSec += aiSegs.sumOf { it.len }
+            val keepFrom = rep.keepOverflowFromSec
+            if (keepFrom != null && orig.len - keepFrom >= Rules.MIN) {
+                if (orig.fz) {
+                    val remD = max(Rules.MIN * orig.sp, (orig.len - keepFrom) * orig.sp)
+                    n.add(orig.copy(d = remD))
+                } else {
+                    val nextA = clampD(orig.a + keepFrom * orig.sp, orig.a, orig.b - Rules.MIN * orig.sp)
+                    n.add(orig.copy(a = nextA))
+                }
+            }
+        }
+
+        segs = n
+        calc()
+        sel = (if (firstAiIdx >= 0) firstAiIdx else sel).coerceIn(0, segs.size - 1)
+        t = lay.off[sel]
+        push()
+        build()
+        return "$replacedCount scene berurutan diganti AI (${Fmt.one(totalAiSec)} dtk total)"
+    }
+
     /** Menghapus beberapa potongan sekaligus (menyisakan minimal 1 potongan di timeline). */
     fun deleteSegments(indices: Set<Int>): String {
         if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
