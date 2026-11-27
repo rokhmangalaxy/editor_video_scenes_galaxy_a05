@@ -2330,8 +2330,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        // Frame Awal: bisa dari frame sendiri (default) atau frame TERAKHIR scene sebelumnya (opsi item #4)
+        // Frame Awal: untuk Replace Seek selalu gunakan frame di posisi seek
         val initialFirstBmp: Bitmap? = when {
+            aiWorkMode == AiWorkMode.REPLACE_SEEK -> aiSeekBitmap ?: grabLivePreviewBitmap()
             aiFirstFrameSource == AiEdgeFrameSource.SCENE_SEBELUMNYA ->
                 aiNeighborFirstBitmap?.takeIf { !it.isRecycled }
                     ?: aiReplaceFirstBitmap?.takeIf { !it.isRecycled }
@@ -2344,8 +2345,32 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             toast("Frame sumber belum siap, ketuk Sinkron terlebih dahulu")
             return
         }
-        // Frame Akhir: bisa dari frame AWAL scene berikutnya (opsi item #4) atau frame akhir scene sendiri
+        // Frame Akhir: untuk Replace Seek hitung dari posisi seek + durasi
         val finalTargetLastBmp: Bitmap? = when {
+            aiWorkMode == AiWorkMode.REPLACE_SEEK -> {
+                // Grab frame di posisi seek + durasi untuk frame akhir
+                // Gunakan source yang sama dengan seek position
+                val ctx = getApplication<Application>()
+                val seekSec = aiSeekTimeSec
+                val durSec = when (aiDurationSplit) {
+                    AiDurationSplit.AUTO_1 -> 7.0
+                    AiDurationSplit.DOUBLE_5 -> 10.0
+                    AiDurationSplit.TRIPLE_35 -> 10.5
+                    else -> aiReplaceTargetDurSec
+                }
+                val endSec = seekSec + durSec
+                // Dapatkan source pada posisi seek (sama seperti captureAiSeekFrame)
+                val loc = core.locate(core.t)
+                val seg = core.segs[loc.i]
+                val src = sources.getOrElse(seg.src) { sources.firstOrNull() }
+                if (src != null) {
+                    val raw = VideoFrames.grabExactFrame(ctx, src.uri, Math.round(max(0.0, endSec) * 1e6), src.info)
+                        ?: VideoFrames.grabFrame(ctx, src.uri, Math.round(max(0.0, endSec) * 1000.0), src.info)
+                    raw?.let { transformPreviewBitmap(VideoFrames.limitLongSide(it, 1080), seg.rot, flip) }
+                } else {
+                    null
+                }
+            }
             aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA ->
                 aiNeighborLastBitmap?.takeIf { !it.isRecycled }
                     ?: aiReplaceLastBitmap?.takeIf { !it.isRecycled }
