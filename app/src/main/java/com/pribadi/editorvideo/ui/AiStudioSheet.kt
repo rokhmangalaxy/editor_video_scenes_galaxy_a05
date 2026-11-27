@@ -292,53 +292,55 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
     // 1B. Pembagian Durasi Sama: 1 Video / Dobel (maks 5 dtk × 2) / Tripel (maks 3.5 dtk × 3)
     AiSectionLabel("PEMBAGIAN DURASI (SAMA RATA)")
     Spacer(modifier = Modifier.height(5.dp))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        for (sp in AiDurationSplit.entries) {
-            val active = vm.aiDurationSplit == sp
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(11.dp))
-                    .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
-                    .border(
-                        width = if (active) 1.5.dp else 1.dp,
-                        color = if (active) Ev.Accent else Ev.Line,
-                        shape = RoundedCornerShape(11.dp)
-                    )
-                    .clickable { vm.selectAiDurationSplit(sp) }
-                    .padding(horizontal = 7.dp, vertical = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text(
-                    text = when (sp) {
-                        AiDurationSplit.AUTO_1 -> "🎬 1 Video"
-                        AiDurationSplit.DOUBLE_5 -> "🎞️ 2 × ≤5s"
-                        AiDurationSplit.TRIPLE_35 -> "🎞️ 3 × ≤3.5s"
-                    },
-                    color = if (active) Color.White else Ev.Text,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = when (sp) {
-                        AiDurationSplit.AUTO_1 -> "maks 10.0s"
-                        AiDurationSplit.DOUBLE_5 -> "total maks 10.0s"
-                        AiDurationSplit.TRIPLE_35 -> "total maks 10.5s"
-                    },
-                    color = if (active) Ev.Yellow else Ev.Muted,
-                    fontSize = 9.sp,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1
-                )
+                for (sp in AiDurationSplit.entries) {
+                    val active = vm.aiDurationSplit == sp
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
+                            .border(
+                                width = if (active) 1.5.dp else 1.dp,
+                                color = if (active) Ev.Accent else Ev.Line,
+                                shape = RoundedCornerShape(11.dp)
+                            )
+                            .clickable { vm.selectAiDurationSplit(sp) }
+                            .padding(horizontal = 7.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = when (sp) {
+                                AiDurationSplit.AUTO_1 -> "🎬 1 Video"
+                                AiDurationSplit.DOUBLE_5 -> "🎞️ 2 × ≤5s"
+                                AiDurationSplit.TRIPLE_35 -> "🎞️ 3 × ≤3.5s"
+                                AiDurationSplit.QUINTUPLE_2 -> "🎞️ 5 × ≤2s"
+                            },
+                            color = if (active) Color.White else Ev.Text,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = when (sp) {
+                                AiDurationSplit.AUTO_1 -> "maks 10.0s"
+                                AiDurationSplit.DOUBLE_5 -> "total maks 10.0s"
+                                AiDurationSplit.TRIPLE_35 -> "total maks 10.5s"
+                                AiDurationSplit.QUINTUPLE_2 -> "total maks 10.0s"
+                            },
+                            color = if (active) Ev.Yellow else Ev.Muted,
+                            fontSize = 9.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
-        }
-    }
     Spacer(modifier = Modifier.height(4.dp))
     Text(
         text = vm.aiDurationSplit.sub,

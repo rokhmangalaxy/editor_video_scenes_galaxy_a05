@@ -79,6 +79,14 @@ enum class AiDurationSplit(
         sub = "Dibagi rata jadi 3 video, tiap video maks 3.5 dtk · total maks 10.5 dtk",
         maxSegs = 3,
         maxSegSec = 3.5
+    ),
+    QUINTUPLE_2(
+        id = "quintuple2",
+        label = "Quintuple (maks 2 dtk × 5)",
+        shortLabel = "5 × ≤2 dtk",
+        sub = "Dibagi rata jadi 5 video, tiap video maks 2.0 dtk · total maks 10.0 dtk",
+        maxSegs = 5,
+        maxSegSec = 2.0
     );
 
     /** Total durasi maksimal yang boleh diminta untuk pembagian ini. */
@@ -556,7 +564,7 @@ object AiPlanner {
      * Contoh: 10.0 dtk dibagi 2 → 5.0 + 5.0 · 10.5 dtk dibagi 3 → 3.5 + 3.5 + 3.5 · 7.0 dtk dibagi 3 → 2.4/2.3/2.3.
      */
     fun splitEvenly(totalSec: Double, parts: Int, maxSegSec: Double): List<Double> {
-        val n = parts.coerceIn(1, 3)
+        val n = parts.coerceIn(1, 5)
         val safeTotal = min(ABSOLUTE_MAX_TOTAL_SEC, max(1.0, totalSec)).coerceAtMost(n * maxSegSec)
         if (n == 1) return listOf(Math.round(safeTotal * 10.0) / 10.0)
         val baseTenths = Math.floor(safeTotal * 10.0 / n).toInt()
@@ -608,6 +616,7 @@ object AiPlanner {
                 AiDurationSplit.AUTO_1 -> "1 video utuh"
                 AiDurationSplit.DOUBLE_5 -> "Dobel · ${slots.size} video"
                 AiDurationSplit.TRIPLE_35 -> "Tripel · ${slots.size} video"
+                AiDurationSplit.QUINTUPLE_2 -> "Quintuple · ${slots.size} video"
                 else -> "${slots.size} video"
             })
             append(" (${slots.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(total)} dtk${if (adj.genDurs != slots) " · generate AI ${adj.genDurs.joinToString(" + ") { Fmt.one(it) }}" else ""})")
