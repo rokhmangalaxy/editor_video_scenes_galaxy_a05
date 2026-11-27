@@ -90,6 +90,18 @@ enum class AiTimelineJoinStyle(val label: String) {
     MERGED("Gabung Jadi 1 Klip Utuh")
 }
 
+/** Opsi perlakuan audio pada Mode Replace Scene. */
+enum class AiReplaceAudioMode(val label: String, val sub: String) {
+    VIDEO_ONLY(
+        "Video Saja (Audio Asli)",
+        "Pertahankan audio dari video scene asli"
+    ),
+    VIDEO_PLUS_AUDIO(
+        "Video + Audio AI",
+        "Gunakan video sekaligus audio dari hasil AI"
+    )
+}
+
 /** Pilihan HuggingFace Space sesuai firebase_worker.py. */
 enum class AiSpaceOption(
     val spaceId: String,

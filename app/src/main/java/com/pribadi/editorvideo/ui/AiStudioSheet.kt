@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -63,6 +65,7 @@ import com.pribadi.editorvideo.ai.AiInsertPreset
 import com.pribadi.editorvideo.ai.AiMultiStrategy
 import com.pribadi.editorvideo.ai.AiPlanner
 import com.pribadi.editorvideo.ai.AiPromptItem
+import com.pribadi.editorvideo.ai.AiReplaceAudioMode
 import com.pribadi.editorvideo.ai.AiRunPhase
 import com.pribadi.editorvideo.ai.AiRunnerClipboardData
 import com.pribadi.editorvideo.ai.AiSpaceOption
@@ -70,9 +73,12 @@ import com.pribadi.editorvideo.ai.AiTab
 import com.pribadi.editorvideo.ai.AiTimelineJoinStyle
 import com.pribadi.editorvideo.ai.AiWorkMode
 import com.pribadi.editorvideo.model.Fmt
+import com.pribadi.editorvideo.model.Seg
+import com.pribadi.editorvideo.model.VideoInfo
 import com.pribadi.editorvideo.vm.EditorViewModel
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
 
 private val REPLACE_QUICK_DURS = listOf(3.5, 5.0, 7.0, 10.0)
@@ -858,6 +864,66 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
             lineHeight = 14.5.sp
         )
     }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    // Opsi Audio pada Mode Replace Scene: Video Saja (Pertahankan Audio Asli) vs Video + Audio AI
+    AiReplaceAudioSelectorCard(vm)
+}
+
+@Composable
+private fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            text = "OPSI AUDIO SAAT REPLACE SCENE",
+            color = Ev.Muted,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (am in AiReplaceAudioMode.entries) {
+                val active = vm.aiReplaceAudioMode == am
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
+                        .border(
+                            width = if (active) 1.5.dp else 1.dp,
+                            color = if (active) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(9.dp)
+                        )
+                        .clickable { vm.aiReplaceAudioMode = am }
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
+                        color = if (active) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = am.sub,
+                        color = if (active) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1604,9 +1670,31 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
         val previewIdx = vm.aiPreviewResultIndex.coerceIn(0, results.lastIndex)
         val activeSeg = results[previewIdx]
 
-        // Pemutar Pratinjau MP4 Hasil AI langsung di dalam panel sebelum disisipkan
+        // Pemutar Pratinjau MP4 Hasil AI:
+        // - Bila Mode Replace Scene: tampilkan KIRI (Video Scene Asli) vs KANAN (Hasil Video AI)!
+        // - Bila Mode Sisipkan     : tampilkan pemutar tunggal Hasil Video AI.
         if (!activeSeg.failed && activeSeg.mp4File != null) {
-            AiInlineMp4PreviewCard(seg = activeSeg)
+            val replaceTarget = if (vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE) {
+                vm.resolveSnapshotReplaceTarget()
+            } else {
+                null
+            }
+            if (replaceTarget != null) {
+                val offsetBeforeSec = results.take(previewIdx)
+                    .filter { !it.failed }
+                    .sumOf { it.actualDurSec }
+                AiSideBySideReplacePreviewCard(
+                    vm = vm,
+                    origUri = replaceTarget.first,
+                    origSeg = replaceTarget.second,
+                    origInfo = replaceTarget.third,
+                    sceneNumber = vm.aiSnapshotReplaceSegIdx + 1,
+                    offsetInSceneSec = offsetBeforeSec,
+                    aiSeg = activeSeg
+                )
+            } else {
+                AiInlineMp4PreviewCard(seg = activeSeg)
+            }
             Spacer(modifier = Modifier.height(10.dp))
         }
 
@@ -1672,11 +1760,22 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
             Spacer(modifier = Modifier.height(8.dp))
         }
 
+        // Opsi Audio Replace Scene langsung di Tab Status sebelum menekan Ganti Scene
+        if (vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE) {
+            AiReplaceAudioSelectorCard(vm)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         val applyLabel = when {
-            vm.aiMergingClips -> "⏳ Menggabungkan & Menerapkan ke Timeline…"
+            vm.aiMergingClips -> "⏳ Memproses & Menerapkan ke Timeline…"
             vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE -> {
                 val targetSec = vm.aiSnapshotPlan?.targetTotalSec ?: vm.aiReplaceTargetDurSec
-                "🔄 Ganti Scene #${vm.aiSnapshotReplaceSegIdx + 1} (${Fmt.one(targetSec)} dtk)"
+                val audTag = if (vm.aiReplaceAudioMode == AiReplaceAudioMode.VIDEO_ONLY) {
+                    "Audio Asli"
+                } else {
+                    "Video+Audio"
+                }
+                "🔄 Ganti Scene #${vm.aiSnapshotReplaceSegIdx + 1} (${Fmt.one(targetSec)}s · $audTag)"
             }
             else -> "➕ Sisipkan di ${Fmt.preciseTime(vm.aiSnapshotInsertSeekSec)}"
         }
@@ -1699,6 +1798,291 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
                 modifier = Modifier.weight(1.55f),
                 onClick = { vm.applyAiResultsToTimeline(vm.aiTimelineJoinStyle) }
             )
+        }
+    }
+}
+
+@Composable
+private fun AiSideBySideReplacePreviewCard(
+    vm: EditorViewModel,
+    origUri: Uri,
+    origSeg: Seg,
+    origInfo: VideoInfo,
+    sceneNumber: Int,
+    offsetInSceneSec: Double,
+    aiSeg: AiGeneratedSegment
+) {
+    val context = LocalContext.current
+    val aiFile = aiSeg.mp4File ?: return
+    var bothPlaying by remember { mutableStateOf(true) }
+
+    val origStartSec = (origSeg.a + offsetInSceneSec * origSeg.sp)
+        .coerceIn(origSeg.a, max(origSeg.a, origSeg.b - 0.05))
+    val spanSec = min(aiSeg.actualDurSec, max(0.1, origSeg.len - offsetInSceneSec))
+    val origEndSec = (origStartSec + spanSec * origSeg.sp)
+        .coerceIn(origStartSec + 0.05, max(origStartSec + 0.05, origSeg.b))
+
+    val leftExo = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = true
+        }
+    }
+    val rightExo = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = true
+        }
+    }
+
+    // Atur sumber audio sesuai pilihan Video Saja (Audio Asli) vs Video + Audio AI
+    val keepOrigAudio = vm.aiReplaceAudioMode == AiReplaceAudioMode.VIDEO_ONLY
+    LaunchedEffect(keepOrigAudio) {
+        leftExo.volume = if (keepOrigAudio) 1f else 0f
+        rightExo.volume = if (keepOrigAudio) 0f else 1f
+    }
+
+    LaunchedEffect(origUri, origStartSec, origEndSec, origSeg.sp, origSeg.fz) {
+        if (!origSeg.fz) {
+            val startMs = max(0L, Math.round(origStartSec * 1000.0))
+            val endMs = max(startMs + 80L, Math.round(origEndSec * 1000.0))
+            val item = MediaItem.Builder()
+                .setUri(origUri)
+                .setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(startMs)
+                        .setEndPositionMs(endMs)
+                        .build()
+                )
+                .build()
+            leftExo.setMediaItem(item)
+            leftExo.setPlaybackSpeed(origSeg.sp.toFloat().coerceIn(0.25f, 4f))
+            leftExo.prepare()
+            if (bothPlaying) leftExo.play() else leftExo.pause()
+        } else {
+            leftExo.pause()
+        }
+    }
+
+    LaunchedEffect(aiFile.absolutePath) {
+        rightExo.setMediaItem(MediaItem.fromUri(Uri.fromFile(aiFile)))
+        rightExo.prepare()
+        leftExo.seekTo(0L)
+        rightExo.seekTo(0L)
+        if (bothPlaying) {
+            if (!origSeg.fz) leftExo.play()
+            rightExo.play()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try { leftExo.release() } catch (_: Exception) {}
+            try { rightExo.release() } catch (_: Exception) {}
+        }
+    }
+
+    val origAspect = remember(origInfo, vm.rot) {
+        val w = if (origInfo.dispW > 0) origInfo.dispW else 9
+        val h = if (origInfo.dispH > 0) origInfo.dispH else 16
+        if (vm.rot % 180 != 0) h.toFloat() / w.toFloat() else w.toFloat() / h.toFloat()
+    }.coerceIn(0.35f, 2.6f)
+
+    val aiAspect = remember(aiSeg.info) {
+        val inf = aiSeg.info
+        val w = if (inf != null && inf.dispW > 0) inf.dispW else 9
+        val h = if (inf != null && inf.dispH > 0) inf.dispH else 16
+        w.toFloat() / h.toFloat()
+    }.coerceIn(0.35f, 2.6f)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Accent, RoundedCornerShape(12.dp))
+            .padding(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "PERBANDINGAN REPLACE SCENE (KIRI ASLI · KANAN AI)",
+                color = Ev.Yellow,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = if (keepOrigAudio) "🔊 Suara: Asli" else "🔊 Suara: AI",
+                color = Color(0xFF6EE7B7),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Tampilan Kiri-Kanan Berdampingan
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            // KIRI: Video Scene Asli yang akan di-replace
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(185.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(Color.Black)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(9.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (origSeg.fz) {
+                    val fb = vm.aiReplaceFirstBitmap ?: vm.aiSeekBitmap
+                    if (fb != null && !fb.isRecycled) {
+                        Image(
+                            bitmap = fb.asImageBitmap(),
+                            contentDescription = "Scene Asli",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .aspectRatio(origAspect, matchHeightConstraintsFirst = true)
+                            .graphicsLayer(
+                                rotationZ = vm.rot.toFloat(),
+                                scaleX = if (vm.flip) -1f else 1f
+                            )
+                    ) {
+                        AndroidView(
+                            factory = { ctx ->
+                                TextureView(ctx).also { tv -> leftExo.setVideoTextureView(tv) }
+                            },
+                            update = { tv -> leftExo.setVideoTextureView(tv) },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(5.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Color(0xCC000000))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "KIRI · Scene #$sceneNumber Asli",
+                        color = Color.White,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(5.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Color(0xB3000000))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "${Fmt.one(origSeg.len)} dtk",
+                        color = Ev.Muted,
+                        fontSize = 9.sp
+                    )
+                }
+            }
+
+            // KANAN: Hasil Video AI pengganti
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(185.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(Color.Black)
+                    .border(1.dp, Ev.Accent, RoundedCornerShape(9.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier.aspectRatio(aiAspect, matchHeightConstraintsFirst = true)
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            TextureView(ctx).also { tv -> rightExo.setVideoTextureView(tv) }
+                        },
+                        update = { tv -> rightExo.setVideoTextureView(tv) },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(5.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Ev.Accent.copy(alpha = 0.88f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "KANAN · Hasil AI #${aiSeg.segNumber}",
+                        color = Color.White,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(5.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Color(0xB3000000))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "${Fmt.one(aiSeg.actualDurSec)} dtk · Seed ${aiSeg.seed}",
+                        color = Ev.Yellow,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(7.dp))
+
+        // Kontrol Putar / Jeda & Ulang Serempak Kiri-Kanan
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            AiMiniBtn(
+                label = if (bothPlaying) "⏸ Jeda Berdampingan" else "▶ Putar Berdampingan",
+                modifier = Modifier.weight(1f)
+            ) {
+                val next = !bothPlaying
+                bothPlaying = next
+                if (next) {
+                    if (!origSeg.fz) leftExo.play()
+                    rightExo.play()
+                } else {
+                    leftExo.pause()
+                    rightExo.pause()
+                }
+            }
+            AiMiniBtn(
+                label = "↺ Ulang Serempak 0:00",
+                modifier = Modifier.weight(1f)
+            ) {
+                leftExo.seekTo(0L)
+                rightExo.seekTo(0L)
+                bothPlaying = true
+                if (!origSeg.fz) leftExo.play()
+                rightExo.play()
+            }
         }
     }
 }

@@ -1673,7 +1673,105 @@ fun SceneDetectSheet(vm: EditorViewModel, onClose: () -> Unit) {
                     enabled = !vm.sceneScanning,
                     label = "${Fmt.one(dOpt)}s"
                 ) {
-                    vm.updateSceneSettings(vm.sceneSensitivity, dOpt)
+                    vm.updateSceneSettings(newSensitivity = vm.sceneSensitivity, newMinDur = dOpt)
+                }
+            }
+        }
+
+        // Kontrol 3: Opsi Durasi Maksimal Tiap Scene (Default OFF)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "DURASI MAKSIMAL SCENE",
+                color = Ev.Muted,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (vm.sceneMaxDurEnabled) {
+                    Text(
+                        text = "Maks ${Fmt.one(vm.sceneMaxDur)} dtk",
+                        color = Ev.Yellow,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .alpha(if (vm.sceneScanning) 0.45f else 1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (vm.sceneMaxDurEnabled) Ev.Accent else Ev.Ghost)
+                        .border(
+                            1.dp,
+                            if (vm.sceneMaxDurEnabled) Ev.Accent else Ev.Line,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable(enabled = !vm.sceneScanning) {
+                            vm.updateSceneSettings(newMaxEnabled = !vm.sceneMaxDurEnabled)
+                        }
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = if (vm.sceneMaxDurEnabled) "ON" else "OFF",
+                        color = if (vm.sceneMaxDurEnabled) Color.White else Ev.Muted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        if (vm.sceneMaxDurEnabled) {
+            val minBound = max(0.5f, vm.sceneMinDur.toFloat())
+            Slider(
+                value = vm.sceneMaxDur.toFloat().coerceIn(minBound, 20.0f),
+                onValueChange = {
+                    vm.updateSceneSettings(
+                        newMaxEnabled = true,
+                        newMaxDur = it.toDouble()
+                    )
+                },
+                enabled = !vm.sceneScanning,
+                valueRange = minBound..20.0f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Ev.Accent,
+                    activeTrackColor = Ev.Accent,
+                    inactiveTrackColor = Ev.Line
+                )
+            )
+            val maxPresets = listOf(1.5, 2.5, 3.5, 5.0, 7.0, 10.0, 15.0)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Chip(
+                    on = false,
+                    enabled = !vm.sceneScanning,
+                    label = "Off"
+                ) {
+                    vm.updateSceneSettings(newMaxEnabled = false)
+                }
+                for (mOpt in maxPresets) {
+                    if (mOpt >= vm.sceneMinDur - 0.01) {
+                        val active = abs(vm.sceneMaxDur - mOpt) < 0.05
+                        Chip(
+                            on = active,
+                            enabled = !vm.sceneScanning,
+                            label = "${Fmt.one(mOpt)}s"
+                        ) {
+                            vm.updateSceneSettings(newMaxEnabled = true, newMaxDur = mOpt)
+                        }
+                    }
                 }
             }
         }

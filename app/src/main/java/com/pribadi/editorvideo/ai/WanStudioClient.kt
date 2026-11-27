@@ -2,18 +2,26 @@ package com.pribadi.editorvideo.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
 import androidx.media3.common.C
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
@@ -33,9 +41,11 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.nio.ByteBuffer
 import java.security.SecureRandom
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -687,6 +697,291 @@ object WanStudioClient {
                         handler.post { try { transformer.cancel() } catch (_: Exception) {} }
                     }
                 }
+                if (outFile.exists()) outFile.delete()
+                transformer.start(comp, outFile.absolutePath)
+            }
+            outFile.exists() && outFile.length() > 0L
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Untuk Mode Replace Scene "Video Saja (Pertahankan Audio Asli)":
+     * Mengambil visual dari berkas AI [aiVideoFile] sepanjang [clipDurSec] detik dan memasangkan
+     * trek audio asli dari [origSourceUri] mulai detik [origStartSec] (dengan kecepatan [origSpeed]).
+     */
+    suspend fun attachOriginalAudioToAiClip(
+        context: Context,
+        aiVideoFile: File,
+        aiVideoInfo: VideoInfo,
+        clipDurSec: Double,
+        origSourceUri: Uri,
+        origInfo: VideoInfo,
+        origStartSec: Double,
+        origSpeed: Double,
+        outFile: File
+    ): File {
+        // Bila video asli memang bisu dan video AI juga bisu, langsung pakai berkas AI apa adanya
+        if (!origInfo.hasAudio && !aiVideoInfo.hasAudio) {
+            return aiVideoFile
+        }
+
+        // Jalur cepat tanpa re-encode (MediaExtractor + MediaMuxer) bila kecepatan asli normal (1.0x)
+        if (abs(origSpeed - 1.0) < 0.01) {
+            val fastOk = withContext(Dispatchers.IO) {
+                remuxVideoWithOrigAudioFast(
+                    context = context,
+                    aiVideoFile = aiVideoFile,
+                    clipDurSec = clipDurSec,
+                    origSourceUri = if (origInfo.hasAudio) origSourceUri else null,
+                    origStartSec = origStartSec,
+                    outFile = outFile
+                )
+            }
+            if (fastOk && outFile.exists() && outFile.length() > 0L) {
+                return outFile
+            }
+        }
+
+        // Fallback via Media3 Transformer (mendukung perubahan pitch-preserving speed & transkode audio)
+        val transOk = muxViaTransformer(
+            context = context,
+            aiVideoFile = aiVideoFile,
+            aiVideoInfo = aiVideoInfo,
+            clipDurSec = clipDurSec,
+            origSourceUri = origSourceUri,
+            origInfo = origInfo,
+            origStartSec = origStartSec,
+            origSpeed = origSpeed,
+            outFile = outFile
+        )
+        return if (transOk && outFile.exists() && outFile.length() > 0L) outFile else aiVideoFile
+    }
+
+    private fun remuxVideoWithOrigAudioFast(
+        context: Context,
+        aiVideoFile: File,
+        clipDurSec: Double,
+        origSourceUri: Uri?,
+        origStartSec: Double,
+        outFile: File
+    ): Boolean {
+        val vidEx = MediaExtractor()
+        val audEx = if (origSourceUri != null) MediaExtractor() else null
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+        try {
+            vidEx.setDataSource(aiVideoFile.absolutePath)
+            var vidTrackIn = -1
+            var vidFormat: MediaFormat? = null
+            for (i in 0 until vidEx.trackCount) {
+                val fmt = vidEx.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("video/")) {
+                    vidTrackIn = i
+                    vidFormat = fmt
+                    break
+                }
+            }
+            if (vidTrackIn < 0 || vidFormat == null) return false
+            vidEx.selectTrack(vidTrackIn)
+
+            var audTrackIn = -1
+            var audFormat: MediaFormat? = null
+            if (audEx != null && origSourceUri != null) {
+                audEx.setDataSource(context, origSourceUri, null)
+                for (i in 0 until audEx.trackCount) {
+                    val fmt = audEx.getTrackFormat(i)
+                    val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("audio/")) {
+                        audTrackIn = i
+                        audFormat = fmt
+                        break
+                    }
+                }
+                if (audTrackIn >= 0) {
+                    audEx.selectTrack(audTrackIn)
+                }
+            }
+
+            outFile.parentFile?.mkdirs()
+            if (outFile.exists()) outFile.delete()
+            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val muxVidTrack = muxer.addTrack(vidFormat)
+            val muxAudTrack = if (audTrackIn >= 0 && audFormat != null) {
+                muxer.addTrack(audFormat)
+            } else {
+                -1
+            }
+            muxer.start()
+            muxerStarted = true
+
+            val maxDurUs = max(100_000L, Math.round(clipDurSec * 1_000_000.0))
+            val buf = ByteBuffer.allocateDirect(1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+
+            // Salin paket video AI tanpa re-encode
+            while (true) {
+                buf.clear()
+                val sampleSize = vidEx.readSampleData(buf, 0)
+                if (sampleSize < 0) break
+                val sampleTimeUs = vidEx.sampleTime
+                if (sampleTimeUs > maxDurUs + 40_000L) break
+                val exFlags = vidEx.sampleFlags
+                var flags = 0
+                if ((exFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                    flags = flags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+                }
+                info.set(0, sampleSize, max(0L, sampleTimeUs), flags)
+                muxer.writeSampleData(muxVidTrack, buf, info)
+                vidEx.advance()
+            }
+
+            // Salin paket audio asli mulai origStartSec sepanjang maxDurUs
+            if (audEx != null && muxAudTrack >= 0) {
+                val origStartUs = max(0L, Math.round(origStartSec * 1_000_000.0))
+                val origEndUs = origStartUs + maxDurUs
+                audEx.seekTo(origStartUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                var lastAudPts = -1L
+                while (true) {
+                    buf.clear()
+                    val sampleSize = audEx.readSampleData(buf, 0)
+                    if (sampleSize < 0) break
+                    val rawPts = audEx.sampleTime
+                    if (rawPts > origEndUs) break
+                    if (rawPts >= origStartUs - 25_000L) {
+                        var shiftedPts = max(0L, rawPts - origStartUs)
+                        if (shiftedPts <= lastAudPts) {
+                            shiftedPts = lastAudPts + 1L
+                        }
+                        lastAudPts = shiftedPts
+                        val exFlags = audEx.sampleFlags
+                        var flags = 0
+                        if ((exFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                            flags = flags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+                        }
+                        info.set(0, sampleSize, shiftedPts, flags)
+                        muxer.writeSampleData(muxAudTrack, buf, info)
+                    }
+                    audEx.advance()
+                }
+            }
+
+            muxer.stop()
+            muxerStarted = false
+            return true
+        } catch (_: Exception) {
+            if (outFile.exists()) outFile.delete()
+            return false
+        } finally {
+            try { vidEx.release() } catch (_: Exception) {}
+            try { audEx?.release() } catch (_: Exception) {}
+            try {
+                if (muxerStarted) muxer?.stop()
+            } catch (_: Exception) {}
+            try { muxer?.release() } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun muxViaTransformer(
+        context: Context,
+        aiVideoFile: File,
+        aiVideoInfo: VideoInfo,
+        clipDurSec: Double,
+        origSourceUri: Uri,
+        origInfo: VideoInfo,
+        origStartSec: Double,
+        origSpeed: Double,
+        outFile: File
+    ): Boolean = withContext(Dispatchers.Main) {
+        val app = context.applicationContext
+        val handler = Handler(Looper.getMainLooper())
+        val vidEndMs = max(100L, min(aiVideoInfo.durationMs, Math.round(clipDurSec * 1000.0)))
+
+        val vidMediaItem = MediaItem.Builder()
+            .setUri(Uri.fromFile(aiVideoFile))
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(0L)
+                    .setEndPositionMs(vidEndMs)
+                    .build()
+            )
+            .build()
+        val vidEdited = EditedMediaItem.Builder(vidMediaItem)
+            .setRemoveAudio(true)
+            .build()
+        val vidSeq = EditedMediaItemSequence(listOf(vidEdited))
+
+        val sequences = ArrayList<EditedMediaItemSequence>(2)
+        sequences.add(vidSeq)
+
+        if (origInfo.hasAudio) {
+            val sp = max(0.1, origSpeed)
+            val audStartMs = max(0L, Math.round(origStartSec * 1000.0))
+            val audSpanMs = max(100L, Math.round(clipDurSec * sp * 1000.0))
+            val audEndMs = min(origInfo.durationMs, max(audStartMs + 50L, audStartMs + audSpanMs))
+            val audMediaItem = MediaItem.Builder()
+                .setUri(origSourceUri)
+                .setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(audStartMs)
+                        .setEndPositionMs(audEndMs)
+                        .build()
+                )
+                .build()
+            val audProcessors = if (abs(sp - 1.0) > 0.01) {
+                val sonic = SonicAudioProcessor()
+                sonic.setSpeed(sp.toFloat())
+                sonic.setPitch(1f)
+                listOf<AudioProcessor>(sonic)
+            } else {
+                emptyList()
+            }
+            val audEdited = EditedMediaItem.Builder(audMediaItem)
+                .setRemoveVideo(true)
+                .setEffects(Effects(audProcessors, emptyList<Effect>()))
+                .build()
+            sequences.add(EditedMediaItemSequence(listOf(audEdited)))
+        }
+
+        val comp = Composition.Builder(sequences)
+            .experimentalSetForceAudioTrack(origInfo.hasAudio)
+            .build()
+
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val encoderFactory = DefaultEncoderFactory.Builder(app)
+                    .setEnableFallback(true)
+                    .build()
+                val transformer = Transformer.Builder(app)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .setEncoderFactory(encoderFactory)
+                    .setMaxDelayBetweenMuxerSamplesMs(C.TIME_UNSET)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                            if (cont.isActive) cont.resume(Unit)
+                        }
+
+                        override fun onError(
+                            composition: Composition,
+                            exportResult: ExportResult,
+                            exportException: ExportException
+                        ) {
+                            if (cont.isActive) cont.resumeWithException(exportException)
+                        }
+                    })
+                    .build()
+
+                cont.invokeOnCancellation {
+                    if (Looper.myLooper() == Looper.getMainLooper()) {
+                        try { transformer.cancel() } catch (_: Exception) {}
+                    } else {
+                        handler.post { try { transformer.cancel() } catch (_: Exception) {} }
+                    }
+                }
+                outFile.parentFile?.mkdirs()
                 if (outFile.exists()) outFile.delete()
                 transformer.start(comp, outFile.absolutePath)
             }

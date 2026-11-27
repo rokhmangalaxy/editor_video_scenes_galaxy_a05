@@ -28,6 +28,7 @@ import com.pribadi.editorvideo.ai.AiInsertPreset
 import com.pribadi.editorvideo.ai.AiMultiStrategy
 import com.pribadi.editorvideo.ai.AiPlanner
 import com.pribadi.editorvideo.ai.AiPromptItem
+import com.pribadi.editorvideo.ai.AiReplaceAudioMode
 import com.pribadi.editorvideo.ai.AiRunPhase
 import com.pribadi.editorvideo.ai.AiRunnerConfig
 import com.pribadi.editorvideo.ai.AiSpaceOption
@@ -327,11 +328,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var aiInsertLastTimeSec by mutableDoubleStateOf(-1.0)
         private set
 
-    // Mode Replace Scene: input range durasi (1.0 .. 10.0 dtk) + shortcut durasi scene <=10s
+    // Mode Replace Scene: input range durasi (1.0 .. 10.0 dtk) + shortcut durasi scene <=10s + opsi Audio
     var aiReplaceTargetDurSec by mutableDoubleStateOf(5.0)
         private set
     var aiReplaceBridgeLastFrame by mutableStateOf(true)
         private set
+    var aiReplaceAudioMode by mutableStateOf(AiReplaceAudioMode.VIDEO_ONLY)
     var aiReplaceFirstBitmap by mutableStateOf<Bitmap?>(null)
         private set
     var aiReplaceLastBitmap by mutableStateOf<Bitmap?>(null)
@@ -422,6 +424,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var sceneSensitivity by mutableFloatStateOf(0.55f)
         private set
     var sceneMinDur by mutableDoubleStateOf(0.5)
+        private set
+    var sceneMaxDurEnabled by mutableStateOf(false)
+        private set
+    var sceneMaxDur by mutableDoubleStateOf(5.0)
         private set
     var sceneScanCount by mutableIntStateOf(0)
         private set
@@ -2177,9 +2183,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Mengembalikan (Uri sumber asli, Seg scene target, VideoInfo) untuk pratinjau kiri-kanan Replace Scene. */
+    fun resolveSnapshotReplaceTarget(): Triple<Uri, Seg, VideoInfo>? {
+        if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) return null
+        val idx = aiSnapshotReplaceSegIdx.coerceIn(0, core.segs.lastIndex)
+        val g = core.segs[idx]
+        val ms = sources.getOrElse(g.src) { sources.first() }
+        return Triple(ms.uri, g, ms.info)
+    }
+
     /**
      * Memasukkan hasil video AI terpilih ke Timeline (mendukung Mode Sisipkan & Mode Replace Scene,
-     * baik sebagai Klip Terpisah Berurutan maupun Gabung Jadi 1 Klip Utuh, lengkap dengan Undo/Redo).
+     * baik sebagai Klip Terpisah Berurutan maupun Gabung Jadi 1 Klip Utuh, serta opsi Video Saja / Video+Audio).
      */
     fun applyAiResultsToTimeline(joinStyle: AiTimelineJoinStyle) {
         if (aiMergingClips) return
@@ -2194,6 +2209,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         pause()
         val mode = aiSnapshotWorkMode
         val plan = aiSnapshotPlan ?: currentAiExecutionPlan()
+        val audioModeSnap = aiReplaceAudioMode
 
         // Hitung durasi pakai per segmen agar pada Mode Replace Scene totalnya presisi sesuai slider/scene!
         val targetCap = if (mode == AiWorkMode.REPLACE_SCENE) plan.targetTotalSec else Double.MAX_VALUE
@@ -2223,10 +2239,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.edit().putString(KEY_CUSTOM_TAGS, arr.toString()).apply()
                 }
 
-                val finalFilesToRegister: List<Triple<File, VideoInfo, Double>> =
+                val outDir = File(ctx.filesDir, "ai_videos")
+                if (!outDir.exists()) outDir.mkdirs()
+
+                val baseFiles: List<Triple<File, VideoInfo, Double>> =
                     if (joinStyle == AiTimelineJoinStyle.MERGED && clippedChosen.size >= 2) {
-                        val outDir = File(ctx.filesDir, "ai_videos")
-                        if (!outDir.exists()) outDir.mkdirs()
                         val mergedFile = File(outDir, "ai_merged_${System.currentTimeMillis()}.mp4")
                         val ok = WanStudioClient.mergeSegmentsToSingleMp4(ctx, clippedChosen, mergedFile)
                         val mergedInfo = if (ok) {
@@ -2242,6 +2259,60 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     } else {
                         clippedChosen
+                    }
+
+                // Bila Mode Replace Scene & opsi "Video Saja (Audio Asli)", pasangkan trek audio asli scene!
+                val finalFilesToRegister: List<Triple<File, VideoInfo, Double>> =
+                    if (mode == AiWorkMode.REPLACE_SCENE &&
+                        audioModeSnap == AiReplaceAudioMode.VIDEO_ONLY &&
+                        hasVideo &&
+                        sources.isNotEmpty() &&
+                        core.segs.isNotEmpty()
+                    ) {
+                        val segIdx = aiSnapshotReplaceSegIdx.coerceIn(0, core.segs.lastIndex)
+                        val origSeg = core.segs[segIdx]
+                        val origSrc = sources.getOrElse(origSeg.src) { sources.first() }
+                        if (!origSeg.fz) {
+                            var consumedTimelineSec = 0.0
+                            val withOrigAudio = ArrayList<Triple<File, VideoInfo, Double>>(baseFiles.size)
+                            for ((pieceIdx, triple) in baseFiles.withIndex()) {
+                                val (vidFile, vidInfo, useDur) = triple
+                                val origSliceStartSec = clampD(
+                                    origSeg.a + consumedTimelineSec * origSeg.sp,
+                                    origSeg.a,
+                                    max(origSeg.a, origSeg.b - 0.02)
+                                )
+                                val muxOut = File(
+                                    outDir,
+                                    "ai_origaud_${System.currentTimeMillis()}_${pieceIdx + 1}.mp4"
+                                )
+                                val resultFile = WanStudioClient.attachOriginalAudioToAiClip(
+                                    context = ctx,
+                                    aiVideoFile = vidFile,
+                                    aiVideoInfo = vidInfo,
+                                    clipDurSec = useDur,
+                                    origSourceUri = origSrc.uri,
+                                    origInfo = origSrc.info,
+                                    origStartSec = origSliceStartSec,
+                                    origSpeed = origSeg.sp,
+                                    outFile = muxOut
+                                )
+                                val resultInfo = if (resultFile === vidFile) {
+                                    vidInfo
+                                } else {
+                                    withContext(Dispatchers.IO) {
+                                        VideoProbe.probe(ctx, Uri.fromFile(resultFile))
+                                    } ?: vidInfo
+                                }
+                                withOrigAudio.add(Triple(resultFile, resultInfo, useDur))
+                                consumedTimelineSec += useDur
+                            }
+                            withOrigAudio
+                        } else {
+                            baseFiles
+                        }
+                    } else {
+                        baseFiles
                     }
 
                 val firstNewSrcIdx = sources.size
@@ -2343,12 +2414,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Mengaktifkan/mematikan mode Loop pratinjau tanpa langsung memutar atau menjeda video. */
+    /** Mengaktifkan/mematikan mode Loop Scene pada pratinjau (mengulang klip/scene terpilih, bukan seluruh video). */
     fun togglePreviewLoop() {
         previewLoop = !previewLoop
         prefs.edit().putBoolean(KEY_PREVIEW_LOOP, previewLoop).apply()
         bump()
-        toast(if (previewLoop) "Mode Loop pratinjau aktif" else "Mode Loop pratinjau nonaktif")
+        toast(if (previewLoop) "Loop Scene aktif (mengulang scene terpilih)" else "Loop Scene nonaktif")
     }
 
     fun togglePlay() {
@@ -2361,7 +2432,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             toast("Impor video dulu")
             return
         }
-        if (core.t >= core.total - 0.02) core.t = 0.0
+        if (previewLoop && core.sel in core.segs.indices) {
+            val selIdx = core.sel
+            val selStart = core.lay.off[selIdx]
+            val selEnd = selStart + core.segs[selIdx].len
+            if (core.t < selStart - 0.01 || core.t >= selEnd - 0.03) {
+                core.t = selStart
+            }
+        } else if (core.t >= core.total - 0.02) {
+            core.t = 0.0
+        }
         val l = core.locate(core.t)
         val g = core.segs[l.i]
         curSeg = l.i
@@ -2459,12 +2539,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (adv) {
-            if (curSeg < segs.size - 1) {
+            if (previewLoop) {
+                // Loop Scene: ulangi scene/klip yang sedang diputar (curSeg), bukan lanjut ke seluruh video
+                enterSeg(curSeg)
+                core.t = core.lay.off[curSeg]
+            } else if (curSeg < segs.size - 1) {
                 enterSeg(curSeg + 1)
                 core.t = core.lay.off[curSeg]
-            } else if (previewLoop) {
-                enterSeg(0)
-                core.t = 0.0
             } else {
                 core.t = core.total
                 endPlay()
@@ -2780,7 +2861,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             cached.samples.isNotEmpty()
         ) {
             sceneScanning = false
-            detectedScenes = SceneDetector.buildScenes(cached, sceneSensitivity, sceneMinDur)
+            detectedScenes = SceneDetector.buildScenes(
+                scan = cached,
+                sensitivity = sceneSensitivity,
+                minSceneDurSec = sceneMinDur,
+                maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null
+            )
             return
         }
 
@@ -2823,7 +2909,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             currentScanResult = scan
-            detectedScenes = SceneDetector.buildScenes(scan, sceneSensitivity, sceneMinDur)
+            detectedScenes = SceneDetector.buildScenes(
+                scan = scan,
+                sensitivity = sceneSensitivity,
+                minSceneDurSec = sceneMinDur,
+                maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null
+            )
             sceneScanning = false
             if (attempt > 0) {
                 toast("Deteksi ulang selesai: ${detectedScenes.size} scene")
@@ -2831,17 +2922,32 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun updateSceneSettings(newSensitivity: Float, newMinDur: Double) {
+    fun updateSceneSettings(
+        newSensitivity: Float = sceneSensitivity,
+        newMinDur: Double = sceneMinDur,
+        newMaxEnabled: Boolean = sceneMaxDurEnabled,
+        newMaxDur: Double = sceneMaxDur
+    ) {
         val sens = ((newSensitivity * 100f).roundToInt() / 100f).coerceIn(0.1f, 1.0f)
         val minD = ((newMinDur * 10.0).roundToInt() / 10.0).coerceIn(0.1, 5.0)
+        val maxD = max(minD, ((newMaxDur * 10.0).roundToInt() / 10.0).coerceIn(0.5, 20.0))
         sceneSensitivity = sens
         sceneMinDur = minD
+        sceneMaxDurEnabled = newMaxEnabled
+        sceneMaxDur = maxD
         prefs.edit()
             .putFloat(KEY_SCENE_SENS, sens)
             .putFloat(KEY_SCENE_MINDUR, minD.toFloat())
+            .putBoolean(KEY_SCENE_MAXDUR_ENABLED, newMaxEnabled)
+            .putFloat(KEY_SCENE_MAXDUR, maxD.toFloat())
             .apply()
         val scan = currentScanResult ?: return
-        detectedScenes = SceneDetector.buildScenes(scan, sceneSensitivity, sceneMinDur)
+        detectedScenes = SceneDetector.buildScenes(
+            scan = scan,
+            sensitivity = sceneSensitivity,
+            minSceneDurSec = sceneMinDur,
+            maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null
+        )
     }
 
     fun toggleDetectedScene(sceneIndex: Int) {
@@ -3075,7 +3181,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.14 (Terbaru)",
+            version = "v1.0.15 (Terbaru)",
+            date = "27/11/2026",
+            title = "Pratinjau Kiri-Kanan Replace AI, Audio Asli Replace, Maks Durasi Scene, Loop Scene & Share Video",
+            items = listOf(
+                "✓ [Pengembangan] Pratinjau hasil AI pada Mode Replace Scene ditampilkan Kiri-Kanan berdampingan dengan video scene asli yang akan di-replace.",
+                "✓ [Pengembangan] Deteksi Scene kini memiliki opsi Durasi Maksimal Scene (default OFF).",
+                "✓ [Pengembangan] Mode Replace Scene mendukung opsi \"Video Saja (Pertahankan Audio Asli)\" atau \"Video + Audio AI\".",
+                "✓ [Bug Fixed] Toggle Loop pada Pratinjau kini mengaktifkan Loop Scene (mengulang klip/scene terpilih), bukan mengulang seluruh video.",
+                "✓ [Pengembangan] Menerima Share / Bagikan video dari aplikasi apa pun langsung menjadi input di Editor Video."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.14",
             date = "27/11/2026",
             title = "Studio Video AI v2: Mode Sisipkan & Replace Scene, Multi-Hasil, Management Prompt & Runner",
             items = listOf(
@@ -3186,6 +3304,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         sceneSensitivity = prefs.getFloat(KEY_SCENE_SENS, 0.55f).coerceIn(0.1f, 1.0f)
         sceneMinDur = ((prefs.getFloat(KEY_SCENE_MINDUR, 0.5f).toDouble() * 10.0).roundToInt() / 10.0)
             .coerceIn(0.1, 5.0)
+        // Opsi maksimal durasi deteksi scene default OFF (false)
+        sceneMaxDurEnabled = prefs.getBoolean(KEY_SCENE_MAXDUR_ENABLED, false)
+        sceneMaxDur = max(
+            sceneMinDur,
+            ((prefs.getFloat(KEY_SCENE_MAXDUR, 5.0f).toDouble() * 10.0).roundToInt() / 10.0)
+                .coerceIn(0.5, 20.0)
+        )
 
         val raw = prefs.getString(KEY_NOTES_JSON, null)
         if (raw == null) {
@@ -3271,6 +3396,68 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importVideo(uri: Uri) {
         importVideos(listOf(uri))
+    }
+
+    /**
+     * Mengimpor video yang dibagikan lewat menu Share (ACTION_SEND / ACTION_SEND_MULTIPLE / ACTION_VIEW)
+     * dari aplikasi lain. Bila URI bersifat sementara (mis. FileProvider WhatsApp/TikTok/Telegram),
+     * aliran berkas disalin otomatis ke cache lokal aplikasi agar pratinjau & ekspor 100% stabil.
+     */
+    fun importSharedVideos(uris: List<Uri>, persistFlags: Map<Uri, Boolean>) {
+        if (uris.isEmpty()) return
+        importSourceSheet = false
+        aiSheet = false
+        sceneDetectSheet = false
+        exportSheet = false
+        noteSheet = false
+        themeSheet = false
+
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val resolved = withContext(Dispatchers.IO) {
+                val shareDir = File(ctx.cacheDir, "shared_inputs")
+                if (!shareDir.exists()) shareDir.mkdirs()
+                // Bersihkan salinan share lama (>24 jam) agar ruang cache tetap hemat
+                val cutoff = System.currentTimeMillis() - 24L * 3600L * 1000L
+                shareDir.listFiles()?.forEach { old ->
+                    if (old.isFile && old.lastModified() < cutoff) {
+                        try { old.delete() } catch (_: Exception) {}
+                    }
+                }
+
+                val out = ArrayList<Uri>(uris.size)
+                for ((idx, u) in uris.withIndex()) {
+                    val persisted = persistFlags[u] == true
+                    val isDirectFile = u.scheme == "file"
+                    if (persisted || isDirectFile) {
+                        val directOk = VideoProbe.probe(ctx, u) != null
+                        if (directOk) {
+                            out.add(u)
+                            continue
+                        }
+                    }
+                    // Salin stream sementara ke berkas lokal di cacheDir/shared_inputs
+                    try {
+                        val dest = File(shareDir, "shared_${System.currentTimeMillis()}_$idx.mp4")
+                        val copiedOk = ctx.contentResolver.openInputStream(u)?.use { input ->
+                            dest.outputStream().use { output ->
+                                input.copyTo(output, 256 * 1024)
+                            }
+                            true
+                        } ?: false
+                        if (copiedOk && dest.exists() && dest.length() > 0L) {
+                            out.add(Uri.fromFile(dest))
+                        } else {
+                            out.add(u)
+                        }
+                    } catch (_: Exception) {
+                        out.add(u)
+                    }
+                }
+                out
+            }
+            importVideos(resolved)
+        }
     }
 
     fun importVideos(uris: List<Uri>) {
@@ -3857,6 +4044,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private const val KEY_TAG_COLORS_JSON = "custom_tag_colors_json"
         private const val KEY_SCENE_SENS = "scene_sensitivity"
         private const val KEY_SCENE_MINDUR = "scene_min_dur"
+        private const val KEY_SCENE_MAXDUR_ENABLED = "scene_max_dur_enabled"
+        private const val KEY_SCENE_MAXDUR = "scene_max_dur"
         private const val KEY_AI_PROMPTS_JSON = "ai_prompt_library_json"
         private const val KEY_AI_RUNNER_CFG = "ai_runner_config_json"
         private const val KEY_AI_COPIED_CLIPS = "ai_runner_copied_ids"

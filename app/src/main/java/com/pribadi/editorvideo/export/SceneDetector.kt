@@ -198,22 +198,34 @@ object SceneDetector {
     }
 
     /**
-     * Menyusun daftar DetectedScene dari hasil pemindaian berdasarkan sensitivitas (min 0.1 .. 1.0)
-     * dan durasi minimal per scene (min 0.1 detik).
+     * Menyusun daftar DetectedScene dari hasil pemindaian berdasarkan:
+     *  - sensitivitas (0.1 .. 1.0)
+     *  - durasi minimal per scene (min 0.1 detik)
+     *  - durasi maksimal per scene opsional (default null = OFF; bila aktif, scene yang lebih panjang
+     *    akan otomatis dipecah tidak melebihi batas maksimal tersebut).
      */
     fun buildScenes(
         scan: SceneScanResult,
         sensitivity: Float,
-        minSceneDurSec: Double
+        minSceneDurSec: Double,
+        maxSceneDurSec: Double? = null
     ): List<DetectedScene> {
         val samples = scan.samples
+        val sp = max(0.1, scan.speed)
+        val minDur = minSceneDurSec.coerceIn(0.1, 10.0) * sp
+        val maxDurSrc: Double? = maxSceneDurSec?.let {
+            max(minSceneDurSec.coerceIn(0.1, 10.0), it.coerceIn(0.5, 60.0)) * sp
+        }
+
         if (samples.isEmpty()) {
-            return listOf(
-                DetectedScene(0, scan.startSec, scan.endSec, null, 1f, true)
+            return splitByMaxIfNeeded(
+                rawPairs = listOf(Triple(scan.startSec, scan.endSec, 1f)),
+                samples = emptyList(),
+                maxDurSrc = maxDurSrc,
+                minValidSrc = 0.1 * sp
             )
         }
 
-        val minDur = minSceneDurSec.coerceIn(0.1, 10.0)
         val normSens = sensitivity.coerceIn(0.1f, 1.0f)
 
         val diffs = samples.drop(1).map { it.diffScore }.sorted()
@@ -254,29 +266,64 @@ object SceneDetector {
             cuts.addAll(picked)
         }
 
-        val result = ArrayList<DetectedScene>(cuts.size + 1)
+        val naturalRanges = ArrayList<Triple<Double, Double, Float>>(cuts.size + 1)
         var curStart = scan.startSec
         var curDiff = 1f
         for (idx in 0..cuts.size) {
             val curEnd = if (idx < cuts.size) cuts[idx].first else scan.endSec
-            val midSec = (curStart + curEnd) * 0.5
-            val bestSample = samples.minByOrNull { abs(it.timeSec - midSec) }
-                ?: samples.firstOrNull { it.timeSec >= curStart }
-            result.add(
-                DetectedScene(
-                    index = idx,
-                    startSec = curStart,
-                    endSec = curEnd,
-                    thumb = bestSample?.thumb,
-                    diffScore = curDiff,
-                    selected = true
-                )
-            )
+            naturalRanges.add(Triple(curStart, curEnd, curDiff))
             if (idx < cuts.size) {
                 curStart = cuts[idx].first
                 curDiff = cuts[idx].second
             }
         }
-        return result
+
+        return splitByMaxIfNeeded(
+            rawPairs = naturalRanges,
+            samples = samples,
+            maxDurSrc = maxDurSrc,
+            minValidSrc = 0.1 * sp
+        )
+    }
+
+    private fun splitByMaxIfNeeded(
+        rawPairs: List<Triple<Double, Double, Float>>,
+        samples: List<SceneSample>,
+        maxDurSrc: Double?,
+        minValidSrc: Double
+    ): List<DetectedScene> {
+        val expanded = ArrayList<Triple<Double, Double, Float>>()
+        for ((sStart, sEnd, diff) in rawPairs) {
+            if (maxDurSrc == null || (sEnd - sStart) <= maxDurSrc + 0.02) {
+                expanded.add(Triple(sStart, sEnd, diff))
+            } else {
+                var pos = sStart
+                var firstSub = true
+                while (pos < sEnd - 1e-4) {
+                    var nextPos = pos + maxDurSrc
+                    // Bila sisa buntut terlalu pendek (< minValidSrc), potong di sEnd saja
+                    if (nextPos >= sEnd || (sEnd - nextPos) < minValidSrc) {
+                        nextPos = sEnd
+                    }
+                    expanded.add(Triple(pos, nextPos, if (firstSub) diff else 0.5f))
+                    pos = nextPos
+                    firstSub = false
+                }
+            }
+        }
+
+        return expanded.mapIndexed { outIdx, (subStart, subEnd, diff) ->
+            val probeT = subStart + min(0.12, (subEnd - subStart) * 0.25)
+            val bestSample = samples.minByOrNull { abs(it.timeSec - probeT) }
+                ?: samples.firstOrNull { it.timeSec >= subStart }
+            DetectedScene(
+                index = outIdx,
+                startSec = subStart,
+                endSec = subEnd,
+                thumb = bestSample?.thumb,
+                diffScore = diff,
+                selected = true
+            )
+        }
     }
 }
