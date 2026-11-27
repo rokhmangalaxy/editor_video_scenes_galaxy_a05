@@ -1,6 +1,7 @@
 package com.pribadi.editorvideo.ui
 
 import androidx.annotation.DrawableRes
+import androidx.compose.foundation.Clip as FoundationClip
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -624,7 +625,7 @@ fun ThemeLightDarkToggle(
         // Panel untuk tombol gelap
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
+                .FoundationClip(RoundedCornerShape(8.dp))
                 .background(if (currentTheme.isLight) Ev.Ghost else Ev.Panel)
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
                 .clickable { onToggle() }
@@ -647,7 +648,7 @@ fun ThemeLightDarkToggle(
         // Panel untuk tombol terang
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
+                .FoundationClip(RoundedCornerShape(8.dp))
                 .background(if (currentTheme.isLight) Ev.Accent else Ev.Ghost)
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
                 .clickable { onToggle() }
