@@ -596,7 +596,7 @@ object AiPlanner {
                 segDurs = slots,
                 targetTotalSec = total,
                 autoMergeDefault = false,
-                note = adj.blockReason,
+                note = adj.blockReason ?: "",
                 genDurs = null,
                 blockReason = adj.blockReason
             )

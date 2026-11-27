@@ -2304,7 +2304,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val plan = currentAiExecutionPlan()
         if (plan.blockReason != null) {
             toast(plan.blockReason)
-            aiActiveTab = AiTab.PLAN
+            aiActiveTab = AiTab.CREATE
             return
         }
         for (i in 1..plan.count) {
