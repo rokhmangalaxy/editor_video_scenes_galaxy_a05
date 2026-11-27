@@ -75,12 +75,9 @@ jobs:
         with:
           gradle-version: '8.7'
           cache-provider: basic
+          cache-disabled: true
           add-job-summary: never
           validate-wrappers: false
-          # Invalidasi cache Gradle & Compose compiler untuk menghindari error tersembunyi dari cache rusak
-          gradle-properties: |
-            org.gradle.build.cache.enabled=false
-            kotlin.compiler.execution.strategy=in-process
 
       - name: Terima lisensi dan siapkan Android SDK
         run: |
