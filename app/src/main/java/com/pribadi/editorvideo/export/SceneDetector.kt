@@ -29,6 +29,22 @@ data class SceneScanResult(
     val samples: List<SceneSample>
 )
 
+/** Mode penggunaan Tanda (Markers) di dalam Deteksi Scene. */
+enum class SceneMarkerMode(val label: String, val sub: String) {
+    AUTO_ONLY(
+        "Otomatis Visual",
+        "Mendeteksi pergantian scene berdasarkan perubahan gambar saja."
+    ),
+    AUTO_PLUS_MARKERS(
+        "Otomatis + Tanda",
+        "Menggabungkan titik Tanda (📍) manual dengan deteksi scene otomatis."
+    ),
+    MARKERS_ONLY(
+        "Split by Tanda",
+        "Memecah scene murni berdasarkan titik Tanda (📍) yang sudah kamu pasang."
+    )
+}
+
 /** Satu bagian scene yang terdeteksi untuk ditampilkan di Grid Preview Deteksi. */
 data class DetectedScene(
     val index: Int,
@@ -36,7 +52,8 @@ data class DetectedScene(
     val endSec: Double,
     val thumb: Bitmap?,
     val diffScore: Float,
-    val selected: Boolean = true
+    val selected: Boolean = true,
+    val fromMarker: Boolean = false
 ) {
     val durationSec: Double get() = max(0.0, endSec - startSec)
 }
@@ -208,21 +225,58 @@ object SceneDetector {
         scan: SceneScanResult,
         sensitivity: Float,
         minSceneDurSec: Double,
-        maxSceneDurSec: Double? = null
+        maxSceneDurSec: Double? = null,
+        markerMode: SceneMarkerMode = SceneMarkerMode.AUTO_ONLY,
+        manualMarkerSrcSecs: List<Double> = emptyList()
     ): List<DetectedScene> {
         val samples = scan.samples
         val sp = max(0.1, scan.speed)
+        val minValidSrc = 0.1 * sp
         val minDur = minSceneDurSec.coerceIn(0.1, 10.0) * sp
         val maxDurSrc: Double? = maxSceneDurSec?.let {
             max(minSceneDurSec.coerceIn(0.1, 10.0), it.coerceIn(0.5, 60.0)) * sp
         }
 
-        if (samples.isEmpty()) {
+        val validManualCuts = if (markerMode != SceneMarkerMode.AUTO_ONLY) {
+            manualMarkerSrcSecs
+                .filter { it >= scan.startSec + minValidSrc && it <= scan.endSec - minValidSrc }
+                .sorted()
+                .fold(ArrayList<Double>()) { acc, v ->
+                    if (acc.isEmpty() || v - acc.last() >= minValidSrc) acc.add(v)
+                    acc
+                }
+        } else {
+            emptyList()
+        }
+
+        // Mode murni "Split by Tanda": titik potong langsung mengikuti seluruh Tanda manual!
+        if (markerMode == SceneMarkerMode.MARKERS_ONLY) {
+            val rawMarkerPairs = ArrayList<Triple<Double, Double, Float>>(validManualCuts.size + 1)
+            var curS = scan.startSec
+            for (idx in 0..validManualCuts.size) {
+                val curE = if (idx < validManualCuts.size) validManualCuts[idx] else scan.endSec
+                if (curE - curS >= minValidSrc * 0.5) {
+                    rawMarkerPairs.add(Triple(curS, curE, 2f)) // 2f menandakan berasal dari Tanda
+                }
+                curS = curE
+            }
+            if (rawMarkerPairs.isEmpty()) {
+                rawMarkerPairs.add(Triple(scan.startSec, scan.endSec, 1f))
+            }
+            return splitByMaxIfNeeded(
+                rawPairs = rawMarkerPairs,
+                samples = samples,
+                maxDurSrc = maxDurSrc,
+                minValidSrc = minValidSrc
+            )
+        }
+
+        if (samples.isEmpty() && validManualCuts.isEmpty()) {
             return splitByMaxIfNeeded(
                 rawPairs = listOf(Triple(scan.startSec, scan.endSec, 1f)),
                 samples = emptyList(),
                 maxDurSrc = maxDurSrc,
-                minValidSrc = 0.1 * sp
+                minValidSrc = minValidSrc
             )
         }
 
@@ -266,6 +320,19 @@ object SceneDetector {
             cuts.addAll(picked)
         }
 
+        // Bila mode AUTO_PLUS_MARKERS aktif, sisipkan semua Tanda manual sebagai titik potong wajib
+        if (validManualCuts.isNotEmpty()) {
+            val filteredAuto = cuts.filter { (autoT, _) ->
+                validManualCuts.all { mT -> abs(autoT - mT) >= minValidSrc }
+            }
+            cuts.clear()
+            cuts.addAll(filteredAuto)
+            for (mT in validManualCuts) {
+                cuts.add(mT to 2f)
+            }
+            cuts.sortBy { it.first }
+        }
+
         val naturalRanges = ArrayList<Triple<Double, Double, Float>>(cuts.size + 1)
         var curStart = scan.startSec
         var curDiff = 1f
@@ -282,7 +349,7 @@ object SceneDetector {
             rawPairs = naturalRanges,
             samples = samples,
             maxDurSrc = maxDurSrc,
-            minValidSrc = 0.1 * sp
+            minValidSrc = minValidSrc
         )
     }
 
@@ -313,6 +380,8 @@ object SceneDetector {
         }
 
         return expanded.mapIndexed { outIdx, (subStart, subEnd, diff) ->
+            val isFromMarker = diff > 1.5f
+            val normDiff = if (isFromMarker) 1f else diff
             val probeT = subStart + min(0.12, (subEnd - subStart) * 0.25)
             val bestSample = samples.minByOrNull { abs(it.timeSec - probeT) }
                 ?: samples.firstOrNull { it.timeSec >= subStart }
@@ -321,8 +390,9 @@ object SceneDetector {
                 startSec = subStart,
                 endSec = subEnd,
                 thumb = bestSample?.thumb,
-                diffScore = diff,
-                selected = true
+                diffScore = normDiff,
+                selected = true,
+                fromMarker = isFromMarker
             )
         }
     }

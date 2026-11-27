@@ -486,6 +486,14 @@ fun VideoGridStage(
                                 vm.openMultiplayerCollage()
                             }
                             if (useSegGrid) {
+                                if (selCount >= 2) {
+                                    MultiBarBtn(
+                                        label = "🔗 Gabung",
+                                        primary = true
+                                    ) {
+                                        vm.mergeGridSelectedSegments()
+                                    }
+                                }
                                 MultiBarBtn(
                                     label = "🏷 Tag",
                                     primary = false

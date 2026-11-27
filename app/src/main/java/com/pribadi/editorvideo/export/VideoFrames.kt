@@ -25,12 +25,20 @@ object VideoFrames {
      * Memastikan bitmap berorientasi tegak sesuai tampilan video (memperhitungkan rotasi metadata).
      */
     fun upright(bmp: Bitmap, info: VideoInfo): Bitmap {
-        if (info.rotation % 180 != 0) {
+        val rot = ((info.rotation % 360) + 360) % 360
+        if (rot == 180) {
+            val m = Matrix()
+            m.postRotate(180f)
+            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+            if (rotated !== bmp) bmp.recycle()
+            return rotated
+        }
+        if (rot % 180 != 0) {
             val wantPortrait = info.dispH > info.dispW
             val isPortrait = bmp.height > bmp.width
             if (wantPortrait != isPortrait) {
                 val m = Matrix()
-                m.postRotate(info.rotation.toFloat())
+                m.postRotate(rot.toFloat())
                 val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
                 if (rotated !== bmp) bmp.recycle()
                 return rotated

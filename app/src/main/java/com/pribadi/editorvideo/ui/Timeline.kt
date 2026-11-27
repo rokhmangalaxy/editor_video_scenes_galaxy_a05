@@ -115,6 +115,17 @@ private class TlPaints(val d: Float, palette: EvPalette) {
     }
     val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = palette.muted.copy(alpha = 0.65f).toArgb() }
     val head = Paint().apply { color = 0xFFFFFFFF.toInt() }
+    val markerPin = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFACC15.toInt() }
+    val markerLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xCCFACC15.toInt()
+        strokeWidth = 1.6f * d
+    }
+    val markerLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF111115.toInt()
+        textSize = 8f * d
+        typeface = Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.CENTER
+    }
     val curText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = palette.text.toArgb()
         textSize = 11.5f * d
@@ -550,6 +561,29 @@ private fun drawTimeline(
     // handle trim pada potongan terpilih
     val edges = selEdges(vm, cx, ppsPx)
     drawHandles(cv, p, edges[0], edges[1])
+
+    // Tanda (Markers) kuning di atas track & garis penanda vertikal
+    val projectedMarkers = vm.timelineProjectedMarkers()
+    if (projectedMarkers.isNotEmpty()) {
+        val pinTop = 4f * d
+        val pinBottom = 15.5f * d
+        val segBottom = (SEG_TOP + SEG_H) * d
+        for (pm in projectedMarkers) {
+            val mx = cx + ((pm.timelineSec - t) * ppsPx).toFloat()
+            if (mx < -12f * d || mx > w + 12f * d) continue
+            // Garis vertikal tipis melintasi potongan video
+            cv.drawLine(mx, pinBottom, mx, segBottom, p.markerLine)
+            // Pin / bendera di atas potongan
+            p.rect.set(mx - 6.5f * d, pinTop, mx + 6.5f * d, pinBottom)
+            cv.drawRoundRect(p.rect, 3f * d, 3f * d, p.markerPin)
+            p.tri.reset()
+            p.tri.moveTo(mx - 3f * d, pinBottom)
+            p.tri.lineTo(mx + 3f * d, pinBottom)
+            p.tri.lineTo(mx, pinBottom + 3.5f * d)
+            p.tri.close()
+            cv.drawPath(p.tri, p.markerPin)
+        }
+    }
 
     // playhead tetap di tengah
     cv.drawRect(cx - 1f * d, HEAD_TOP * d, cx + 1f * d, h - HEAD_BOTTOM_INSET * d, p.head)

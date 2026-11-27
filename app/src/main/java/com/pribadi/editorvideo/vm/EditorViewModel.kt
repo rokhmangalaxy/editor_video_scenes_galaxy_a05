@@ -22,8 +22,10 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import com.pribadi.editorvideo.ai.AiCandidateBatch
 import com.pribadi.editorvideo.ai.AiExecutionPlan
 import com.pribadi.editorvideo.ai.AiGeneratedSegment
+import com.pribadi.editorvideo.ai.AiGenerationMode
 import com.pribadi.editorvideo.ai.AiInsertPreset
 import com.pribadi.editorvideo.ai.AiMultiStrategy
 import com.pribadi.editorvideo.ai.AiPlanner
@@ -39,6 +41,7 @@ import com.pribadi.editorvideo.ai.DownloadedAiVideo
 import com.pribadi.editorvideo.ai.SingleTaskRequest
 import com.pribadi.editorvideo.ai.VideoGenerationTimeoutException
 import com.pribadi.editorvideo.ai.WanStudioClient
+import com.pribadi.editorvideo.ai.WorkerSyncStatus
 import com.pribadi.editorvideo.ai.WorkflowWaitTimeoutException
 import com.pribadi.editorvideo.export.ByTagExportStyle
 import com.pribadi.editorvideo.export.DetectedScene
@@ -55,12 +58,14 @@ import com.pribadi.editorvideo.export.ExportState
 import com.pribadi.editorvideo.export.MediaStoreSaver
 import com.pribadi.editorvideo.export.ReverseVideoRenderer
 import com.pribadi.editorvideo.export.SceneDetector
+import com.pribadi.editorvideo.export.SceneMarkerMode
 import com.pribadi.editorvideo.export.SceneScanResult
 import com.pribadi.editorvideo.export.SourceSpec
 import com.pribadi.editorvideo.export.VideoFrames
 import com.pribadi.editorvideo.export.VideoProbe
 import com.pribadi.editorvideo.model.EditorCore
 import com.pribadi.editorvideo.model.Fmt
+import com.pribadi.editorvideo.model.ProjectedMarker
 import com.pribadi.editorvideo.model.Rules
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.TextOverlayConfig
@@ -90,7 +95,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Alat di bar bawah. */
-enum class Tool { SPLIT, SCENE_DETECT, AI, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE }
+enum class Tool { SPLIT, MERGE, MARKER, SCENE_DETECT, AI, SPEED, TEXT, REVERSE, DUP, DEL, ROTATE, MIRROR, FREEZE }
 
 /** Kategori catatan (Bug atau Pengembangan). */
 enum class NoteType(val label: String) {
@@ -169,6 +174,7 @@ data class ExportInfo(
     val canStart: Boolean = true,
     val hasMixedSpecs: Boolean = false,
     val mixedSpecsSummary: String = "",
+    val allSourcesSummary: String = "",
     val supportsPerClipNative: Boolean = false
 )
 
@@ -252,6 +258,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var sourceCount by mutableIntStateOf(0)
         private set
+    var canMergeScene by mutableStateOf(false)
+        private set
+    var markerCount by mutableIntStateOf(0)
+        private set
+    var markerNearCurrentPlayhead by mutableStateOf(false)
+        private set
     var hasVideo by mutableStateOf(false)
         private set
     var info by mutableStateOf<VideoInfo?>(null)
@@ -322,7 +334,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var aiActiveTab by mutableStateOf(AiTab.CREATE)
     var aiWorkMode by mutableStateOf(AiWorkMode.INSERT)
         private set
-    var aiInsertPreset by mutableStateOf(AiInsertPreset.THREE_BY_35)
+    var aiGenMode by mutableStateOf(AiGenerationMode.SINGLE)
+        private set
+    var aiInsertSingleDurSec by mutableDoubleStateOf(10.0)
+        private set
+    var aiInsertPreset by mutableStateOf(AiInsertPreset.SINGLE_10)
         private set
     var aiMultiStrategy by mutableStateOf(AiMultiStrategy.CHAIN)
     var aiTimelineJoinStyle by mutableStateOf(AiTimelineJoinStyle.SEPARATE)
@@ -406,7 +422,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var aiRunJob: Job? = null
 
-    // Tab Runner: Koneksi Firebase & GitHub + Checklist Repo Runner Clipboards
+    // Sistem Kandidat Hasil AI (bisa generate berkali-kali & tambah kandidat untuk memilih hasil terbaik)
+    var aiCandidates by mutableStateOf<List<AiCandidateBatch>>(emptyList())
+        private set
+    var aiActiveCandidateIdx by mutableIntStateOf(0)
+        private set
+    private var aiNextCandidateNumber: Int = 1
+
+    // Tab Runner: Koneksi Firebase & GitHub + Sinkronisasi Worker v3 + Checklist Repo Runner Clipboards
     var aiRunnerConfig by mutableStateOf(AiRunnerConfig())
         private set
     var aiTestingConnection by mutableStateOf(false)
@@ -415,13 +438,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var aiConnectionTestOk by mutableStateOf(false)
         private set
+    var aiWorkerSyncStatus by mutableStateOf(WorkerSyncStatus.UNKNOWN)
+        private set
+    var aiWorkerSyncMessage by mutableStateOf<String?>(null)
+        private set
+    var aiSyncingWorker by mutableStateOf(false)
+        private set
     var aiCopiedRunnerIds by mutableStateOf<Set<String>>(emptySet())
         private set
 
     private var activeTextureViewRef: WeakReference<TextureView>? = null
     private var renderedFrameSeq by mutableIntStateOf(0)
 
-    // --- State Deteksi Scene + Grid Preview Deteksi ---
+    // --- State Deteksi Scene + Integrasi Tanda (Markers) + Grid Preview Deteksi ---
     var sceneScanning by mutableStateOf(false)
         private set
     var sceneScanProgress by mutableFloatStateOf(0f)
@@ -433,6 +462,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var sceneMaxDurEnabled by mutableStateOf(false)
         private set
     var sceneMaxDur by mutableDoubleStateOf(5.0)
+        private set
+    var sceneMarkerMode by mutableStateOf(SceneMarkerMode.AUTO_PLUS_MARKERS)
         private set
     var sceneScanCount by mutableIntStateOf(0)
         private set
@@ -559,6 +590,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         selRevMode = core.selRevMode
         segCount = core.segs.size
         sourceCount = sources.size
+        canMergeScene = core.canMergeFocusScene
+        markerCount = core.markers.size
+        markerNearCurrentPlayhead = core.markerNearPlayhead(0.08) != null
         val activeSrc = core.segs.getOrNull(core.sel)?.src ?: 0
         info = if (hasVideo && sources.isNotEmpty()) {
             sources.getOrElse(activeSrc) { sources.first() }.info
@@ -1022,6 +1056,73 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast(msg)
     }
 
+    /** Menggabungkan 2+ scene bersebelahan yang dipilih di Mode Grid tanpa render ulang. */
+    fun mergeGridSelectedSegments() {
+        val segTargets = gridSelectedKeys.filter { it in core.segs.indices }.toSet()
+        if (segTargets.size < 2) {
+            toast("Pilih minimal 2 scene bersebelahan untuk digabung")
+            return
+        }
+        val msg = core.mergeSegmentsGroup(segTargets)
+        clearGridMultiSelect()
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit(forceExact = true)
+        bump()
+        toast(msg)
+    }
+
+    // ------------------------------------------------------------------ kontrol Tanda (Markers) & Split by Tanda
+
+    fun timelineProjectedMarkers(): List<ProjectedMarker> = core.projectedMarkers()
+
+    fun markersInActiveSceneCount(): Int =
+        if (hasVideo && core.sel in core.segs.indices) core.markerCutSecsInSegment(core.sel).size else 0
+
+    fun toggleMarkerAtPlayhead() {
+        val msg = core.toggleMarkerAtPlayhead()
+        refreshDerived()
+        bump()
+        toast(msg)
+    }
+
+    fun jumpToMarker(forward: Boolean) {
+        val hit = core.jumpToAdjacentMarker(forward)
+        if (hit == null) {
+            toast("Belum ada tanda di timeline")
+            return
+        }
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit(forceExact = true)
+        bump()
+        toast("📍 ${hit.label.ifEmpty { "Tanda" }} · ${Fmt.time(hit.timelineSec)}")
+    }
+
+    fun clearAllMarkers() {
+        val msg = core.clearAllMarkers()
+        refreshDerived()
+        if (sceneDetectSheet && currentScanResult != null) {
+            rebuildDetectedScenesFromCache()
+        }
+        bump()
+        toast(msg)
+    }
+
+    fun splitByMarkersNow(onlyActiveClip: Boolean) {
+        val targetIdx = if (onlyActiveClip) core.sel.coerceIn(0, max(0, core.segs.lastIndex)) else null
+        val msg = core.splitByMarkers(onlySegIdx = targetIdx, clearUsedMarkers = false)
+        if (onlyActiveClip) {
+            sceneDetectSheet = false
+            currentScanResult = null
+        }
+        refreshDerived()
+        setSeekFast(false)
+        seekVideoToEdit(forceExact = true)
+        bump()
+        toast(msg)
+    }
+
     fun splitCurrentClipForGrid(parts: Int) {
         if (!hasVideo || core.segs.isEmpty()) return
         val idx = selIndex.coerceIn(0, core.segs.size - 1)
@@ -1462,14 +1563,43 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** memilih paket durasi Mode Sisipkan (3×3.5 dtk, 2×5 dtk, 7 dtk, 10 dtk). */
+    fun selectAiGenMode(mode: AiGenerationMode) {
+        aiGenMode = mode
+        val plan = currentAiExecutionPlan()
+        if (plan.count <= 1) {
+            aiPerSegmentPromptMode = false
+            aiActivePromptSegSlot = 0
+            aiPrompt = aiSegmentPrompts[0]
+        } else if (aiActivePromptSegSlot > plan.count) {
+            aiActivePromptSegSlot = 1
+            aiPrompt = aiSegmentPrompts[1]
+        }
+        bump()
+    }
+
+    fun updateAiInsertSingleDur(sec: Double) {
+        aiInsertSingleDurSec = clampD(
+            Math.round(sec * 10.0) / 10.0,
+            AiPlanner.ZEROGPU_MIN_REPLACE_SEC,
+            AiPlanner.MAX_WORKFLOW_SEC
+        )
+        bump()
+    }
+
     fun selectAiInsertPreset(preset: AiInsertPreset) {
         aiInsertPreset = preset
+        // Bila memilih preset 1 Video, otomatis selaraskan durasi single; bila memilih multi-segmen, aktifkan MULTI_SEGMENT
+        if (preset.segDurs.size == 1) {
+            aiInsertSingleDurSec = preset.segDurs.first()
+        } else {
+            aiGenMode = AiGenerationMode.MULTI_SEGMENT
+        }
         aiTimelineJoinStyle = if (preset.autoMergeDefault) {
             AiTimelineJoinStyle.MERGED
         } else {
             AiTimelineJoinStyle.SEPARATE
         }
-        val segCount = preset.segDurs.size
+        val segCount = currentAiExecutionPlan().count
         if (segCount <= 1) {
             aiPerSegmentPromptMode = false
             aiActivePromptSegSlot = 0
@@ -1491,9 +1621,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun currentAiExecutionPlan(): AiExecutionPlan =
         if (aiWorkMode == AiWorkMode.INSERT) {
-            AiPlanner.planInsert(aiInsertPreset)
+            AiPlanner.planInsert(aiInsertPreset, aiGenMode, aiInsertSingleDurSec)
         } else {
-            AiPlanner.planReplace(aiReplaceTargetDurSec, selectedSceneDurationSec())
+            AiPlanner.planReplace(aiReplaceTargetDurSec, selectedSceneDurationSec(), aiGenMode)
         }
 
     // --- Pengaturan Prompt Tunggal / Per-Segmen (Segmen 1..3) ---
@@ -1754,17 +1884,46 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         aiConnectionTestMessage = "Menghubungi Firebase & GitHub API…"
         viewModelScope.launch {
             val res = WanStudioClient.testConnection(aiRunnerConfig)
+            val (wStat, wMsg) = if (res.isSuccess) {
+                WanStudioClient.ensureLatestWorkerOnGitHub(aiRunnerConfig, attemptAutoPush = true)
+            } else {
+                WorkerSyncStatus.UNKNOWN to null
+            }
             aiTestingConnection = false
+            aiWorkerSyncStatus = wStat
+            aiWorkerSyncMessage = wMsg
             res.fold(
                 onSuccess = { msg ->
                     aiConnectionTestOk = true
-                    aiConnectionTestMessage = msg
+                    aiConnectionTestMessage = if (!wMsg.isNullOrEmpty()) "$msg\n$wMsg" else msg
                     toast("Tes koneksi berhasil!")
                 },
                 onFailure = { err ->
                     aiConnectionTestOk = false
                     aiConnectionTestMessage = err.message ?: "Koneksi gagal."
                     toast("Tes koneksi gagal")
+                }
+            )
+        }
+    }
+
+    /** Memeriksa & memperbarui otomatis script firebase_worker.py v3 ke repo GitHub pengguna. */
+    fun syncRunnerWorkerToGitHub() {
+        if (aiSyncingWorker) return
+        saveAiRunnerConfig()
+        aiSyncingWorker = true
+        aiWorkerSyncStatus = WorkerSyncStatus.CHECKING
+        aiWorkerSyncMessage = "Memeriksa & menyinkronkan firebase_worker.py v3 ke repo GitHub…"
+        viewModelScope.launch {
+            val (st, msg) = WanStudioClient.ensureLatestWorkerOnGitHub(aiRunnerConfig, attemptAutoPush = true)
+            aiSyncingWorker = false
+            aiWorkerSyncStatus = st
+            aiWorkerSyncMessage = msg
+            toast(
+                when (st) {
+                    WorkerSyncStatus.UP_TO_DATE -> "Worker GitHub sudah v3 terbaru ✓"
+                    WorkerSyncStatus.AUTO_UPDATED -> "firebase_worker.py berhasil diupdate ke v3 ✓"
+                    else -> "Salin firebase_worker.py v3 dari bawah"
                 }
             )
         }
@@ -1783,7 +1942,80 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         toast("Checklist 0/4 direset")
     }
 
-    // --- Eksekusi Generasi AI, Dual Timeout (3m Workflow + 3m/Video) & Multi-Hasil ---
+    // --- Sistem Kandidat Hasil AI (Generate Berkali-kali & Pilih Hasil Terbaik) ---
+
+    fun selectAiCandidate(index: Int) {
+        if (index !in aiCandidates.indices) return
+        aiActiveCandidateIdx = index
+        val cand = aiCandidates[index]
+        aiGeneratedSegments = cand.segments
+        aiSnapshotWorkMode = cand.workMode
+        aiSnapshotPlan = cand.plan
+        aiSnapshotInsertSeekSec = cand.snapshotInsertSeekSec
+        aiSnapshotReplaceSegIdx = cand.snapshotReplaceSegIdx
+        aiPreviewResultIndex = 0
+        if (cand.plan.autoMergeDefault) {
+            aiTimelineJoinStyle = AiTimelineJoinStyle.MERGED
+        }
+        bump()
+    }
+
+    fun toggleFavoriteAiCandidate(index: Int) {
+        if (index !in aiCandidates.indices) return
+        val cur = aiCandidates[index]
+        val nextList = aiCandidates.toMutableList()
+        nextList[index] = cur.copy(isFavorite = !cur.isFavorite)
+        aiCandidates = nextList
+        toast(if (!cur.isFavorite) "⭐ Kandidat #${cur.candidateNumber} ditandai Terbaik" else "Tanda Terbaik dilepas")
+    }
+
+    fun deleteAiCandidate(index: Int) {
+        if (aiIsRunning || index !in aiCandidates.indices) return
+        val removed = aiCandidates[index]
+        val nextList = aiCandidates.toMutableList().also { it.removeAt(index) }
+        aiCandidates = nextList
+        if (nextList.isEmpty()) {
+            aiActiveCandidateIdx = 0
+            aiGeneratedSegments = emptyList()
+            aiPreviewResultIndex = 0
+        } else {
+            val nextIdx = index.coerceIn(0, nextList.lastIndex)
+            selectAiCandidate(nextIdx)
+        }
+        toast("Kandidat #${removed.candidateNumber} dihapus")
+    }
+
+    fun clearAllAiCandidates() {
+        if (aiIsRunning) return
+        aiCandidates = emptyList()
+        aiActiveCandidateIdx = 0
+        aiGeneratedSegments = emptyList()
+        aiPreviewResultIndex = 0
+        toast("Daftar kandidat dibersihkan")
+    }
+
+    private fun syncActiveCandidateInPool(updatedSegs: List<AiGeneratedSegment>) {
+        if (aiActiveCandidateIdx !in aiCandidates.indices) return
+        val nextList = aiCandidates.toMutableList()
+        nextList[aiActiveCandidateIdx] = nextList[aiActiveCandidateIdx].copy(segments = updatedSegs)
+        aiCandidates = nextList
+    }
+
+    private fun upsertCandidateById(batch: AiCandidateBatch) {
+        val nextList = aiCandidates.toMutableList()
+        val existingIdx = nextList.indexOfFirst { it.id == batch.id }
+        if (existingIdx >= 0) {
+            nextList[existingIdx] = batch
+            aiCandidates = nextList
+            aiActiveCandidateIdx = existingIdx
+        } else {
+            nextList.add(batch)
+            aiCandidates = nextList
+            aiActiveCandidateIdx = nextList.lastIndex
+        }
+    }
+
+    // --- Eksekusi Generasi AI, Kandidat Baru, Mode Tunggal, Berantai & Dual Timeout ---
 
     fun onAiGenerateClicked() {
         startAiGeneration()
@@ -1830,14 +2062,29 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
         saveAiRunnerConfig()
 
-        // Snapshot target posisi agar bila pengguna menggeser timeline selama menunggu, titik sisip tetap akurat
-        aiSnapshotWorkMode = aiWorkMode
-        aiSnapshotInsertSeekSec = aiSeekTimeSec
-        aiSnapshotReplaceSegIdx = core.sel.coerceIn(0, core.segs.lastIndex)
+        val snapMode = aiWorkMode
+        val snapGenMode = aiGenMode
+        val snapInsertSeekSec = aiSeekTimeSec
+        val snapReplaceSegIdx = core.sel.coerceIn(0, core.segs.lastIndex)
+        aiSnapshotWorkMode = snapMode
+        aiSnapshotInsertSeekSec = snapInsertSeekSec
+        aiSnapshotReplaceSegIdx = snapReplaceSegIdx
         aiSnapshotPlan = plan
         if (plan.autoMergeDefault) {
             aiTimelineJoinStyle = AiTimelineJoinStyle.MERGED
         }
+
+        // Buat slot Kandidat Baru tanpa menghapus kandidat-kandidat yang sudah ada sebelumnya!
+        val candNum = aiNextCandidateNumber++
+        val candId = "cand_${System.currentTimeMillis()}_$candNum"
+        val timeLabel = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        val modeShort = if (snapMode == AiWorkMode.REPLACE_SCENE) "Replace" else "Sisip"
+        val durShort = if (plan.count == 1) {
+            "1×${Fmt.one(plan.targetTotalSec)}s"
+        } else {
+            "${plan.count}seg (${Fmt.one(plan.targetTotalSec)}s)"
+        }
+        val summaryLbl = "$modeShort · $durShort · ${aiSpaceOption.shortName}"
 
         aiGeneratedSegments = emptyList()
         aiPreviewResultIndex = 0
@@ -1846,11 +2093,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         aiTotalVideosInRun = plan.count
         aiCurrentVideoSec = 0
         aiRunPhase = AiRunPhase.UPLOADING
-        aiRunStatusDetail = "Menyiapkan tugas AI (${plan.count} video)…"
+        aiRunStatusDetail = "Menyiapkan Kandidat #$candNum (${plan.count} video)…"
         aiActiveTab = AiTab.STATUS
 
         val useChain = plan.count >= 2 &&
-            (aiWorkMode == AiWorkMode.REPLACE_SCENE ||
+            (snapMode == AiWorkMode.REPLACE_SCENE ||
                 aiInsertPreset == AiInsertPreset.FULL_10 ||
                 aiMultiStrategy == AiMultiStrategy.CHAIN)
         val cfgSnap = aiRunnerConfig
@@ -1859,71 +2106,152 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val safetySnap = aiSafetyChecker
         val promptsSnap = (1..plan.count).map { promptForSegmentOneBased(it) }
 
+        fun publishCandidateProgress(segsNow: List<AiGeneratedSegment>) {
+            aiGeneratedSegments = segsNow
+            if (segsNow.isNotEmpty()) {
+                upsertCandidateById(
+                    AiCandidateBatch(
+                        id = candId,
+                        candidateNumber = candNum,
+                        createdAtLabel = timeLabel,
+                        workMode = snapMode,
+                        genMode = snapGenMode,
+                        spaceLabel = spaceSnap.shortName,
+                        summaryLabel = summaryLbl,
+                        plan = plan,
+                        snapshotInsertSeekSec = snapInsertSeekSec,
+                        snapshotReplaceSegIdx = snapReplaceSegIdx,
+                        segments = segsNow
+                    )
+                )
+            }
+        }
+
         aiRunJob?.cancel()
         aiRunJob = viewModelScope.launch {
             val ctx = getApplication<Application>()
             val collected = ArrayList<AiGeneratedSegment>()
             try {
-                // Semua segmen (maks 10.0 dtk, atau maks 10.5 dtk khusus 3 × 3.5 dtk) dikirim dalam
-                // 1 workflow tunggal. Begitu Video #1 berhasil, Video berikutnya otomatis digenerate
-                // berurutan di dalam workflow yang sama, sambil Video #1 langsung muncul di Tab Status!
-                val batchReqs = plan.segDurs.mapIndexed { idx, dur ->
-                    val isLastSeg = idx == plan.segDurs.lastIndex
-                    val segLastBmp = if (!useChain) {
-                        finalTargetLastBmp
-                    } else if (isLastSeg) {
-                        finalTargetLastBmp
-                    } else {
-                        null
-                    }
-                    SingleTaskRequest(
-                        taskKey = "task-${idx + 1}",
-                        order = idx + 1,
-                        space = spaceSnap,
-                        prompt = promptsSnap[idx],
-                        durationSec = dur,
-                        safeMode = safeSnap,
-                        enableSafetyChecker = safetySnap,
-                        firstBmp = initialFirstBmp,
-                        lastBmp = segLastBmp,
-                        chainFromPrev = useChain && idx > 0
-                    )
-                }
-
-                val outs = WanStudioClient.executeProjectBatch(
-                    context = ctx,
+                // Pastikan firebase_worker.py di repo GitHub sudah v3 (mendukung Mode Tunggal 10s & Berantai 1-Workflow)
+                val (workerSt, workerMsg) = WanStudioClient.ensureLatestWorkerOnGitHub(
                     cfg = cfgSnap,
-                    tasks = batchReqs,
-                    videoIndexOffset = 0,
-                    overallTotalVideos = plan.count,
-                    onSegmentReady = { dl ->
-                        val segObj = dl.toGeneratedSegment(dl.order)
-                        launch(Dispatchers.Main) {
-                            if (collected.none { it.segNumber == segObj.segNumber }) {
-                                collected.add(segObj)
-                                collected.sortBy { it.segNumber }
-                                aiGeneratedSegments = collected.toList()
+                    attemptAutoPush = true
+                )
+                aiWorkerSyncStatus = workerSt
+                aiWorkerSyncMessage = workerMsg
+                val remoteWorkerSupportsV3 =
+                    workerSt == WorkerSyncStatus.UP_TO_DATE || workerSt == WorkerSyncStatus.AUTO_UPDATED
+
+                if (useChain && !remoteWorkerSupportsV3) {
+                    // Fallback Cerdas bila token GitHub pengguna read-only (belum update firebase_worker.py ke v3):
+                    // Jalankan berantai dengan mengekstrak langsung frame PALING AKHIR dari MP4 hasil AI #1 di Android
+                    // untuk dijadikan input_image AI #2 — menjamin 100% TIDAK memakai frame dari scene asli!
+                    var rollingFirstBmp: Bitmap = initialFirstBmp
+                    for (idx in plan.segDurs.indices) {
+                        val segNum = idx + 1
+                        val isLastSeg = idx == plan.segDurs.lastIndex
+                        val segLastBmp = if (isLastSeg) finalTargetLastBmp else null
+                        val singleReq = SingleTaskRequest(
+                            taskKey = "task-1",
+                            order = 1,
+                            space = spaceSnap,
+                            prompt = promptsSnap[idx],
+                            durationSec = plan.segDurs[idx],
+                            safeMode = safeSnap,
+                            enableSafetyChecker = safetySnap,
+                            firstBmp = rollingFirstBmp,
+                            lastBmp = segLastBmp,
+                            chainFromPrev = false
+                        )
+                        val outs = WanStudioClient.executeProjectBatch(
+                            context = ctx,
+                            cfg = cfgSnap,
+                            tasks = listOf(singleReq),
+                            videoIndexOffset = idx,
+                            overallTotalVideos = plan.count
+                        ) { tick ->
+                            launch(Dispatchers.Main) { applyProgressTick(tick) }
+                        }
+                        val dl = outs.first()
+                        val segObj = dl.toGeneratedSegment(segNum)
+                        collected.add(segObj)
+                        publishCandidateProgress(collected.toList())
+
+                        if (!isLastSeg) {
+                            val nextStart = withContext(Dispatchers.IO) {
+                                WanStudioClient.extractLastFrameOfMp4(ctx, dl.file, dl.info)
+                            }
+                            if (nextStart != null) {
+                                rollingFirstBmp = nextStart
                             }
                         }
                     }
-                ) { tick ->
-                    launch(Dispatchers.Main) { applyProgressTick(tick) }
-                }
-
-                for (dl in outs) {
-                    if (collected.none { it.segNumber == dl.order }) {
-                        collected.add(dl.toGeneratedSegment(dl.order))
+                } else {
+                    // 1 Workflow Tunggal (maks 10.0 dtk, atau maks 10.5 dtk khusus 3 × 3.5 dtk):
+                    // - Mode Tunggal: 1 video utuh langsung (mis. 10.0 dtk langsung 1 MP4)
+                    // - Mode Berantai v3: begitu Video #1 selesai, firebase_worker.py mengekstrak frame paling akhir
+                    //   hasil AI #1 sebagai input Video #2 tepat di dalam workflow yang sama!
+                    val batchReqs = plan.segDurs.mapIndexed { idx, dur ->
+                        val isLastSeg = idx == plan.segDurs.lastIndex
+                        val segLastBmp = if (!useChain) {
+                            finalTargetLastBmp
+                        } else if (isLastSeg) {
+                            finalTargetLastBmp
+                        } else {
+                            null
+                        }
+                        SingleTaskRequest(
+                            taskKey = "task-${idx + 1}",
+                            order = idx + 1,
+                            space = spaceSnap,
+                            prompt = promptsSnap[idx],
+                            durationSec = dur,
+                            safeMode = safeSnap,
+                            enableSafetyChecker = safetySnap,
+                            firstBmp = initialFirstBmp,
+                            lastBmp = segLastBmp,
+                            chainFromPrev = useChain && idx > 0
+                        )
                     }
-                }
-                collected.sortBy { it.segNumber }
 
-                aiGeneratedSegments = collected.toList()
+                    val outs = WanStudioClient.executeProjectBatch(
+                        context = ctx,
+                        cfg = cfgSnap,
+                        tasks = batchReqs,
+                        videoIndexOffset = 0,
+                        overallTotalVideos = plan.count,
+                        onSegmentReady = { dl ->
+                            val segObj = dl.toGeneratedSegment(dl.order)
+                            launch(Dispatchers.Main) {
+                                if (collected.none { it.segNumber == segObj.segNumber }) {
+                                    collected.add(segObj)
+                                    collected.sortBy { it.segNumber }
+                                    publishCandidateProgress(collected.toList())
+                                }
+                            }
+                        }
+                    ) { tick ->
+                        launch(Dispatchers.Main) { applyProgressTick(tick) }
+                    }
+
+                    for (dl in outs) {
+                        if (collected.none { it.segNumber == dl.order }) {
+                            collected.add(dl.toGeneratedSegment(dl.order))
+                        }
+                    }
+                    collected.sortBy { it.segNumber }
+                }
+
+                publishCandidateProgress(collected.toList())
                 aiRunPhase = AiRunPhase.COMPLETED
-                aiRunStatusDetail = "Selesai dalam 1 workflow! ${collected.size} hasil video AI siap diatur & dimasukkan ke timeline."
-                toast("${collected.size} video AI selesai dibuat!")
+                aiRunStatusDetail = "Kandidat #$candNum selesai! (${aiCandidates.size} kandidat tersedia — pilih yang terbaik atau generate kandidat lagi)."
+                toast("Kandidat #$candNum selesai dibuat!")
             } catch (ce: CancellationException) {
                 aiRunPhase = AiRunPhase.IDLE
                 aiRunStatusDetail = "Proses AI dibatalkan oleh pengguna."
+                if (aiCandidates.isNotEmpty() && collected.isEmpty()) {
+                    selectAiCandidate(aiActiveCandidateIdx.coerceIn(0, aiCandidates.lastIndex))
+                }
                 toast("Generasi AI dibatalkan")
             } catch (wte: WorkflowWaitTimeoutException) {
                 aiWorkflowWaitSec = AiPlanner.WORKFLOW_WAIT_TIMEOUT_SEC
@@ -1931,6 +2259,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 aiRunStatusDetail = wte.message ?: "Timeout menunggu workflow (3 menit)."
                 if (collected.isNotEmpty()) {
                     populateRemainingFailedSlots(plan, promptsSnap, initialFirstBmp, finalTargetLastBmp, collected, wte.message)
+                    publishCandidateProgress(collected.toList())
+                } else if (aiCandidates.isNotEmpty()) {
+                    selectAiCandidate(aiActiveCandidateIdx.coerceIn(0, aiCandidates.lastIndex))
                 }
                 toast("Timeout 3 menit menunggu workflow aktif")
             } catch (vte: VideoGenerationTimeoutException) {
@@ -1952,12 +2283,24 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     collected = collected,
                     errMsg = vte.message ?: "Melewati batas 3 menit/video"
                 )
+                publishCandidateProgress(collected.toList())
                 toast("Timeout 3 menit pada Video #${vte.timedOutVideoNumber}")
             } catch (e: Exception) {
                 aiRunPhase = AiRunPhase.FAILED
-                aiRunStatusDetail = e.message ?: "Generasi AI gagal."
+                val extraWorkerHint = if (!aiGenMode.equals(AiGenerationMode.MULTI_SEGMENT) &&
+                    plan.targetTotalSec !in listOf(3.5, 5.0, 7.0) &&
+                    aiWorkerSyncStatus == WorkerSyncStatus.NEEDS_MANUAL_COPY
+                ) {
+                    " (Pastikan juga firebase_worker.py di repo GitHub sudah diperbarui ke v3 lewat Tab Runner untuk durasi ${Fmt.one(plan.targetTotalSec)} dtk tunggal)."
+                } else {
+                    ""
+                }
+                aiRunStatusDetail = (e.message ?: "Generasi AI gagal.") + extraWorkerHint
                 if (collected.isNotEmpty()) {
                     populateRemainingFailedSlots(plan, promptsSnap, initialFirstBmp, finalTargetLastBmp, collected, e.message)
+                    publishCandidateProgress(collected.toList())
+                } else if (aiCandidates.isNotEmpty()) {
+                    selectAiCandidate(aiActiveCandidateIdx.coerceIn(0, aiCandidates.lastIndex))
                 }
                 toast("Generasi AI gagal")
             }
@@ -2097,6 +2440,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     updated[index] = fresh
                 }
                 aiGeneratedSegments = updated
+                syncActiveCandidateInPool(updated)
                 aiPreviewResultIndex = index
                 aiRunPhase = AiRunPhase.COMPLETED
                 aiRunStatusDetail = "Segmen #${target.segNumber} berhasil dibuat ulang!"
@@ -2128,6 +2472,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val updated = aiGeneratedSegments.toMutableList()
         updated[index] = cur.copy(selected = !cur.selected)
         aiGeneratedSegments = updated
+        syncActiveCandidateInPool(updated)
     }
 
     fun moveAiResult(index: Int, delta: Int) {
@@ -2138,6 +2483,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         updated[index] = updated[next]
         updated[next] = tmp
         aiGeneratedSegments = updated
+        syncActiveCandidateInPool(updated)
         aiPreviewResultIndex = next
     }
 
@@ -2310,7 +2656,30 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val addedDurPairs = ArrayList<Pair<Int, Double>>()
                 val segSpecs = ArrayList<Triple<Int, Double, Double>>()
 
-                for ((f, inf, useDur) in finalFilesToRegister) {
+                // Tentukan orientasi tegak/mendatar yang diharapkan dari referensi klip/scene agar 100% bebas auto-rotate!
+                val expectedPortrait: Boolean? = if (mode == AiWorkMode.REPLACE_SCENE &&
+                    hasVideo &&
+                    sources.isNotEmpty() &&
+                    core.segs.isNotEmpty()
+                ) {
+                    val segIdx = aiSnapshotReplaceSegIdx.coerceIn(0, core.segs.lastIndex)
+                    val origSeg = core.segs[segIdx]
+                    val origInfo = sources.getOrElse(origSeg.src) { sources.first() }.info
+                    val effDims = ExportMath.origDims(origInfo.dispW, origInfo.dispH, origSeg.rot)
+                    effDims[1] > effDims[0]
+                } else {
+                    aiSeekBitmap?.takeIf { !it.isRecycled }?.let { it.height > it.width }
+                        ?: chosen.firstOrNull()?.info?.let { it.dispH > it.dispW }
+                }
+
+                for ((fRaw, infRaw, useDur) in finalFilesToRegister) {
+                    val (f, inf) = WanStudioClient.ensureExpectedOrientation(
+                        context = ctx,
+                        file = fRaw,
+                        info = infRaw,
+                        expectedPortrait = expectedPortrait,
+                        outDir = outDir
+                    )
                     val newIdx = sources.size
                     val fullDur = max(Rules.MIN, inf.durationMs / 1000.0)
                     sources.add(MediaSource(Uri.fromFile(f), inf))
@@ -2388,6 +2757,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         curSeg = l.i
         val g = core.segs.getOrNull(l.i) ?: return
         rot = g.rot
+        canMergeScene = core.canMergeFocusScene
+        markerNearCurrentPlayhead = core.markerNearPlayhead(0.08) != null
         info = sources.getOrElse(g.src) { sources.first() }.info
         seekPlayerTo(g.src, l.s, 0.015, forceExact = forceExact)
     }
@@ -2763,6 +3134,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 if (msg != null) toast(msg)
             }
 
+            Tool.MERGE -> {
+                val msg = core.mergeFocusScene()
+                refreshDerived()
+                setSeekFast(false)
+                seekVideoToEdit(forceExact = true)
+                bump()
+                toast(msg)
+            }
+
+            Tool.MARKER -> {
+                toggleMarkerAtPlayhead()
+            }
+
             Tool.SCENE_DETECT -> {
                 openSceneDetector()
             }
@@ -2862,12 +3246,32 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 scan = cached,
                 sensitivity = sceneSensitivity,
                 minSceneDurSec = sceneMinDur,
-                maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null
+                maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null,
+                markerMode = sceneMarkerMode,
+                manualMarkerSrcSecs = core.markerCutSecsInSegment(cached.segIndex)
             )
             return
         }
 
         startSceneScan(segIdx, g, attempt = 0)
+    }
+
+    fun selectSceneMarkerMode(mode: SceneMarkerMode) {
+        sceneMarkerMode = mode
+        rebuildDetectedScenesFromCache()
+    }
+
+    private fun rebuildDetectedScenesFromCache() {
+        val scan = currentScanResult ?: return
+        detectedScenes = SceneDetector.buildScenes(
+            scan = scan,
+            sensitivity = sceneSensitivity,
+            minSceneDurSec = sceneMinDur,
+            maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null,
+            markerMode = sceneMarkerMode,
+            manualMarkerSrcSecs = core.markerCutSecsInSegment(scan.segIndex)
+        )
+        bump()
     }
 
     fun rescanScenes() {
@@ -2910,7 +3314,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 scan = scan,
                 sensitivity = sceneSensitivity,
                 minSceneDurSec = sceneMinDur,
-                maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null
+                maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null,
+                markerMode = sceneMarkerMode,
+                manualMarkerSrcSecs = core.markerCutSecsInSegment(scan.segIndex)
             )
             sceneScanning = false
             if (attempt > 0) {
@@ -2938,13 +3344,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             .putBoolean(KEY_SCENE_MAXDUR_ENABLED, newMaxEnabled)
             .putFloat(KEY_SCENE_MAXDUR, maxD.toFloat())
             .apply()
-        val scan = currentScanResult ?: return
-        detectedScenes = SceneDetector.buildScenes(
-            scan = scan,
-            sensitivity = sceneSensitivity,
-            minSceneDurSec = sceneMinDur,
-            maxSceneDurSec = if (sceneMaxDurEnabled) sceneMaxDur else null
-        )
+        rebuildDetectedScenesFromCache()
     }
 
     fun toggleDetectedScene(sceneIndex: Int) {
@@ -3178,7 +3578,21 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.17 (Terbaru)",
+            version = "v1.0.18 (Terbaru)",
+            date = "27/11/2026",
+            title = "Kandidat AI, Mode Tunggal 10s, Fix Berantai & Rotasi AI, Tanda (Markers) + Gabung Scene Instan",
+            items = listOf(
+                "✓ [Pengembangan] Sistem Kandidat Hasil AI: generate berkali-kali bahkan setelah hasil sudah jadi (Kandidat #1, #2, dst.), bandingkan tiap kandidat, tandai ⭐ Terbaik, dan pilih kandidat terbaik untuk timeline.",
+                "✓ [Pengembangan] Mode Tunggal AI: generate langsung 1 video utuh (mis. 10.0 dtk langsung 1 video, tidak harus dipecah 5 dtk × 2) atau beralih ke Multi-Segmen kapan saja.",
+                "✓ [Bug Fixed] Mode Berantai (Chained): diperbaiki agar Segmen #2 selalu memakai frame paling akhir dari hasil AI Segmen #1 (disertai auto-sinkron firebase_worker.py v3 & fallback ekstraksi otomatis di HP).",
+                "✓ [Bug Fixed] Diperbaiki bug rotasi otomatis 90° saat menerapkan hasil AI (terutama saat gabung klip & saat mempertahankan audio asli scene).",
+                "✓ [Pengembangan] Fitur Tanda (Markers) pada timeline & pratinjau + integrasi langsung ke Deteksi Scene (Auto + Tanda / Split by Tanda).",
+                "✓ [Pengembangan] Gabung Scene Instan Tanpa Render Ulang (Zero-Reencode): menyatukan kembali potongan scene berdampingan secara instan dengan memperluas rentang klip (mendukung Undo/Redo penuh).",
+                "✓ [Pengembangan] Panel penjelasan & kontrol langsung pada tombol \"Sesuai Video Asli\" di Ekspor untuk menangani perbedaan kualitas & FPS antara video asli dan klip AI."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.17",
             date = "27/11/2026",
             title = "Ekspor Campuran Asli + AI, Putar Khusus Scene Fokus & 1-Workflow Multi-Segmen AI",
             items = listOf(
@@ -4107,6 +4521,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             ExportMode.BY_TAG -> exportSelectedTags.isNotEmpty() && byTagJobs.isNotEmpty()
             else -> true
         }
+        // Hitung juga ringkasan seluruh sumber di timeline (mis. saat mode CURRENT dipilih tapi timeline punya klip AI)
+        val allTimelineSpecs = core.segs.map { g ->
+            val ms = sources.getOrElse(g.src) { sources.firstOrNull() ?: MediaSource(Uri.EMPTY, demoInfo()) }
+            val d = ExportMath.origDims(ms.info.dispW, ms.info.dispH, g.rot)
+            val fpsVal = if (ms.info.fps > 1f) ms.info.fps.toDouble() else 30.0
+            "${d[0]}×${d[1]} @ ${Fmt.fps(fpsVal)}fps"
+        }.distinct()
+        val allTimelineMixed = allTimelineSpecs.size > 1
+
         val mb = ExportMath.estimateMB(plan.width, plan.height, plan.fps, dur)
         return ExportInfo(
             plan = plan,
@@ -4116,8 +4539,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             subCurrent = "1 file · " + Fmt.time(cur),
             subByTag = subByTag,
             canStart = canStart,
-            hasMixedSpecs = resolved.hasMixedSpecs,
-            mixedSpecsSummary = resolved.mixedSummary,
+            hasMixedSpecs = resolved.hasMixedSpecs || allTimelineMixed,
+            mixedSpecsSummary = resolved.mixedSummary.ifEmpty { allTimelineSpecs.joinToString(" + ") },
+            allSourcesSummary = allTimelineSpecs.joinToString(" + "),
             supportsPerClipNative = resolved.supportsPerClipNative
         )
     }

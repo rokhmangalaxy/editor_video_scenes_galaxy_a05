@@ -2,6 +2,7 @@ package com.pribadi.editorvideo.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -17,6 +18,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
+import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -259,6 +261,82 @@ object WanStudioClient {
     }
 
     /**
+     * Memeriksa apakah `wanvideo_huggingspace/firebase_worker.py` di repositori GitHub pengguna
+     * sudah memakai WORKER_VERSION = 3 (mendukung Mode Tunggal hingga 10.0 dtk & ekstraksi frame akhir
+     * presisi untuk Mode Berantai 1-Workflow). Bila belum dan token memiliki izin `contents: write`,
+     * otomatis memperbarui file worker tersebut melalui GitHub Contents API!
+     */
+    suspend fun ensureLatestWorkerOnGitHub(
+        cfg: AiRunnerConfig,
+        attemptAutoPush: Boolean = true
+    ): Pair<WorkerSyncStatus, String> = withContext(Dispatchers.IO) {
+        val owner = cfg.githubOwner.trim()
+        val repo = cfg.githubRepo.trim()
+        val branch = cfg.githubBranch.trim().ifEmpty { "main" }
+        val token = cfg.githubToken.trim()
+        if (owner.isEmpty() || repo.isEmpty() || token.isEmpty()) {
+            return@withContext WorkerSyncStatus.ERROR to "Konfigurasi GitHub belum lengkap."
+        }
+        val path = AiRunnerClipboardData.WORKER_PATH
+        val getUrl = "https://api.github.com/repos/$owner/$repo/contents/$path?ref=$branch"
+        val headers = mapOf(
+            "Authorization" to "Bearer $token",
+            "Accept" to "application/vnd.github+json",
+            "X-GitHub-Api-Version" to "2022-11-28",
+            "User-Agent" to "EditorVideo-A05"
+        )
+        try {
+            val (code, raw) = httpRequest("GET", getUrl, headers = headers, connectTimeoutMs = 10_000, readTimeoutMs = 15_000)
+            var existingSha: String? = null
+            if (code in 200..299 && raw.trim().startsWith("{")) {
+                val obj = JSONObject(raw)
+                existingSha = obj.optString("sha", "").takeIf { it.isNotEmpty() }
+                val contentB64 = obj.optString("content", "").replace("\n", "").replace("\r", "")
+                if (contentB64.isNotEmpty()) {
+                    val decoded = String(Base64.decode(contentB64, Base64.DEFAULT), Charsets.UTF_8)
+                    if (decoded.contains("WORKER_VERSION = 3")) {
+                        return@withContext WorkerSyncStatus.UP_TO_DATE to
+                            "✓ firebase_worker.py di repo GitHub sudah versi terbaru (v3: Mode Tunggal 10s & Berantai 1-Workflow aktif)."
+                    }
+                }
+            }
+            if (!attemptAutoPush) {
+                return@withContext WorkerSyncStatus.NEEDS_MANUAL_COPY to
+                    "Script firebase_worker.py di GitHub masih versi lama. Tekan tombol Update Otomatis atau salin ulang dari Tab Runner."
+            }
+            val newContentB64 = Base64.encodeToString(
+                AiRunnerClipboardData.WORKER_CODE.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+            val putBody = JSONObject()
+                .put("message", "Update firebase_worker.py v3 (Single 10s & Chained Last-Frame)")
+                .put("content", newContentB64)
+                .put("branch", branch)
+            if (existingSha != null) {
+                putBody.put("sha", existingSha)
+            }
+            val (putCode, _) = httpRequest(
+                method = "PUT",
+                urlStr = "https://api.github.com/repos/$owner/$repo/contents/$path",
+                headers = headers + ("Content-Type" to "application/json"),
+                bodyBytes = putBody.toString().toByteArray(Charsets.UTF_8),
+                connectTimeoutMs = 12_000,
+                readTimeoutMs = 20_000
+            )
+            if (putCode in 200..299) {
+                WorkerSyncStatus.AUTO_UPDATED to
+                    "✓ firebase_worker.py di repo GitHub berhasil diperbarui otomatis ke v3!"
+            } else {
+                WorkerSyncStatus.NEEDS_MANUAL_COPY to
+                    "Token hanya punya izin baca repo (HTTP $putCode). Salin ulang firebase_worker.py v3 di Tab Runner agar 1-Workflow Berantai & Mode Tunggal 10s aktif di GitHub."
+            }
+        } catch (e: Exception) {
+            WorkerSyncStatus.NEEDS_MANUAL_COPY to
+                "Tidak dapat memeriksa versi worker GitHub (${e.message ?: "Error"})."
+        }
+    }
+
+    /**
      * Menjalankan 1 project Firebase (berisi 1..N item) melalui GitHub Actions workflow_dispatch,
      * lengkap dengan:
      *  - Watchdog Timeout Menunggu Workflow = 3 menit (180 detik)
@@ -358,7 +436,12 @@ object WanStudioClient {
                 }
             }
 
-            val durNumber: Number = if (t.durationSec == 3.5) 3.5 else t.durationSec.toInt()
+            val roundedDur = Math.round(t.durationSec * 10.0) / 10.0
+            val durNumber: Number = if (abs(roundedDur - Math.round(roundedDur).toDouble()) < 0.04) {
+                Math.round(roundedDur).toInt()
+            } else {
+                roundedDur
+            }
             val safety = if (t.space.supportsSafetyChecker) t.enableSafetyChecker else false
             val itemObj = JSONObject()
                 .put("order", t.order)
@@ -645,6 +728,37 @@ object WanStudioClient {
                 val itemMeta = itemResultsObj?.optJSONObject(t.taskKey) ?: statusSummary
                 val seedStr = itemMeta?.opt("seed")?.toString()?.takeIf { it != "null" && it.isNotEmpty() } ?: "-"
 
+                // Bila segmen ini memakai mode berantai (chainFromPrev), ambil gambar frame akhir hasil segmen sebelumnya
+                // agar pratinjau inputFirstBmp menampilkan frame hasil AI #1 yang sesungguhnya (bukan frame scene awal)!
+                var actualInputBmp: Bitmap = t.firstBmp
+                if (t.chainFromPrev && t.order >= 2) {
+                    val prevKey = "task-${t.order - 1}"
+                    val fromPrevDownloaded = results.firstOrNull { it.order == t.order - 1 }
+                        ?.let { extractLastFrameOfMp4(context, it.file, it.info) }
+                    if (fromPrevDownloaded != null) {
+                        actualInputBmp = fromPrevDownloaded
+                    } else {
+                        try {
+                            val (cc, craw) = httpRequest(
+                                method = "GET",
+                                urlStr = firebaseEndpoint(root, projectId, "images/chain_tail_$prevKey"),
+                                connectTimeoutMs = 8_000,
+                                readTimeoutMs = 15_000
+                            )
+                            if (cc in 200..299 && craw.trim().startsWith("{")) {
+                                val cb64 = JSONObject(craw).optString("base64", "")
+                                if (cb64.isNotEmpty()) {
+                                    val jpgBytes = Base64.decode(cb64, Base64.DEFAULT)
+                                    BitmapFactory.decodeByteArray(jpgBytes, 0, jpgBytes.size)?.let {
+                                        actualInputBmp = it
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+
                 results.add(
                     DownloadedAiVideo(
                         taskKey = t.taskKey,
@@ -656,7 +770,7 @@ object WanStudioClient {
                         previewBmp = prevBmp,
                         seed = seedStr,
                         promptUsed = t.prompt,
-                        firstBmp = t.firstBmp,
+                        firstBmp = actualInputBmp,
                         lastBmp = t.lastBmp
                     )
                 )
@@ -693,6 +807,19 @@ object WanStudioClient {
         val handler = Handler(Looper.getMainLooper())
         val editedItems = ArrayList<EditedMediaItem>(pieces.size)
         var anyAudio = false
+        val firstInf = pieces.first().second
+        val targetDispW = max(16, (firstInf.dispW / 2) * 2)
+        val targetDispH = max(16, (firstInf.dispH / 2) * 2)
+        val lockEffects = Effects(
+            emptyList<AudioProcessor>(),
+            listOf<Effect>(
+                Presentation.createForWidthAndHeight(
+                    targetDispW,
+                    targetDispH,
+                    Presentation.LAYOUT_SCALE_TO_FIT
+                )
+            )
+        )
 
         for ((f, inf, clipDurSec) in pieces) {
             if (inf.hasAudio) anyAudio = true
@@ -707,6 +834,7 @@ object WanStudioClient {
                 )
                 .build()
             val eb = EditedMediaItem.Builder(mediaItem)
+                .setEffects(lockEffects)
             if (!inf.hasAudio) eb.setRemoveAudio(true)
             editedItems.add(eb.build())
         }
@@ -784,6 +912,7 @@ object WanStudioClient {
                 remuxVideoWithOrigAudioFast(
                     context = context,
                     aiVideoFile = aiVideoFile,
+                    aiVideoInfo = aiVideoInfo,
                     clipDurSec = clipDurSec,
                     origSourceUri = if (origInfo.hasAudio) origSourceUri else null,
                     origStartSec = origStartSec,
@@ -813,6 +942,7 @@ object WanStudioClient {
     private fun remuxVideoWithOrigAudioFast(
         context: Context,
         aiVideoFile: File,
+        aiVideoInfo: VideoInfo,
         clipDurSec: Double,
         origSourceUri: Uri?,
         origStartSec: Double,
@@ -859,6 +989,20 @@ object WanStudioClient {
             outFile.parentFile?.mkdirs()
             if (outFile.exists()) outFile.delete()
             muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            // KRUSIAL: Pertahankan metadata rotasi (orientationHint) milik aiVideoFile!
+            // Pada perangkat dengan hardware encoder H.264 landscape (mis. Galaxy A05), Media3 Transformer
+            // menulis piksel portrait 480×832 sebagai 832×480 dengan rotation=90; bila setOrientationHint
+            // tidak dipanggil saat remux, video akan tampak berputar miring 90° secara otomatis!
+            val fmtRot = try {
+                if (vidFormat.containsKey(MediaFormat.KEY_ROTATION)) vidFormat.getInteger(MediaFormat.KEY_ROTATION) else 0
+            } catch (_: Exception) {
+                0
+            }
+            val rawHint = if (aiVideoInfo.rotation != 0) aiVideoInfo.rotation else fmtRot
+            val normHint = ((rawHint % 360) + 360) % 360
+            if (normHint in listOf(90, 180, 270)) {
+                muxer.setOrientationHint(normHint)
+            }
             val muxVidTrack = muxer.addTrack(vidFormat)
             val muxAudTrack = if (audTrackIn >= 0 && audFormat != null) {
                 muxer.addTrack(audFormat)
@@ -959,8 +1103,22 @@ object WanStudioClient {
                     .build()
             )
             .build()
+        val targetDispW = max(16, (aiVideoInfo.dispW / 2) * 2)
+        val targetDispH = max(16, (aiVideoInfo.dispH / 2) * 2)
         val vidEdited = EditedMediaItem.Builder(vidMediaItem)
             .setRemoveAudio(true)
+            .setEffects(
+                Effects(
+                    emptyList<AudioProcessor>(),
+                    listOf<Effect>(
+                        Presentation.createForWidthAndHeight(
+                            targetDispW,
+                            targetDispH,
+                            Presentation.LAYOUT_SCALE_TO_FIT
+                        )
+                    )
+                )
+            )
             .build()
         val vidSeq = EditedMediaItemSequence(listOf(vidEdited))
 
@@ -1040,5 +1198,89 @@ object WanStudioClient {
         } catch (_: Exception) {
             false
         }
+    }
+
+    /**
+     * Pengaman akhir orientasi MP4 tanpa re-encode:
+     * Bila berkas MP4 hasil gabung/mux memiliki orientasi tampilan (portrait vs landscape) yang terbalik
+     * dibanding video AI aslinya akibat fallback encoder perangkat, perbaiki metadata `orientationHint`
+     * pada kontainer MP4 secara lossless.
+     */
+    suspend fun ensureExpectedOrientation(
+        context: Context,
+        mp4File: File,
+        probedInfo: VideoInfo,
+        expectedPortrait: Boolean?,
+        outDir: File
+    ): Pair<File, VideoInfo> = withContext(Dispatchers.IO) {
+        if (expectedPortrait == null || probedInfo.dispW == probedInfo.dispH) {
+            return@withContext mp4File to probedInfo
+        }
+        val actualPortrait = probedInfo.dispH > probedInfo.dispW
+        if (actualPortrait == expectedPortrait) {
+            return@withContext mp4File to probedInfo
+        }
+
+        // Orientasi tampilan terbalik 90° -> perbaiki metadata orientationHint tanpa re-encode!
+        val fixedFile = File(outDir, "ai_orient_${System.currentTimeMillis()}.mp4")
+        val targetRot = ((probedInfo.rotation + 90) % 360 + 360) % 360
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var started = false
+        try {
+            extractor.setDataSource(mp4File.absolutePath)
+            val trackMap = HashMap<Int, Int>()
+            outDir.mkdirs()
+            if (fixedFile.exists()) fixedFile.delete()
+            muxer = MediaMuxer(fixedFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            if (targetRot in listOf(90, 180, 270)) {
+                muxer.setOrientationHint(targetRot)
+            }
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                    extractor.selectTrack(i)
+                    trackMap[i] = muxer.addTrack(fmt)
+                }
+            }
+            if (trackMap.isEmpty()) return@withContext mp4File to probedInfo
+            muxer.start()
+            started = true
+            val buf = ByteBuffer.allocateDirect(1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val tr = extractor.sampleTrackIndex
+                if (tr < 0) break
+                val outTr = trackMap[tr]
+                if (outTr != null) {
+                    buf.clear()
+                    val sz = extractor.readSampleData(buf, 0)
+                    if (sz < 0) break
+                    val pts = max(0L, extractor.sampleTime)
+                    val exFlags = extractor.sampleFlags
+                    var flags = 0
+                    if ((exFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                        flags = flags or MediaCodec.BUFFER_FLAG_KEY_FRAME
+                    }
+                    info.set(0, sz, pts, flags)
+                    muxer.writeSampleData(outTr, buf, info)
+                }
+                extractor.advance()
+            }
+            muxer.stop()
+            started = false
+            val fixedInfo = VideoProbe.probe(context, Uri.fromFile(fixedFile))
+            if (fixedInfo != null && fixedFile.exists() && fixedFile.length() > 0L) {
+                return@withContext fixedFile to fixedInfo
+            }
+        } catch (_: Exception) {
+            if (fixedFile.exists()) fixedFile.delete()
+        } finally {
+            try { extractor.release() } catch (_: Exception) {}
+            try { if (started) muxer?.stop() } catch (_: Exception) {}
+            try { muxer?.release() } catch (_: Exception) {}
+        }
+        mp4File to probedInfo
     }
 }

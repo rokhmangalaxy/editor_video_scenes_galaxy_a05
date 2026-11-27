@@ -1,5 +1,6 @@
 package com.pribadi.editorvideo.model
 
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -40,6 +41,12 @@ class EditorCore {
 
     var flip: Boolean = false
         private set
+
+    /** Daftar tanda (markers) yang dipasang pengguna untuk navigasi & Split by Tanda / Deteksi Scene. */
+    var markers: List<ClipMarker> = emptyList()
+        private set
+
+    private var nextMarkerId: Long = 1L
 
     var hasVideo: Boolean = false
         private set
@@ -106,7 +113,7 @@ class EditorCore {
 
     // ------------------------------------------------------------------ riwayat
 
-    private fun snap(): Snap = Snap(segs, rot, flip)
+    private fun snap(): Snap = Snap(segs, rot, flip, markers)
 
     private fun push() {
         while (hist.size > hi + 1) hist.removeAt(hist.size - 1)
@@ -118,6 +125,7 @@ class EditorCore {
         segs = s.segs
         rot = s.rot
         flip = s.flip
+        markers = s.markers
         calc()
         t = min(t, lay.total)
         build()
@@ -152,6 +160,7 @@ class EditorCore {
         trimSeg = null
         srcDurs = emptyList()
         segs = emptyList()
+        markers = emptyList()
         hasVideo = false
         t = 0.0
         sel = 0
@@ -172,6 +181,7 @@ class EditorCore {
         if (durs.isEmpty()) return
         srcDurs = ArrayList(durs)
         segs = durs.mapIndexed { idx, dur -> Seg(0.0, dur, src = idx) }
+        markers = emptyList()
         hasVideo = true
         t = 0.0
         sel = 0
@@ -226,6 +236,328 @@ class EditorCore {
         push()
         build()
         return "Klip dipotong di " + Fmt.time(t)
+    }
+
+    // ------------------------------------------------------------------ gabung scene tanpa render ulang (Zero Re-encode)
+
+    /**
+     * Memeriksa apakah dua potongan bersebelahan [i] dan [j] berasal dari sumber video yang sama,
+     * arah/mode yang sama, bukan freeze, dan berurutan waktunya sehingga bisa digabung instan (0ms)
+     * lewat perpanjangan rentang [a..b] tanpa render ulang sama sekali.
+     */
+    fun canMergePair(i: Int, j: Int): Boolean {
+        if (!hasVideo || i !in segs.indices || j !in segs.indices || j != i + 1) return false
+        val g1 = segs[i]
+        val g2 = segs[j]
+        if (g1.fz || g2.fz) return false
+        if (g1.src != g2.src) return false
+        if (g1.rev != g2.rev || g1.revMode != g2.revMode) return false
+        // Harus maju searah (g2 berakhir setelah g1 mulai, dan awal g2 tidak mendahului awal g1)
+        return g2.a >= g1.a - 0.02 && g2.b > g1.b - 0.02
+    }
+
+    /** Apakah scene yang sedang fokus bisa digabung tanpa render dengan scene sesudah/sebelumnya. */
+    val canMergeFocusScene: Boolean
+        get() = hasVideo && segs.size >= 2 &&
+            (canMergePair(sel, sel + 1) || canMergePair(sel - 1, sel))
+
+    /**
+     * Menggabungkan scene yang sedang fokus dengan tetangganya (prioritas ke kanan: #sel + #(sel+1),
+     * atau ke kiri: #(sel-1) + #sel bila di ujung kanan / kanan beda sumber) secara instan tanpa render ulang:
+     * cukup memperpanjang batas akhir klip pertama ke batas akhir klip kedua lalu menghapus klip kedua.
+     */
+    fun mergeFocusScene(): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        if (segs.size < 2) return "Minimal butuh 2 scene di timeline untuk digabung"
+        val cur = sel.coerceIn(0, segs.lastIndex)
+        val firstIdx = when {
+            canMergePair(cur, cur + 1) -> cur
+            canMergePair(cur - 1, cur) -> cur - 1
+            else -> {
+                // Beri alasan spesifik yang informatif kepada pengguna
+                val neighbor = if (cur + 1 in segs.indices) segs[cur + 1] else segs[cur - 1]
+                val g = segs[cur]
+                return when {
+                    g.fz || neighbor.fz -> "Potongan Beku (Freeze) tidak dapat digabung tanpa render"
+                    g.src != neighbor.src -> "Scene bersebelahan berasal dari file sumber berbeda (mis. Video Asli vs AI)"
+                    g.rev != neighbor.rev -> "Arah putar (Normal/Mundur) kedua scene berbeda"
+                    else -> "Urutan waktu kedua scene sudah ditukar/tidak berurutan pada video sumber"
+                }
+            }
+        }
+        val secondIdx = firstIdx + 1
+        onPause()
+        val g1 = segs[firstIdx]
+        val g2 = segs[secondIdx]
+        val gapSec = max(0.0, g2.a - g1.b)
+        val mergedTags = (g1.tags + g2.tags).distinct()
+        val mergedSeg = g1.copy(
+            b = max(g1.b, g2.b),
+            tags = mergedTags
+        )
+        val n = ArrayList<Seg>(segs.size - 1)
+        for (k in segs.indices) {
+            when (k) {
+                firstIdx -> n.add(mergedSeg)
+                secondIdx -> Unit // dihapus karena sudah menyatu ke firstIdx
+                else -> n.add(segs[k])
+            }
+        }
+        segs = n
+        calc()
+        sel = firstIdx.coerceIn(0, segs.lastIndex)
+        t = lay.off[sel]
+        push()
+        build()
+        return if (gapSec <= 0.15) {
+            "Scene #${firstIdx + 1} & #${secondIdx + 1} digabung utuh (${Fmt.durLabel(mergedSeg.len)}) tanpa render ulang"
+        } else {
+            "Scene #${firstIdx + 1} & #${secondIdx + 1} disambung utuh (${Fmt.durLabel(mergedSeg.len)}, memulihkan ${Fmt.one(gapSec)}s jeda)"
+        }
+    }
+
+    /**
+     * Menggabungkan 2 atau lebih scene berurutan yang dipilih (mis. dari Multiseleksi Mode Grid)
+     * tanpa render ulang dengan memperpanjang klip pertama hingga akhir klip terakhir tiap kelompok.
+     */
+    fun mergeSegmentsGroup(indices: Set<Int>): String {
+        if (!hasVideo || segs.size < 2) return "Minimal pilih 2 scene bersebelahan"
+        val sorted = indices.filter { it in segs.indices }.sorted()
+        if (sorted.size < 2) return "Pilih minimal 2 scene untuk digabung"
+
+        val toRemove = HashSet<Int>()
+        val replacements = HashMap<Int, Seg>()
+        var mergedPairsCount = 0
+
+        var p = 0
+        while (p < sorted.size) {
+            val headIdx = sorted[p]
+            var curMerged = segs[headIdx]
+            var q = p + 1
+            while (q < sorted.size && sorted[q] == sorted[q - 1] + 1) {
+                val nextIdx = sorted[q]
+                val nextSeg = segs[nextIdx]
+                val compatible = !curMerged.fz && !nextSeg.fz &&
+                    curMerged.src == nextSeg.src &&
+                    curMerged.rev == nextSeg.rev &&
+                    curMerged.revMode == nextSeg.revMode &&
+                    nextSeg.a >= curMerged.a - 0.02 &&
+                    nextSeg.b > curMerged.b - 0.02
+                if (!compatible) break
+                curMerged = curMerged.copy(
+                    b = max(curMerged.b, nextSeg.b),
+                    tags = (curMerged.tags + nextSeg.tags).distinct()
+                )
+                toRemove.add(nextIdx)
+                mergedPairsCount++
+                q++
+            }
+            if (q > p + 1) {
+                replacements[headIdx] = curMerged
+            }
+            p = q
+        }
+
+        if (mergedPairsCount == 0) {
+            return "Scene terpilih harus bersebelahan & berasal dari video sumber yang sama agar bisa digabung tanpa render"
+        }
+
+        onPause()
+        val n = ArrayList<Seg>(segs.size - toRemove.size)
+        var newSel = 0
+        val firstHead = replacements.keys.minOrNull() ?: sorted.first()
+        for (k in segs.indices) {
+            if (k in toRemove) continue
+            if (k == firstHead) newSel = n.size
+            n.add(replacements[k] ?: segs[k])
+        }
+        segs = n
+        calc()
+        sel = newSel.coerceIn(0, segs.lastIndex)
+        t = lay.off[sel]
+        push()
+        build()
+        return "${mergedPairsCount + replacements.size} scene berhasil digabung menjadi ${replacements.size} klip tanpa render ulang"
+    }
+
+    // ------------------------------------------------------------------ fitur tandai (markers) & split by tanda
+
+    /** Memproyeksikan semua tanda sumber ke posisi waktu timeline saat ini (terurut menaik). */
+    fun projectedMarkers(): List<ProjectedMarker> {
+        if (!hasVideo || segs.isEmpty() || markers.isEmpty()) return emptyList()
+        val out = ArrayList<ProjectedMarker>()
+        for (i in segs.indices) {
+            val g = segs[i]
+            if (g.fz) continue
+            val segStartT = lay.off[i]
+            for (m in markers) {
+                if (m.src == g.src && m.srcSec >= g.a - 1e-4 && m.srcSec <= g.b + 1e-4) {
+                    val clampedSrc = clampD(m.srcSec, g.a, g.b)
+                    val tlSec = segStartT + (clampedSrc - g.a) / g.sp
+                    out.add(
+                        ProjectedMarker(
+                            markerId = m.id,
+                            timelineSec = tlSec,
+                            segIndex = i,
+                            src = m.src,
+                            srcSec = clampedSrc,
+                            label = m.label
+                        )
+                    )
+                }
+            }
+        }
+        out.sortBy { it.timelineSec }
+        return out
+    }
+
+    /** Daftar detik sumber [srcSec] tanda yang berada di dalam potongan ke-[segIdx] (valid untuk titik potong). */
+    fun markerCutSecsInSegment(segIdx: Int): List<Double> {
+        if (!hasVideo || segIdx !in segs.indices || markers.isEmpty()) return emptyList()
+        val g = segs[segIdx]
+        if (g.fz) return emptyList()
+        val minMargin = Rules.MIN * g.sp
+        return markers
+            .asSequence()
+            .filter { it.src == g.src && it.srcSec >= g.a + minMargin && it.srcSec <= g.b - minMargin }
+            .map { it.srcSec }
+            .sorted()
+            .fold(ArrayList<Double>()) { acc, v ->
+                if (acc.isEmpty() || v - acc.last() >= minMargin) acc.add(v)
+                acc
+            }
+    }
+
+    /** Apakah playhead saat ini berada tepat di dekat sebuah tanda (±0.08 dtk timeline). */
+    fun markerNearPlayhead(tolTimelineSec: Double = 0.08): ProjectedMarker? =
+        projectedMarkers().minByOrNull { abs(it.timelineSec - t) }
+            ?.takeIf { abs(it.timelineSec - t) <= tolTimelineSec }
+
+    /** Memasang tanda baru di posisi playhead, atau melepasnya bila playhead tepat di atas tanda. */
+    fun toggleMarkerAtPlayhead(): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        val existing = markerNearPlayhead(0.08)
+        if (existing != null) {
+            markers = markers.filterNot { it.id == existing.markerId }
+            push()
+            return "Tanda di ${Fmt.time(existing.timelineSec)} dihapus (${markers.size} tersisa)"
+        }
+        val L = locate(t)
+        val g = segs[L.i]
+        if (g.fz) return "Tidak bisa memasang tanda potong pada potongan beku"
+        val id = nextMarkerId++
+        val newMarker = ClipMarker(
+            id = id,
+            src = g.src,
+            srcSec = L.s,
+            label = "M${markers.size + 1}"
+        )
+        markers = (markers + newMarker).sortedWith(compareBy<ClipMarker> { it.src }.thenBy { it.srcSec })
+        push()
+        return "📍 Tanda dipasang di ${Fmt.time(t)} (total ${markers.size} tanda)"
+    }
+
+    fun removeMarker(markerId: Long): String {
+        val before = markers.size
+        markers = markers.filterNot { it.id == markerId }
+        if (markers.size != before) {
+            push()
+            return "Tanda dihapus (${markers.size} tersisa)"
+        }
+        return "Tanda tidak ditemukan"
+    }
+
+    fun clearAllMarkers(): String {
+        if (markers.isEmpty()) return "Belum ada tanda"
+        val cnt = markers.size
+        markers = emptyList()
+        push()
+        return "$cnt tanda dibersihkan"
+    }
+
+    /** Melompat ke tanda sebelumnya atau berikutnya di timeline. Mengembalikan waktu tujuan atau null. */
+    fun jumpToAdjacentMarker(forward: Boolean): ProjectedMarker? {
+        val list = projectedMarkers()
+        if (list.isEmpty()) return null
+        onPause()
+        val eps = 0.04
+        val target = if (forward) {
+            list.firstOrNull { it.timelineSec > t + eps } ?: list.first()
+        } else {
+            list.lastOrNull { it.timelineSec < t - eps } ?: list.last()
+        }
+        t = clampD(target.timelineSec, 0.0, lay.total)
+        sync()
+        return target
+    }
+
+    /**
+     * Memecah potongan langsung berdasarkan Tanda (Split by Tanda / Markers) tanpa render ulang!
+     * Bila [onlySegIdx] diisi, hanya memecah klip tersebut; bila null, memecah seluruh klip di timeline
+     * yang memiliki tanda di dalamnya.
+     */
+    fun splitByMarkers(onlySegIdx: Int? = null, clearUsedMarkers: Boolean = false): String {
+        if (!hasVideo || segs.isEmpty()) return "Impor video dulu"
+        if (markers.isEmpty()) return "Belum ada Tanda. Ketuk tombol 📍 Tandai di timeline terlebih dahulu"
+        onPause()
+
+        val n = ArrayList<Seg>(segs.size + markers.size)
+        val usedMarkerIds = HashSet<Long>()
+        var splitCutCount = 0
+        var firstNewSegSel = sel
+
+        for (i in segs.indices) {
+            val g = segs[i]
+            if ((onlySegIdx != null && i != onlySegIdx) || g.fz) {
+                n.add(g)
+                continue
+            }
+            val minMargin = Rules.MIN * g.sp
+            val validMarkers = markers
+                .filter { it.src == g.src && it.srcSec >= g.a + minMargin && it.srcSec <= g.b - minMargin }
+                .sortedBy { it.srcSec }
+
+            val cutPoints = ArrayList<Double>()
+            for (m in validMarkers) {
+                if (cutPoints.isEmpty() || m.srcSec - cutPoints.last() >= minMargin) {
+                    cutPoints.add(m.srcSec)
+                    usedMarkerIds.add(m.id)
+                }
+            }
+
+            if (cutPoints.isEmpty()) {
+                n.add(g)
+                continue
+            }
+
+            if (splitCutCount == 0) {
+                firstNewSegSel = n.size
+            }
+            var curA = g.a
+            for (cp in cutPoints) {
+                if (cp - curA >= minMargin && g.b - cp >= minMargin) {
+                    n.add(g.copy(a = curA, b = cp))
+                    curA = cp
+                    splitCutCount++
+                }
+            }
+            n.add(g.copy(a = curA, b = g.b))
+        }
+
+        if (splitCutCount == 0) {
+            return "Tanda terlalu dekat dengan tepi klip (minimal berjarak ${Fmt.one(Rules.MIN)} dtk dari ujung klip)"
+        }
+
+        if (clearUsedMarkers && usedMarkerIds.isNotEmpty()) {
+            markers = markers.filterNot { it.id in usedMarkerIds }
+        }
+        segs = n
+        calc()
+        sel = firstNewSegSel.coerceIn(0, segs.lastIndex)
+        t = lay.off[sel]
+        push()
+        build()
+        return "Berhasil memotong di $splitCutCount tanda menjadi ${splitCutCount + 1} bagian"
     }
 
     /**

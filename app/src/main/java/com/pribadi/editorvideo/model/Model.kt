@@ -170,8 +170,34 @@ class SegLayout(val segs: List<Seg>) {
     }
 }
 
+/**
+ * Tanda (Marker) yang dikaitkan ke sumber video & detik sumber [srcSec]
+ * sehingga tetap akurat walau potongan di bagian lain dipotong/digeser, serta mendukung Undo/Redo.
+ */
+data class ClipMarker(
+    val id: Long,
+    val src: Int,
+    val srcSec: Double,
+    val label: String = ""
+)
+
+/** Proyeksi Tanda ke posisi waktu timeline saat ini untuk digambar di Timeline & navigasi. */
+data class ProjectedMarker(
+    val markerId: Long,
+    val timelineSec: Double,
+    val segIndex: Int,
+    val src: Int,
+    val srcSec: Double,
+    val label: String
+)
+
 /** Satu langkah riwayat undo/redo. */
-data class Snap(val segs: List<Seg>, val rot: Int, val flip: Boolean)
+data class Snap(
+    val segs: List<Seg>,
+    val rot: Int,
+    val flip: Boolean,
+    val markers: List<ClipMarker> = emptyList()
+)
 
 object Fmt {
     private fun parts(s: Double): LongArray {

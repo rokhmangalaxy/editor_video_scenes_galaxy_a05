@@ -29,7 +29,19 @@ enum class AiWorkMode(val label: String, val sub: String) {
     )
 }
 
-/** Paket durasi khusus Mode Sisipkan sesuai spesifikasi: 3×3.5 dtk, 2×5 dtk, 7 dtk, 10 dtk. */
+/** Mode pembuatan video AI: Langsung 1 Video Tunggal (hingga 10 dtk) vs Multi-Segmen (2–3 klip). */
+enum class AiGenerationMode(val label: String, val sub: String) {
+    SINGLE(
+        "Mode Tunggal (1 Video)",
+        "Langsung membuat 1 video utuh sesuai durasi (hingga 10.0 dtk, tidak dipecah 5 dtk × 2)."
+    ),
+    MULTI_SEGMENT(
+        "Mode Multi-Segmen",
+        "Membuat 2–3 segmen berurutan dalam 1 workflow (cocok untuk prompt bertahap / 3×3.5 dtk)."
+    )
+}
+
+/** Paket durasi khusus Mode Sisipkan: mendukung paket Multi-Segmen maupun 1 Video Tunggal. */
 enum class AiInsertPreset(
     val id: String,
     val label: String,
@@ -38,6 +50,22 @@ enum class AiInsertPreset(
     val segDurs: List<Double>,
     val autoMergeDefault: Boolean
 ) {
+    SINGLE_10(
+        id = "10_single",
+        label = "10 dtk (1 Video)",
+        badge = "1 Video",
+        sub = "Langsung 1 × 10.0 dtk utuh",
+        segDurs = listOf(10.0),
+        autoMergeDefault = false
+    ),
+    SINGLE_7(
+        id = "7",
+        label = "7 dtk (1 Video)",
+        badge = "1 Video",
+        sub = "Langsung 1 × 7.0 dtk utuh",
+        segDurs = listOf(7.0),
+        autoMergeDefault = false
+    ),
     THREE_BY_35(
         id = "3x3.5",
         label = "3 × 3.5 dtk",
@@ -54,19 +82,11 @@ enum class AiInsertPreset(
         segDurs = listOf(5.0, 5.0),
         autoMergeDefault = false
     ),
-    SINGLE_7(
-        id = "7",
-        label = "7 dtk",
-        badge = "1 Hasil",
-        sub = "Single 7.0 dtk · 1 MP4",
-        segDurs = listOf(7.0),
-        autoMergeDefault = false
-    ),
     FULL_10(
         id = "10",
-        label = "10 dtk",
+        label = "2×5→10 dtk",
         badge = "2 Seg→10s",
-        sub = "Auto 2×5 dtk digabung 10s",
+        sub = "2×5 dtk berantai digabung 10s",
         segDurs = listOf(5.0, 5.0),
         autoMergeDefault = true
     )
@@ -297,6 +317,35 @@ data class AiGeneratedSegment(
     val errorMessage: String? = null
 )
 
+/**
+ * Satu Kandidat Hasil Generate AI (menyimpan seluruh segmen, snapshot posisi timeline,
+ * dan metadata run agar pengguna bisa generate berkali-kali lalu memilih kandidat terbaik).
+ */
+data class AiCandidateBatch(
+    val id: String,
+    val candidateNumber: Int,
+    val createdAtLabel: String,
+    val workMode: AiWorkMode,
+    val genMode: AiGenerationMode,
+    val spaceLabel: String,
+    val summaryLabel: String,
+    val plan: AiExecutionPlan,
+    val snapshotInsertSeekSec: Double,
+    val snapshotReplaceSegIdx: Int,
+    val segments: List<AiGeneratedSegment>,
+    val isFavorite: Boolean = false
+)
+
+/** Status sinkronisasi firebase_worker.py v3 di repositori GitHub Runner pengguna. */
+enum class WorkerSyncStatus {
+    UNKNOWN,
+    CHECKING,
+    UP_TO_DATE,
+    AUTO_UPDATED,
+    NEEDS_MANUAL_COPY,
+    ERROR
+}
+
 /** Perencana durasi & aturan timeout ZeroGPU. */
 object AiPlanner {
     /** Batas keras durasi Replace Scene pada Space ZeroGPU: maksimal 10.0 detik. */
@@ -322,12 +371,28 @@ object AiPlanner {
     /** Timeout buat video = 3 menit (180 detik) per video. */
     const val VIDEO_GEN_TIMEOUT_SEC = 180
 
-    fun planInsert(preset: AiInsertPreset): AiExecutionPlan {
+    fun planInsert(
+        preset: AiInsertPreset,
+        genMode: AiGenerationMode = AiGenerationMode.MULTI_SEGMENT,
+        singleDurSec: Double = 10.0
+    ): AiExecutionPlan {
+        if (genMode == AiGenerationMode.SINGLE) {
+            val clamped = min(MAX_WORKFLOW_SEC, max(ZEROGPU_MIN_REPLACE_SEC, singleDurSec))
+            val rounded = Math.round(clamped * 10.0) / 10.0
+            return AiExecutionPlan(
+                workMode = AiWorkMode.INSERT,
+                segDurs = listOf(rounded),
+                targetTotalSec = rounded,
+                autoMergeDefault = false,
+                note = "Mode Tunggal · 1 Video utuh langsung (${Fmt.one(rounded)} dtk, tanpa dipecah)"
+            )
+        }
         val total = preset.segDurs.sum()
         val note = when (preset) {
+            AiInsertPreset.SINGLE_10 -> "Mode Tunggal · 1 × 10.0 dtk langsung (1 video utuh)"
+            AiInsertPreset.SINGLE_7 -> "1 Workflow · 1 × 7.0 dtk utuh"
             AiInsertPreset.THREE_BY_35 -> "1 Workflow · 3 × 3.5 dtk berurutan (maks 10.5 dtk)"
             AiInsertPreset.TWO_BY_5 -> "1 Workflow · 2 × 5.0 dtk berurutan (total 10.0 dtk)"
-            AiInsertPreset.SINGLE_7 -> "1 Workflow · 1 × 7.0 dtk"
             AiInsertPreset.FULL_10 -> "1 Workflow · 2 segmen berantai × 5.0 dtk → digabung 10.0 dtk"
         }
         return AiExecutionPlan(
@@ -340,12 +405,34 @@ object AiPlanner {
     }
 
     /**
-     * Merencanakan segmen ZeroGPU (pilihan valid Space: 3.5s, 5.0s, 7.0s)
-     * untuk Mode Replace Scene dengan target durasi fleksibel [1.0 .. 10.0] detik dalam 1 workflow tunggal.
+     * Merencanakan segmen ZeroGPU untuk Mode Replace Scene dengan target durasi fleksibel [1.0 .. 10.0] detik:
+     * - Bila [genMode] == SINGLE: langsung membuat 1 video tunggal sesuai durasi target (hingga 10.0 dtk, bukan 5 dtk × 2)!
+     * - Bila [genMode] == MULTI_SEGMENT: memecah durasi > 7.0 dtk menjadi 2 segmen berantai dalam 1 workflow.
      */
-    fun planReplace(requestedSec: Double, sceneOrigLenSec: Double): AiExecutionPlan {
+    fun planReplace(
+        requestedSec: Double,
+        sceneOrigLenSec: Double,
+        genMode: AiGenerationMode = AiGenerationMode.SINGLE
+    ): AiExecutionPlan {
         val clamped = min(ZEROGPU_MAX_REPLACE_SEC, max(ZEROGPU_MIN_REPLACE_SEC, requestedSec))
         val rounded = Math.round(clamped * 10.0) / 10.0
+        if (genMode == AiGenerationMode.SINGLE) {
+            val reqDur = max(3.5, rounded)
+            val note = if (rounded < 3.45) {
+                "Mode Tunggal · 1 × 3.5 dtk → auto-trim presisi ke ${Fmt.one(rounded)} dtk"
+            } else {
+                "Mode Tunggal · 1 Video langsung (${Fmt.one(rounded)} dtk utuh, bukan 2 segmen)"
+            }
+            return AiExecutionPlan(
+                workMode = AiWorkMode.REPLACE_SCENE,
+                segDurs = listOf(reqDur),
+                targetTotalSec = rounded,
+                autoMergeDefault = false,
+                sceneOrigLenSec = sceneOrigLenSec,
+                overZeroGpuLimit = sceneOrigLenSec > ZEROGPU_MAX_REPLACE_SEC + 0.05,
+                note = note
+            )
+        }
         val segs: List<Double>
         val note: String
         when {

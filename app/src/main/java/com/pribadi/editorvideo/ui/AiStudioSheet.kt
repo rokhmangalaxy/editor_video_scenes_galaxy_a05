@@ -59,8 +59,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.pribadi.editorvideo.R
+import com.pribadi.editorvideo.ai.AiCandidateBatch
 import com.pribadi.editorvideo.ai.AiExecutionPlan
 import com.pribadi.editorvideo.ai.AiGeneratedSegment
+import com.pribadi.editorvideo.ai.AiGenerationMode
 import com.pribadi.editorvideo.ai.AiInsertPreset
 import com.pribadi.editorvideo.ai.AiMultiStrategy
 import com.pribadi.editorvideo.ai.AiPlanner
@@ -72,6 +74,7 @@ import com.pribadi.editorvideo.ai.AiSpaceOption
 import com.pribadi.editorvideo.ai.AiTab
 import com.pribadi.editorvideo.ai.AiTimelineJoinStyle
 import com.pribadi.editorvideo.ai.AiWorkMode
+import com.pribadi.editorvideo.ai.WorkerSyncStatus
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.VideoInfo
@@ -185,6 +188,7 @@ fun AiStudioSheet(
                     AiTab.PROMPTS -> vm.aiPromptLibrary.size.toString()
                     AiTab.STATUS -> when {
                         vm.aiIsRunning -> "●"
+                        vm.aiCandidates.size >= 2 -> "${vm.aiCandidates.size}K"
                         vm.aiGeneratedSegments.isNotEmpty() -> vm.aiGeneratedSegments.size.toString()
                         else -> null
                     }
@@ -281,6 +285,28 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
         }
     }
 
+    Spacer(modifier = Modifier.height(10.dp))
+
+    // 1B. Pemilih Mode Generasi: Mode Tunggal (1 Video Utuh mis. 10 dtk langsung) vs Multi-Segmen
+    AiSectionLabel("MODE GENERASI DURASI")
+    Spacer(modifier = Modifier.height(5.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        for (gm in AiGenerationMode.entries) {
+            val active = vm.aiGenMode == gm
+            AiModeCard(
+                modifier = Modifier.weight(1f),
+                active = active,
+                title = (if (gm == AiGenerationMode.SINGLE) "🎬 " else "🎞️ ") + gm.label,
+                sub = gm.sub
+            ) {
+                vm.selectAiGenMode(gm)
+            }
+        }
+    }
+
     Spacer(modifier = Modifier.height(12.dp))
 
     // 2. Konten Sumber Frame & Pengaturan Durasi sesuai Mode Kerja
@@ -327,11 +353,42 @@ private fun AiCreateTabContent(vm: EditorViewModel) {
 
     Spacer(modifier = Modifier.height(12.dp))
 
-    // Tombol Utama Generate
+    // Tombol Utama Generate (menambahkan Kandidat baru bila hasil sebelumnya sudah ada!)
+    val nextCandNum = vm.aiCandidates.size + 1
+    val candTag = if (vm.aiCandidates.isNotEmpty()) "Kandidat #$nextCandNum · " else ""
     val btnLabel = if (vm.aiWorkMode == AiWorkMode.INSERT) {
-        "✨ Generate ${plan.count} Video AI (Sisipkan · ${Fmt.one(plan.targetTotalSec)} dtk)"
+        "✨ Generate ${candTag}${plan.count} Video (${Fmt.one(plan.targetTotalSec)} dtk)"
     } else {
-        "🔄 Generate Replace Scene (${Fmt.one(plan.targetTotalSec)} dtk · ${plan.count} Segmen)"
+        "🔄 Generate ${candTag}Replace (${Fmt.one(plan.targetTotalSec)} dtk · ${plan.count} Video)"
+    }
+    if (vm.aiCandidates.isNotEmpty()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Ev.Accent.copy(alpha = 0.14f))
+                .border(1.dp, Ev.Accent.copy(alpha = 0.45f), RoundedCornerShape(9.dp))
+                .clickable { vm.aiActiveTab = AiTab.STATUS }
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🗂 ${vm.aiCandidates.size} kandidat hasil tersimpan — generate lagi akan menambah kandidat baru tanpa menimpa!",
+                color = Ev.Text,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "Lihat →",
+                color = Ev.Yellow,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
     ActionButton(
         text = if (vm.aiIsRunning) "⏳ Sedang Memproses… Lihat Tab Status" else btnLabel,
@@ -505,76 +562,144 @@ private fun AiInsertModeSection(vm: EditorViewModel, plan: AiExecutionPlan) {
 
     Spacer(modifier = Modifier.height(12.dp))
 
-    // 4 Paket Durasi Mode Sisipkan: 3×3.5 dtk, 2×5 dtk, 7 dtk, 10 dtk
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AiSectionLabel("PAKET DURASI MODE SISIPKAN")
-        Text(
-            text = "${plan.count} Hasil · Total ${Fmt.one(plan.targetTotalSec)} dtk",
-            color = Ev.Yellow,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-        )
-    }
-    Spacer(modifier = Modifier.height(6.dp))
-
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        val presets = AiInsertPreset.entries
-        for (rowIdx in 0..1) {
+    if (vm.aiGenMode == AiGenerationMode.SINGLE) {
+        // Mode Tunggal: 1 Video Utuh langsung (2.0 – 10.0 dtk, mis. 10 dtk langsung 1 MP4 tanpa pecah 5×2!)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(11.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+                .padding(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "DURASI 1 VIDEO TUNGGAL UTUH",
+                    color = Ev.Muted,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "1 Video · ${Fmt.one(vm.aiInsertSingleDurSec)} dtk",
+                    color = Ev.Yellow,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Slider(
+                value = vm.aiInsertSingleDurSec.toFloat(),
+                onValueChange = { vm.updateAiInsertSingleDur(it.toDouble()) },
+                valueRange = AiPlanner.ZEROGPU_MIN_REPLACE_SEC.toFloat()..AiPlanner.MAX_WORKFLOW_SEC.toFloat(),
+                colors = SliderDefaults.colors(
+                    thumbColor = Ev.Yellow,
+                    activeTrackColor = Ev.Accent,
+                    inactiveTrackColor = Ev.Line
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                for (colIdx in 0..1) {
-                    val p = presets[rowIdx * 2 + colIdx]
-                    val active = vm.aiInsertPreset == p
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (active) Ev.Accent.copy(alpha = 0.20f) else Ev.Bg)
-                            .border(
-                                width = if (active) 1.5.dp else 1.dp,
-                                color = if (active) Ev.Accent else Ev.Line,
-                                shape = RoundedCornerShape(10.dp)
-                            )
-                            .clickable { vm.selectAiInsertPreset(p) }
-                            .padding(horizontal = 9.dp, vertical = 8.dp)
+                for (d in REPLACE_QUICK_DURS) {
+                    val on = abs(vm.aiInsertSingleDurSec - d) < 0.06
+                    AiSmallChip(
+                        label = "${Fmt.one(d)} dtk (1 Video)",
+                        active = on
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        vm.updateAiInsertSingleDur(d)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "🎬 ${plan.note}",
+                color = Ev.InfoText,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp
+            )
+        }
+    } else {
+        // Paket Durasi Mode Multi-Segmen (3×3.5 dtk, 2×5 dtk, Sambung 10 dtk, atau 1×10/1×7 dtk)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AiSectionLabel("PAKET DURASI MULTI-SEGMEN")
+            Text(
+                text = "${plan.count} Hasil · Total ${Fmt.one(plan.targetTotalSec)} dtk",
+                color = Ev.Yellow,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+
+        val multiPresets = listOf(
+            AiInsertPreset.THREE_BY_35,
+            AiInsertPreset.TWO_BY_5,
+            AiInsertPreset.FULL_10,
+            AiInsertPreset.SINGLE_10
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (rowIdx in 0..1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (colIdx in 0..1) {
+                        val p = multiPresets[rowIdx * 2 + colIdx]
+                        val active = vm.aiInsertPreset == p
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (active) Ev.Accent.copy(alpha = 0.20f) else Ev.Bg)
+                                .border(
+                                    width = if (active) 1.5.dp else 1.dp,
+                                    color = if (active) Ev.Accent else Ev.Line,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable { vm.selectAiInsertPreset(p) }
+                                .padding(horizontal = 9.dp, vertical = 8.dp)
                         ) {
-                            Text(
-                                text = p.label,
-                                color = Ev.Text,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(5.dp))
-                                    .background(if (active) Ev.Accent else Ev.Ghost)
-                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = p.badge,
-                                    color = Color.White,
-                                    fontSize = 9.sp,
+                                    text = p.label,
+                                    color = Ev.Text,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(if (active) Ev.Accent else Ev.Ghost)
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        text = p.badge,
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = p.sub,
+                                color = Ev.Muted,
+                                fontSize = 10.sp
+                            )
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = p.sub,
-                            color = Ev.Muted,
-                            fontSize = 10.sp
-                        )
                     }
                 }
             }
@@ -1662,11 +1787,21 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
         }
     }
 
-    // 2. Pratinjau Video & Pengatur Hasil (1, 2, atau 3 Hasil Video AI)
+    // 2. Sistem Kandidat Hasil AI + Pratinjau Video & Pengatur Hasil
+    val candidates = vm.aiCandidates
     val results = vm.aiGeneratedSegments
-    if (results.isNotEmpty()) {
+    if (candidates.isNotEmpty() || results.isNotEmpty()) {
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Panel Kandidat Hasil AI: pilih, bandingkan, tandai ⭐ Terbaik, atau generate Kandidat Baru kapan saja!
+        AiCandidatesSelectorPanel(vm = vm, candidates = candidates)
+
+        if (results.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+    }
+
+    if (results.isNotEmpty()) {
         val previewIdx = vm.aiPreviewResultIndex.coerceIn(0, results.lastIndex)
         val activeSeg = results[previewIdx]
 
@@ -1772,12 +1907,21 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
                 val targetSec = vm.aiSnapshotPlan?.targetTotalSec ?: vm.aiReplaceTargetDurSec
                 val audTag = if (vm.aiReplaceAudioMode == AiReplaceAudioMode.VIDEO_ONLY) {
                     "Audio Asli"
+        val activeCandLabel = vm.aiCandidates.getOrNull(vm.aiActiveCandidateIdx)?.let {
+            "Kandidat #${it.candidateNumber} · "
+        } ?: ""
+        val applyLabel = when {
+            vm.aiMergingClips -> "⏳ Memproses & Menerapkan ke Timeline…"
+            vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE -> {
+                val targetSec = vm.aiSnapshotPlan?.targetTotalSec ?: vm.aiReplaceTargetDurSec
+                val audTag = if (vm.aiReplaceAudioMode == AiReplaceAudioMode.VIDEO_ONLY) {
+                    "Audio Asli"
                 } else {
                     "Video+Audio"
                 }
-                "🔄 Ganti Scene #${vm.aiSnapshotReplaceSegIdx + 1} (${Fmt.one(targetSec)}s · $audTag)"
+                "🔄 Terapkan ${activeCandLabel}ke Scene #${vm.aiSnapshotReplaceSegIdx + 1} (${Fmt.one(targetSec)}s · $audTag)"
             }
-            else -> "➕ Sisipkan di ${Fmt.preciseTime(vm.aiSnapshotInsertSeekSec)}"
+            else -> "➕ Sisipkan ${activeCandLabel}di ${Fmt.preciseTime(vm.aiSnapshotInsertSeekSec)}"
         }
 
         Row(
@@ -1799,6 +1943,192 @@ private fun AiStatusTabContent(vm: EditorViewModel) {
                 onClick = { vm.applyAiResultsToTimeline(vm.aiTimelineJoinStyle) }
             )
         }
+    }
+}
+
+@Composable
+private fun AiCandidatesSelectorPanel(
+    vm: EditorViewModel,
+    candidates: List<AiCandidateBatch>
+) {
+    val activeIdx = vm.aiActiveCandidateIdx.coerceIn(0, max(0, candidates.lastIndex))
+    val activeCand = candidates.getOrNull(activeIdx)
+    val nextNum = candidates.size + 1
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Accent.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "🗂 KANDIDAT HASIL AI (${candidates.size} TERSEDIA)",
+                    color = Ev.Yellow,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Bandingkan beberapa hasil generate & pilih kandidat terbaik untuk timeline",
+                    color = Ev.Muted,
+                    fontSize = 9.5.sp
+                )
+            }
+            if (candidates.size >= 2 && !vm.aiIsRunning) {
+                Text(
+                    text = "Bersihkan",
+                    color = Ev.Muted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { vm.clearAllAiCandidates() }
+                )
+            }
+        }
+
+        if (candidates.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                for ((idx, cand) in candidates.withIndex()) {
+                    val selected = idx == activeIdx
+                    val thumb = cand.segments.firstOrNull()?.previewBmp
+                    val okCount = cand.segments.count { !it.failed && it.mp4File != null }
+                    Column(
+                        modifier = Modifier
+                            .width(126.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selected) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
+                            .border(
+                                width = if (selected) 1.5.dp else 1.dp,
+                                color = when {
+                                    selected -> Ev.Yellow
+                                    cand.isFavorite -> Color(0xFFFACC15).copy(alpha = 0.7f)
+                                    else -> Ev.Line
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            .clickable { vm.selectAiCandidate(idx) }
+                            .padding(7.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(Color.Black),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (thumb != null && !thumb.isRecycled) {
+                                Image(
+                                    bitmap = thumb.asImageBitmap(),
+                                    contentDescription = "Kandidat #${cand.candidateNumber}",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(4.dp)
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(Color(0xCC000000))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "#${cand.candidateNumber}" + (if (cand.isFavorite) " ⭐" else ""),
+                                    color = if (selected) Ev.Yellow else Color.White,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(4.dp)
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(Color(0xCC000000))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "$okCount/${cand.segments.size} ok",
+                                    color = Color(0xFF6EE7B7),
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = cand.summaryLabel,
+                            color = Ev.Text,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Pukul ${cand.createdAtLabel}",
+                            color = Ev.Muted,
+                            fontSize = 9.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        if (activeCand != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AiSmallChip(
+                    label = if (activeCand.isFavorite) "⭐ Terbaik" else "☆ Tandai Terbaik",
+                    active = activeCand.isFavorite
+                ) {
+                    vm.toggleFavoriteAiCandidate(activeIdx)
+                }
+                if (!vm.aiIsRunning) {
+                    AiSmallChip(
+                        label = "🗑 Hapus #${activeCand.candidateNumber}",
+                        active = false
+                    ) {
+                        vm.deleteAiCandidate(activeIdx)
+                    }
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                AiSmallChip(
+                    label = "⚙ Ubah Setelan",
+                    active = false
+                ) {
+                    vm.aiActiveTab = AiTab.CREATE
+                }
+            }
+        }
+
+        // Tombol langsung Generate Kandidat Baru dari Tab Status meskipun sudah ada hasil!
+        ActionButton(
+            text = if (vm.aiIsRunning) {
+                "⏳ Sedang Membuat Kandidat…"
+            } else {
+                "✨ Generate Kandidat Baru (#$nextNum) — Bandingkan Hasil"
+            },
+            primary = false,
+            enabled = !vm.aiIsRunning,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { vm.startAiGeneration() }
+        )
     }
 }
 
@@ -2389,16 +2719,51 @@ private fun AiRunnerTabContent(vm: EditorViewModel) {
             ActionButton(
                 text = "💾 Simpan",
                 primary = false,
-                modifier = Modifier.weight(0.9f),
+                modifier = Modifier.weight(0.85f),
                 onClick = { vm.saveAiRunnerConfig() }
             )
             ActionButton(
                 text = if (vm.aiTestingConnection) "⏳ Mengetes…" else "🔌 Tes Koneksi",
                 primary = true,
                 enabled = !vm.aiTestingConnection,
-                modifier = Modifier.weight(1.3f),
+                modifier = Modifier.weight(1.15f),
                 onClick = { vm.runAiConnectionTest() }
             )
+            ActionButton(
+                text = if (vm.aiSyncingWorker) "⏳ Sync…" else "🔄 Sync v3",
+                primary = false,
+                enabled = !vm.aiSyncingWorker,
+                modifier = Modifier.weight(0.95f),
+                onClick = { vm.syncRunnerWorkerToGitHub() }
+            )
+        }
+
+        val workerMsg = vm.aiWorkerSyncMessage
+        if (!workerMsg.isNullOrEmpty()) {
+            val okSync = vm.aiWorkerSyncStatus == WorkerSyncStatus.UP_TO_DATE ||
+                vm.aiWorkerSyncStatus == WorkerSyncStatus.AUTO_UPDATED
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (okSync) Color(0xFF10B981).copy(alpha = 0.14f)
+                        else Ev.Yellow.copy(alpha = 0.14f)
+                    )
+                    .border(
+                        1.dp,
+                        if (okSync) Color(0xFF10B981).copy(alpha = 0.6f) else Ev.Yellow.copy(alpha = 0.6f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(8.dp)
+            ) {
+                Text(
+                    text = workerMsg,
+                    color = Ev.Text,
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.5.sp
+                )
+            }
         }
     }
 

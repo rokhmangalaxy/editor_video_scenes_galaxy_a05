@@ -542,6 +542,30 @@ private fun Controls(vm: EditorViewModel) {
                     size = 19.dp
                 )
             }
+            // Tombol cepat Tandai (Marker) di bar kontrol pratinjau
+            if (vm.hasVideo) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (vm.markerNearCurrentPlayhead) Ev.Yellow.copy(alpha = 0.25f) else Ev.Ghost
+                        )
+                        .border(
+                            1.dp,
+                            if (vm.markerNearCurrentPlayhead) Ev.Yellow else Ev.Line,
+                            CircleShape
+                        )
+                        .clickable { vm.toggleMarkerAtPlayhead() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Ico(
+                        id = R.drawable.ic_marker,
+                        tint = if (vm.markerNearCurrentPlayhead) Ev.Yellow else Ev.Text,
+                        size = 18.dp
+                    )
+                }
+            }
         }
         Row(
             modifier = Modifier.align(Alignment.CenterEnd),
@@ -619,6 +643,37 @@ private fun ToolBar(vm: EditorViewModel) {
             .fillMaxWidth()
             .background(Ev.Panel)
     ) {
+        // Strip cepat navigasi & Split by Tanda (muncul otomatis saat ada tanda di timeline)
+        if (vm.hasVideo && vm.markerCount > 0) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Ev.Line)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Ev.Bg)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                Text(
+                    text = "📍 ${vm.markerCount} Tanda",
+                    color = Ev.Yellow,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                MarkerQuickPill("◀ Sebelumnya") { vm.jumpToMarker(forward = false) }
+                MarkerQuickPill("Berikutnya ▶") { vm.jumpToMarker(forward = true) }
+                MarkerQuickPill("✂ Split di Tanda", highlight = true) {
+                    vm.splitByMarkersNow(onlyActiveClip = false)
+                }
+                MarkerQuickPill("✕ Hapus Semua") { vm.clearAllMarkers() }
+            }
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -637,7 +692,14 @@ private fun ToolBar(vm: EditorViewModel) {
                 Seg.REV_LOOP -> "Loop"
                 else -> "Membalikkan"
             }
+            val markerLbl = if (vm.markerCount > 0) "Tandai (${vm.markerCount})" else "Tandai"
             ToolItem("Potong", R.drawable.ic_split, false) { vm.onTool(Tool.SPLIT) }
+            ToolItem("Gabung", R.drawable.ic_merge, vm.canMergeScene) { vm.onTool(Tool.MERGE) }
+            ToolItem(
+                markerLbl,
+                R.drawable.ic_marker,
+                vm.markerNearCurrentPlayhead || vm.markerCount > 0
+            ) { vm.onTool(Tool.MARKER) }
             ToolItem("Scene", R.drawable.ic_scene_detect, vm.sceneDetectSheet) { vm.onTool(Tool.SCENE_DETECT) }
             ToolItem("AI", R.drawable.ic_ai, vm.aiSheet) { vm.onTool(Tool.AI) }
             ToolItem(
@@ -657,6 +719,30 @@ private fun ToolBar(vm: EditorViewModel) {
             ToolItem("Cermin", R.drawable.ic_mirror, vm.flip) { vm.onTool(Tool.MIRROR) }
             ToolItem("Beku", R.drawable.ic_freeze, false) { vm.onTool(Tool.FREEZE) }
         }
+    }
+}
+
+@Composable
+private fun MarkerQuickPill(label: String, highlight: Boolean = false, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (highlight) Ev.Accent else Ev.Ghost)
+            .border(
+                1.dp,
+                if (highlight) Ev.Accent else Ev.Line,
+                RoundedCornerShape(12.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = label,
+            color = if (highlight) Color.White else Ev.Text,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
     }
 }
 

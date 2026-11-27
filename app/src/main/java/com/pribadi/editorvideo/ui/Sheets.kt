@@ -71,6 +71,7 @@ import com.pribadi.editorvideo.export.ExportScaleFit
 import com.pribadi.editorvideo.export.ExportSpecRef
 import com.pribadi.editorvideo.export.ExportState
 import com.pribadi.editorvideo.export.OverlayRenderer
+import com.pribadi.editorvideo.export.SceneMarkerMode
 import com.pribadi.editorvideo.model.Fmt
 import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.vm.EditorViewModel
@@ -1592,6 +1593,81 @@ fun SceneDetectSheet(vm: EditorViewModel, onClose: () -> Unit) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Integrasi Tanda (Markers) & Split by Tanda langsung di dalam Deteksi Scene
+        val activeClipMarkers = vm.markersInActiveSceneCount()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "📍 INTEGRASI TANDA (MARKERS)",
+                    color = Ev.Yellow,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "$activeClipMarkers di klip ini · ${vm.markerCount} total",
+                    color = Ev.InfoText,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            SimpleFlow(6.dp, 6.dp) {
+                for (mm in SceneMarkerMode.entries) {
+                    Chip(
+                        on = vm.sceneMarkerMode == mm,
+                        enabled = !vm.sceneScanning,
+                        label = mm.label
+                    ) {
+                        vm.selectSceneMarkerMode(mm)
+                    }
+                }
+            }
+            Text(
+                text = vm.sceneMarkerMode.sub,
+                color = Ev.Muted,
+                fontSize = 10.5.sp,
+                lineHeight = 14.5.sp
+            )
+            if (vm.markerCount > 0) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (activeClipMarkers > 0) {
+                        ActionButton(
+                            text = "✂ Split Klip Ini di $activeClipMarkers Tanda",
+                            primary = true,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            vm.splitByMarkersNow(onlyActiveClip = true)
+                        }
+                    }
+                    if (vm.markerCount > activeClipMarkers) {
+                        ActionButton(
+                            text = "✂ Split Semua (${vm.markerCount} Tanda)",
+                            primary = activeClipMarkers == 0,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            vm.splitByMarkersNow(onlyActiveClip = false)
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         // Kontrol 1: Sensitivitas Deteksi (min 0.1 .. 1.0)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1947,8 +2023,8 @@ private fun DetectedSceneGridCard(
                     .padding(horizontal = 7.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = "#${scene.index + 1}",
-                    color = Color.White,
+                    text = "#${scene.index + 1}" + (if (scene.fromMarker) " · 📍 Tanda" else ""),
+                    color = if (scene.fromMarker) Ev.Yellow else Color.White,
                     fontSize = 10.5.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -3277,35 +3353,73 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
             }
         }
 
-        if (info.hasMixedSpecs) {
+        // Panel Penanganan "Sesuai Video Asli" saat ada perbedaan Kualitas & FPS (Video Asli vs AI)
+        // Selalu tampil saat timeline memiliki >1 sumber/spesifikasi ATAU saat "Sesuai Video Asli" aktif
+        // sehingga perilaku penggabungan kualitas & FPS Video Asli + AI transparan dan bisa diatur langsung!
+        if (info.hasMixedSpecs || vm.sourceCount > 1 || origActive) {
             Spacer(modifier = Modifier.height(8.dp))
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(Ev.Bg)
-                    .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                    .border(
+                        1.dp,
+                        if (info.hasMixedSpecs) Ev.Accent.copy(alpha = 0.65f) else Ev.Line,
+                        RoundedCornerShape(12.dp)
+                    )
                     .padding(11.dp)
             ) {
-                Text(
-                    text = "PENANGANAN KLIP CAMPURAN (VIDEO ASLI + AI / ROTASI)",
-                    color = Ev.Yellow,
-                    fontSize = 10.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.5.sp
-                )
-                if (info.mixedSpecsSummary.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text = info.mixedSpecsSummary,
-                        color = Ev.Muted,
+                        text = if (info.hasMixedSpecs) {
+                            "⚙ PENANGANAN BEDA KUALITAS & FPS (ASLI vs AI)"
+                        } else {
+                            "ℹ CARA KERJA \"SESUAI VIDEO ASLI\" (ASLI + AI)"
+                        },
+                        color = Ev.Yellow,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.4.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "${plan.width}×${plan.height} · ${Fmt.fps(plan.fps)}fps",
+                        color = Ev.InfoText,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                val summaryToShow = info.mixedSpecsSummary.ifEmpty { info.allSourcesSummary }
+                if (summaryToShow.isNotEmpty()) {
+                    Text(
+                        text = "Terdeteksi di timeline: $summaryToShow",
+                        color = Ev.InfoText,
                         fontSize = 11.sp,
                         lineHeight = 15.sp,
-                        modifier = Modifier.padding(top = 2.dp, bottom = 6.dp)
+                        modifier = Modifier.padding(top = 3.dp)
                     )
                 }
 
                 Text(
-                    text = "Acuan Kualitas & FPS:",
+                    text = if (info.hasMixedSpecs) {
+                        "Karena 1 video MP4 gabungan memiliki 1 kanvas resolusi & 1 FPS tetap, pilih acuan yang dipakai oleh \"Sesuai Video Asli\" (klip AI otomatis di-upscale/frame-sync mulus tanpa gepeng):"
+                    } else {
+                        "Saat ini seluruh klip seragam. Bila nanti Anda menyisipkan/replace klip AI yang berbeda resolusi atau FPS (mis. AI 480×832 @ 16/24fps + Video Asli 1080p @ 30/60fps), pilih aturan acuan di bawah:"
+                    },
+                    color = Ev.Muted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.5.sp,
+                    modifier = Modifier.padding(top = 3.dp, bottom = 7.dp)
+                )
+
+                Text(
+                    text = "Acuan Kualitas & FPS untuk \"Sesuai Video Asli\":",
                     color = Ev.Text,
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -3335,31 +3449,33 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
                     modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
                 )
 
-                Text(
-                    text = "Penyesuaian Bingkai (bila rasio berbeda):",
-                    color = Ev.Text,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(bottom = 5.dp)
-                )
-                SimpleFlow(6.dp, 6.dp) {
-                    for (fitOpt in ExportScaleFit.entries) {
-                        Chip(
-                            on = vm.exportScaleFit == fitOpt,
-                            enabled = !running,
-                            label = fitOpt.label
-                        ) {
-                            vm.exportScaleFit = fitOpt
+                if (info.hasMixedSpecs || vm.sourceCount > 1) {
+                    Text(
+                        text = "Penyesuaian Bingkai (bila rasio video asli & AI berbeda):",
+                        color = Ev.Text,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 5.dp)
+                    )
+                    SimpleFlow(6.dp, 6.dp) {
+                        for (fitOpt in ExportScaleFit.entries) {
+                            Chip(
+                                on = vm.exportScaleFit == fitOpt,
+                                enabled = !running,
+                                label = fitOpt.label
+                            ) {
+                                vm.exportScaleFit = fitOpt
+                            }
                         }
                     }
+                    Text(
+                        text = vm.exportScaleFit.sub,
+                        color = Ev.Muted,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
-                Text(
-                    text = vm.exportScaleFit.sub,
-                    color = Ev.Muted,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
             }
         }
 

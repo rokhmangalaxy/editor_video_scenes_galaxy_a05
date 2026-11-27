@@ -78,6 +78,7 @@ import subprocess
 import requests
 from gradio_client import Client, handle_file
 
+WORKER_VERSION = 3
 SPACES = {
     "r3gm/wan2-2-fp8da-aoti-preview": "r3gm",
     "kulkas2pintu/wan777": "kulkas",
@@ -227,16 +228,30 @@ def load_project_items(root, project):
 
 def extract_last_frame(video_path, directory, name):
     out_jpg = Path(directory) / f"{name}_last.jpg"
+    # Strategi 1: decode 0.6 detik terakhir dengan -update 1 sehingga menimpa terus sampai frame PALING AKHIR
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-sseof", "-0.08", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(out_jpg)],
+            ["ffmpeg", "-y", "-sseof", "-0.6", "-i", str(video_path), "-update", "1", "-q:v", "2", str(out_jpg)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=20,
+            timeout=25,
         )
-        if out_jpg.is_file() and out_jpg.stat().st_size > 0:
-            return handle_file(str(out_jpg))
+        if out_jpg.is_file() and out_jpg.stat().st_size > 200:
+            return out_jpg
+    except Exception:
+        pass
+    # Strategi 2 (fallback pasti berhasil walau video sangat pendek): balikkan urutan frame lalu ambil frame ke-0
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path), "-vf", "reverse", "-frames:v", "1", "-q:v", "2", str(out_jpg)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if out_jpg.is_file() and out_jpg.stat().st_size > 200:
+            return out_jpg
     except Exception:
         pass
     return None
@@ -256,8 +271,9 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
         safety = data.get("enable_safety_checker")
         if space not in SPACES or not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 2000:
             raise ValueError("Space atau prompt tidak valid")
-        if type(duration) not in (int, float) or duration not in (3.5, 5, 7) or type(safe) is not bool or type(safety) is not bool:
+        if type(duration) not in (int, float) or not (1.0 <= float(duration) <= 10.0) or type(safe) is not bool or type(safety) is not bool:
             raise ValueError("Parameter tidak valid")
+        duration_val = round(float(duration), 1)
         if space != "r3gm/wan2-2-fp8da-aoti-preview" and safety:
             raise ValueError("Filter ini tidak tersedia melalui API Space tersebut")
 
@@ -272,7 +288,10 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
             image_cache[ref_id] = decoded
             return decoded
 
-        if bool(data.get("chain_from_prev")) and prev_last_frame is not None:
+        want_chain = bool(data.get("chain_from_prev"))
+        if want_chain:
+            if prev_last_frame is None:
+                raise ValueError("Frame terakhir hasil AI sebelumnya tidak tersedia untuk mode berantai")
             first = prev_last_frame
         else:
             first = read_image(data.get("input_image"), "first")
@@ -305,7 +324,7 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
             running_status["workflow_wait_seconds"] = item_wait
         write(status_url, running_status)
 
-        options = dict(input_image=first, last_image=last, prompt=prompt, duration_seconds=duration,
+        options = dict(input_image=first, last_image=last, prompt=prompt, duration_seconds=duration_val,
                        safe_mode=safe, video_component=False, api_name="/generate_video")
         if SPACES[space] == "r3gm":
             options["enable_safety_checker"] = safety
@@ -344,7 +363,19 @@ def run_single_item(root, project, task_key, data, temp, image_cache, overall_ru
         }
         if item_wait is not None:
             item_completed["workflow_wait_seconds"] = item_wait
-        extracted_tail = extract_last_frame(path, temp, task_key)
+        item_completed["worker_version"] = WORKER_VERSION
+        if want_chain:
+            item_completed["chained_from_prev"] = True
+        tail_jpg = extract_last_frame(path, temp, task_key)
+        extracted_tail = None
+        if tail_jpg is not None:
+            extracted_tail = handle_file(str(tail_jpg))
+            if total > 1 and index < total - 1:
+                try:
+                    tail_b64 = base64.b64encode(tail_jpg.read_bytes()).decode("ascii")
+                    write(endpoint(root, project, f"images/chain_tail_{task_key}"), {"mime_type": "image/jpeg", "base64": tail_b64})
+                except Exception:
+                    pass
         print(f"Item {task_key} selesai; hasil tersimpan di Realtime Database.", flush=True)
         return True, item_completed, extracted_tail
     except Exception as exc:
