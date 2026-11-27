@@ -2675,8 +2675,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 for ((fRaw, infRaw, useDur) in finalFilesToRegister) {
                     val (f, inf) = WanStudioClient.ensureExpectedOrientation(
                         context = ctx,
-                        file = fRaw,
-                        info = infRaw,
+                        mp4File = fRaw,
+                        probedInfo = infRaw,
                         expectedPortrait = expectedPortrait,
                         outDir = outDir
                     )
