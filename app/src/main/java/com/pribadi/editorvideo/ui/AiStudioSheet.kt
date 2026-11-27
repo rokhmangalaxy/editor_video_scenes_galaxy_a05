@@ -544,7 +544,7 @@ private fun AiInsertModeSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = p.title,
+                                text = p.label,
                                 color = Ev.Text,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
@@ -565,7 +565,7 @@ private fun AiInsertModeSection(vm: EditorViewModel, plan: AiExecutionPlan) {
                         }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = p.subtitle,
+                            text = p.sub,
                             color = Ev.Muted,
                             fontSize = 10.sp
                         )
@@ -852,7 +852,7 @@ private fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
 
         // Penjelasan Dekomposisi ZeroGPU Otomatis
         Text(
-            text = "⚙ ${plan.summaryNote}",
+            text = "⚙ ${plan.note}",
             color = Ev.InfoText,
             fontSize = 10.5.sp,
             lineHeight = 14.5.sp
@@ -915,7 +915,7 @@ private fun AiMultiOutputPreConfigCard(vm: EditorViewModel, plan: AiExecutionPla
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = st.desc,
+                            text = st.sub,
                             color = Ev.Muted,
                             fontSize = 9.5.sp,
                             lineHeight = 12.5.sp
@@ -1095,7 +1095,7 @@ private fun AiSpaceAndSafetySection(vm: EditorViewModel) {
     ) {
         for (sp in AiSpaceOption.entries) {
             AiSmallChip(
-                label = sp.shortLabel,
+                label = sp.displayLabel,
                 active = vm.aiSpaceOption == sp
             ) {
                 vm.selectAiSpace(sp)

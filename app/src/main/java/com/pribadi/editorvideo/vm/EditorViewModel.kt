@@ -3075,7 +3075,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.13 (Terbaru)",
+            version = "v1.0.14 (Terbaru)",
             date = "27/11/2026",
             title = "Studio Video AI v2: Mode Sisipkan & Replace Scene, Multi-Hasil, Management Prompt & Runner",
             items = listOf(
