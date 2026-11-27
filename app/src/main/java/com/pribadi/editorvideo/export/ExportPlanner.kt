@@ -7,7 +7,7 @@ import com.pribadi.editorvideo.model.VideoInfo
 data class ExportPlan(
     val width: Int,
     val height: Int,
-    /** Indeks kualitas yang benar-benar dipakai (bisa lebih rendah dari pilihan bila encoder tidak mendukung). */
+    /** Indeks kualitas yang benar-benar dipakai (-1 bila memakai ukuran asli video sumber). */
     val qualityIndex: Int,
     /** FPS efektif (tidak pernah lebih tinggi dari FPS sumber). */
     val fps: Double,
@@ -22,7 +22,7 @@ object ExportPlanner {
 
     /**
      * Merencanakan ekspor.
-     * supports(w, h) = apakah encoder H.264 perangkat mendukung ukuran tersebut.
+     * Mendukung ukuran & FPS asli video sumber ketika [qIdx] / [fIdx] bernilai [ExportMath.ORIGINAL_IDX].
      */
     fun plan(
         info: VideoInfo,
@@ -34,54 +34,94 @@ object ExportPlanner {
         val notes = ArrayList<String>()
         val labels = ExportMath.QUALITY_LABELS
         val values = ExportMath.QUALITY_VALUES
-        val qi = qIdx.coerceIn(0, values.size - 1)
 
-        // --- resolusi: pakai pilihan pengguna; bila encoder tidak mendukung, turun ke yang tertinggi yang didukung.
-        val wanted = ExportMath.outDims(info.dispW, info.dispH, rot, values[qi])
-        var used = qi
-        var dims = wanted
-        if (!supports(wanted[0], wanted[1])) {
-            var found = -1
-            var k = qi - 1
-            while (k >= 0) {
-                val d = ExportMath.outDims(info.dispW, info.dispH, rot, values[k])
-                if (supports(d[0], d[1])) {
-                    found = k
-                    break
-                }
-                k--
-            }
-            if (found >= 0) {
-                val d = ExportMath.outDims(info.dispW, info.dispH, rot, values[found])
-                notes.add(
-                    "Encoder perangkat tidak mendukung " + labels[qi] + " (" + wanted[0] + "×" + wanted[1] +
-                        "). Otomatis memakai " + labels[found] + " (" + d[0] + "×" + d[1] + ")."
-                )
-                used = found
-                dims = d
+        val used: Int
+        val dims: IntArray
+
+        if (qIdx == ExportMath.ORIGINAL_IDX) {
+            val wantedOrig = ExportMath.origDims(info.dispW, info.dispH, rot)
+            if (supports(wantedOrig[0], wantedOrig[1])) {
+                used = ExportMath.ORIGINAL_IDX
+                dims = wantedOrig
             } else {
-                notes.add(
-                    "Encoder perangkat mungkin tidak mendukung " + labels[qi] + " (" + wanted[0] + "×" +
-                        wanted[1] + "); ukuran akan disesuaikan otomatis."
-                )
+                var found = -1
+                var k = values.size - 1
+                while (k >= 0) {
+                    val d = ExportMath.outDims(info.dispW, info.dispH, rot, values[k])
+                    if (supports(d[0], d[1])) {
+                        found = k
+                        break
+                    }
+                    k--
+                }
+                if (found >= 0) {
+                    val d = ExportMath.outDims(info.dispW, info.dispH, rot, values[found])
+                    notes.add(
+                        "Encoder perangkat tidak mendukung resolusi asli (" + wantedOrig[0] + "×" + wantedOrig[1] +
+                            "). Otomatis memakai " + labels[found] + " (" + d[0] + "×" + d[1] + ")."
+                    )
+                    used = found
+                    dims = d
+                } else {
+                    used = ExportMath.ORIGINAL_IDX
+                    dims = wantedOrig
+                }
             }
+        } else {
+            val qi = qIdx.coerceIn(0, values.size - 1)
+            val wanted = ExportMath.outDims(info.dispW, info.dispH, rot, values[qi])
+            var chosenIdx = qi
+            var chosenDims = wanted
+            if (!supports(wanted[0], wanted[1])) {
+                var found = -1
+                var k = qi - 1
+                while (k >= 0) {
+                    val d = ExportMath.outDims(info.dispW, info.dispH, rot, values[k])
+                    if (supports(d[0], d[1])) {
+                        found = k
+                        break
+                    }
+                    k--
+                }
+                if (found >= 0) {
+                    val d = ExportMath.outDims(info.dispW, info.dispH, rot, values[found])
+                    notes.add(
+                        "Encoder perangkat tidak mendukung " + labels[qi] + " (" + wanted[0] + "×" + wanted[1] +
+                            "). Otomatis memakai " + labels[found] + " (" + d[0] + "×" + d[1] + ")."
+                    )
+                    chosenIdx = found
+                    chosenDims = d
+                } else {
+                    notes.add(
+                        "Encoder perangkat mungkin tidak mendukung " + labels[qi] + " (" + wanted[0] + "×" +
+                            wanted[1] + "); ukuran akan disesuaikan otomatis."
+                    )
+                }
+            }
+            used = chosenIdx
+            dims = chosenDims
         }
 
-        // --- FPS: hanya bisa diturunkan.
-        val fpsIdx = fIdx.coerceIn(0, ExportMath.FPS_VALUES.size - 1)
-        val target = ExportMath.FPS_VALUES[fpsIdx].toDouble()
-        val src = info.fps.toDouble()
+        // --- FPS: gunakan FPS asli sumber bila fIdx == ORIGINAL_IDX, selain itu hanya bisa diturunkan.
+        val src = if (info.fps > 1f) info.fps.toDouble() else 30.0
         val eff: Double
         var drop = false
-        if (target > src + 0.5) {
+        if (fIdx == ExportMath.ORIGINAL_IDX) {
             eff = src
-            notes.add(
-                "FPS sumber hanya " + Fmt.fps(src) + ". FPS tidak bisa dinaikkan, jadi hasil tetap " +
-                    Fmt.fps(src) + " fps."
-            )
+            drop = false
         } else {
-            eff = target
-            drop = target < src - 0.5
+            val fpsIdx = fIdx.coerceIn(0, ExportMath.FPS_VALUES.size - 1)
+            val target = ExportMath.FPS_VALUES[fpsIdx].toDouble()
+            if (target > src + 0.5) {
+                eff = src
+                notes.add(
+                    "FPS sumber hanya " + Fmt.fps(src) + ". FPS tidak bisa dinaikkan, jadi hasil tetap " +
+                        Fmt.fps(src) + " fps."
+                )
+            } else {
+                eff = target
+                drop = target < src - 0.5
+            }
         }
 
         val br = ExportMath.bitrate(dims[0], dims[1], eff).toInt()

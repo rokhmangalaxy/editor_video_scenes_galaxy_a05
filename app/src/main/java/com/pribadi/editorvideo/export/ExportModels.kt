@@ -4,7 +4,14 @@ import com.pribadi.editorvideo.model.Seg
 import com.pribadi.editorvideo.model.TextOverlayConfig
 import com.pribadi.editorvideo.model.VideoInfo
 
-enum class ExportMode { VIDEO, ALL, CURRENT }
+enum class ExportMode { VIDEO, ALL, CURRENT, BY_TAG }
+
+/** Bentuk keluaran saat mengekspor berdasarkan Tag (ExportMode.BY_TAG). */
+enum class ByTagExportStyle(val label: String) {
+    MERGE_SINGLE("Gabung 1 Video"),
+    SPLIT_CLIPS("Pisah per Klip"),
+    PER_TAG("1 File per Tag")
+}
 
 /** Spesifikasi satu sumber video yang diimpor. */
 data class SourceSpec(
@@ -25,7 +32,9 @@ data class ExportRequest(
     val style2: TextOverlayConfig,
     val qIdx: Int,
     val fIdx: Int,
-    val mode: ExportMode
+    val mode: ExportMode,
+    val selectedExportTags: List<String> = emptyList(),
+    val byTagStyle: ByTagExportStyle = ByTagExportStyle.MERGE_SINGLE
 )
 
 /** Satu file keluaran: sufiks nama file dan potongan yang dimuat. */

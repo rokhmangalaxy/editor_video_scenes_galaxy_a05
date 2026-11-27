@@ -22,6 +22,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import com.pribadi.editorvideo.export.ByTagExportStyle
 import com.pribadi.editorvideo.export.DetectedScene
 import com.pribadi.editorvideo.export.EncoderCaps
 import com.pribadi.editorvideo.export.ExportCenter
@@ -142,7 +143,9 @@ data class ExportInfo(
     val mb: Double,
     val subVideo: String,
     val subAll: String,
-    val subCurrent: String
+    val subCurrent: String,
+    val subByTag: String,
+    val canStart: Boolean = true
 )
 
 /**
@@ -201,6 +204,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     var playing by mutableStateOf(false)
+        private set
+    /** Toggle mode loop pada pratinjau (memutar/menjeda tetap lewat tombol Play/Pause biasa). */
+    var previewLoop by mutableStateOf(false)
         private set
     var canUndo by mutableStateOf(false)
         private set
@@ -324,6 +330,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var exportMode by mutableStateOf(ExportMode.VIDEO)
     var qIdx by mutableIntStateOf(ExportMath.DEFAULT_QUALITY)
     var fIdx by mutableIntStateOf(ExportMath.DEFAULT_FPS)
+    var exportSelectedTags by mutableStateOf<List<String>>(emptyList())
+        private set
+    var exportByTagStyle by mutableStateOf(ByTagExportStyle.MERGE_SINGLE)
 
     val exportState = ExportCenter.state
 
@@ -1199,6 +1208,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Mengaktifkan/mematikan mode Loop pratinjau tanpa langsung memutar atau menjeda video. */
+    fun togglePreviewLoop() {
+        previewLoop = !previewLoop
+        prefs.edit().putBoolean(KEY_PREVIEW_LOOP, previewLoop).apply()
+        bump()
+        toast(if (previewLoop) "Mode Loop pratinjau aktif" else "Mode Loop pratinjau nonaktif")
+    }
+
     fun togglePlay() {
         if (playing) pause() else play()
     }
@@ -1310,6 +1327,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             if (curSeg < segs.size - 1) {
                 enterSeg(curSeg + 1)
                 core.t = core.lay.off[curSeg]
+            } else if (previewLoop) {
+                enterSeg(0)
+                core.t = 0.0
             } else {
                 core.t = core.total
                 endPlay()
@@ -1920,13 +1940,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     val updateHistory: List<UpdateLogEntry> = listOf(
         UpdateLogEntry(
-            version = "v1.0.10 (Terbaru)",
+            version = "v1.0.11 (Terbaru)",
+            date = "27/11/2026",
+            title = "Ekspor Berdasarkan Tag, Toggle Loop Preview & Shortcut Sesuai Video Asli",
+            items = listOf(
+                "✓ [Pengembangan] Mode Ekspor Berdasarkan Tag (By Tag): pilih satu/beberapa Tag dengan opsi keluaran Gabung 1 Video, Pisah per Klip, atau 1 File per Tag.",
+                "✓ [Pengembangan] Toggle Loop pada kontrol Pratinjau untuk mengaktifkan/mematikan pengulangan otomatis tanpa mengubah fungsi tombol Play/Pause biasa.",
+                "✓ [Pengembangan] Shortcut \"Sesuai Video Asli\" di menu Ekspor untuk langsung menyamakan resolusi (Kualitas) dan FPS dengan video sumber asli."
+            )
+        ),
+        UpdateLogEntry(
+            version = "v1.0.10",
             date = "27/11/2026",
             title = "Opsi Upload Galeri / File Manager, Seek Auto Seleksi Timeline & Eksport/Import Tagging",
             items = listOf(
-                "✓ [Pengembangan] Saat pratinjau kosong, mengetuk placeholder pratinjau menampilkan opsi Upload dari Galeri (Photo Picker) atau pilih dari File Manager.",
-                "✓ [Pengembangan] Fitur Seek Auto Seleksi di Timeline: mengetuk klip sesudah klip aktif otomatis menempatkan seek di frame awal klip tersebut, sedangkan mengetuk klip sebelumnya menempatkan seek di akhir frame klip tersebut.",
-                "✓ [Pengembangan] Fitur Eksport & Import Tagging di Mode Grid (simpan/buka berkas .json lewat File Manager maupun salin/tempel Clipboard, lengkap dengan mode Gabung atau Timpa)."
+                "✓ [Pengembangan] Placeholder pratinjau kosong menampilkan opsi Upload dari Galeri atau File Manager.",
+                "✓ [Pengembangan] Seek Auto Seleksi di Timeline (klik klip sesudahnya -> frame awal, klik klip sebelumnya -> akhir frame).",
+                "✓ [Pengembangan] Eksport & Import Tagging (.json File Manager & Clipboard)."
             )
         ),
         UpdateLogEntry(
@@ -1935,17 +1965,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             title = "Frame Pertama Utuh di Mode Grid, Floating Range Kolom & 12 Warna Custom Tag Transparan",
             items = listOf(
                 "✓ [Bug Fixed] Thumbnail setiap item di Mode Grid menampilkan frame pertama klip secara utuh sesuai autoplay.",
-                "✓ [Pengembangan] Input range vertikal kolom (3–9) tampil sebagai panel floating saat simbol kostum kolom di-toggle.",
-                "✓ [Pengembangan] Custom Tag 12 opsi warna & transparansi pada seluruh label item Grid."
-            )
-        ),
-        UpdateLogEntry(
-            version = "v1.0.8",
-            date = "27/11/2026",
-            title = "Presisi Frame AI 100% Identik Preview & Mode Grid (3–9 Kolom, Tag/Sort/Filter, Multiplayer Collage)",
-            items = listOf(
-                "✓ [Bug Fixed] Gambar di panel AI 100% sama persis dengan tampilan Preview + step ±1 frame.",
-                "✓ [Pengembangan] Mode Grid 3–9 kolom, Tagging, Sort, Filter, serta Hold Multiseleksi & Multiplayer Collage."
+                "✓ [Pengembangan] Floating range kolom (3–9) & Custom Tag 12 warna dengan label transparan."
             )
         )
     )
@@ -1956,6 +1976,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         Ev.activeTheme = appTheme
 
         gridColumns = prefs.getInt(KEY_GRID_COLS, 3).coerceIn(3, 9)
+        previewLoop = prefs.getBoolean(KEY_PREVIEW_LOOP, false)
 
         val savedTagsJson = prefs.getString(KEY_CUSTOM_TAGS, null)
         if (!savedTagsJson.isNullOrEmpty()) {
@@ -2445,12 +2466,86 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun demoInfo(): VideoInfo = VideoInfo(1080, 1920, 0, 0L, 30f, false)
 
+    val isOriginalExportSpec: Boolean
+        get() = qIdx == ExportMath.ORIGINAL_IDX && fIdx == ExportMath.ORIGINAL_IDX
+
+    /** Shortcut untuk mengatur Kualitas & FPS agar sama persis dengan video asli. */
+    fun applyOriginalExportSpec() {
+        qIdx = ExportMath.ORIGINAL_IDX
+        fIdx = ExportMath.ORIGINAL_IDX
+        bump()
+        toast("Kualitas & FPS disetel sesuai video asli")
+    }
+
+    /** Ringkasan resolusi & FPS asli dari sumber video utama (sudah memperhitungkan rotasi). */
+    fun originalSpecLabel(): String {
+        val inf = sources.firstOrNull()?.info ?: info ?: demoInfo()
+        val dims = ExportMath.origDims(inf.dispW, inf.dispH, rot)
+        val fpsVal = if (inf.fps > 1f) inf.fps.toDouble() else 30.0
+        return "${dims[0]}×${dims[1]} · ${Fmt.fps(fpsVal)} fps"
+    }
+
+    /** Daftar Tag yang benar-benar terpasang pada klip di timeline beserta jumlah klipnya. */
+    fun usedTagsInTimeline(): List<Pair<String, Int>> {
+        val segs = core.segs
+        if (segs.isEmpty()) return emptyList()
+        val ordered = LinkedHashSet<String>()
+        for (t in availableTags) ordered.add(t)
+        for (g in segs) {
+            for (t in g.tags) ordered.add(t)
+        }
+        val res = ArrayList<Pair<String, Int>>()
+        for (tag in ordered) {
+            val cnt = segs.count { g -> g.tags.any { it.equals(tag, ignoreCase = true) } }
+            if (cnt > 0) res.add(tag to cnt)
+        }
+        return res
+    }
+
+    fun selectExportByTagMode() {
+        exportMode = ExportMode.BY_TAG
+        ensureValidExportTags()
+        bump()
+    }
+
+    private fun ensureValidExportTags() {
+        val usedNames = usedTagsInTimeline().map { it.first }
+        val validCurrent = exportSelectedTags.filter { sel ->
+            usedNames.any { it.equals(sel, ignoreCase = true) }
+        }
+        exportSelectedTags = if (validCurrent.isNotEmpty()) {
+            validCurrent
+        } else {
+            usedNames
+        }
+    }
+
+    fun toggleExportTag(tag: String) {
+        exportSelectedTags = if (exportSelectedTags.any { it.equals(tag, ignoreCase = true) }) {
+            exportSelectedTags.filterNot { it.equals(tag, ignoreCase = true) }
+        } else {
+            exportSelectedTags + tag
+        }
+        bump()
+    }
+
+    fun toggleAllExportTags() {
+        val allUsed = usedTagsInTimeline().map { it.first }
+        exportSelectedTags = if (allUsed.isNotEmpty() && exportSelectedTags.size >= allUsed.size) {
+            emptyList()
+        } else {
+            allUsed
+        }
+        bump()
+    }
+
     fun openExport() {
         if (!hasVideo || sources.isEmpty() || core.segs.isEmpty()) {
             toast("Impor video dulu sebelum ekspor")
             return
         }
         pause()
+        ensureValidExportTags()
         exportSheet = true
     }
 
@@ -2464,17 +2559,46 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun exportInfo(): ExportInfo {
+        val _rev = rev
         val inf = sources.firstOrNull()?.info ?: info ?: demoInfo()
         val plan = ExportPlanner.plan(inf, rot, qIdx, fIdx) { w, h -> EncoderCaps.supportsH264(w, h) }
         val cur = core.segs.getOrNull(core.sel)?.len ?: 0.0
-        val dur = if (exportMode == ExportMode.CURRENT) cur else core.total
+
+        val usedTags = usedTagsInTimeline()
+        val byTagJobs = ExportMath.buildJobs(
+            ExportMode.BY_TAG,
+            core.segs,
+            core.sel,
+            exportSelectedTags,
+            exportByTagStyle
+        )
+        val byTagDur = byTagJobs.sumOf { job -> job.segs.sumOf { it.len } }
+        val subByTag = when {
+            usedTags.isEmpty() -> "Belum ada klip bertag (tambahkan lewat Mode Grid)"
+            exportSelectedTags.isEmpty() -> "Pilih minimal 1 Tag di bawah (${usedTags.size} tag tersedia)"
+            byTagJobs.isEmpty() -> "Tidak ada klip cocok untuk Tag terpilih"
+            else -> "${byTagJobs.size} file · " + Fmt.time(byTagDur) +
+                (if (byTagJobs.size > 1) " total" else "")
+        }
+
+        val dur = when (exportMode) {
+            ExportMode.CURRENT -> cur
+            ExportMode.BY_TAG -> byTagDur
+            else -> core.total
+        }
+        val canStart = when (exportMode) {
+            ExportMode.BY_TAG -> exportSelectedTags.isNotEmpty() && byTagJobs.isNotEmpty()
+            else -> true
+        }
         val mb = ExportMath.estimateMB(plan.width, plan.height, plan.fps, dur)
         return ExportInfo(
-            plan,
-            mb,
-            "1 file · " + Fmt.time(core.total),
-            core.segs.size.toString() + " file · " + Fmt.time(core.total) + " total",
-            "1 file · " + Fmt.time(cur)
+            plan = plan,
+            mb = mb,
+            subVideo = "1 file · " + Fmt.time(core.total),
+            subAll = core.segs.size.toString() + " file · " + Fmt.time(core.total) + " total",
+            subCurrent = "1 file · " + Fmt.time(cur),
+            subByTag = subByTag,
+            canStart = canStart
         )
     }
 
@@ -2484,6 +2608,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         if (ExportCenter.isRunning()) return
+        if (exportMode == ExportMode.BY_TAG) {
+            val testJobs = ExportMath.buildJobs(
+                ExportMode.BY_TAG,
+                core.segs,
+                core.sel,
+                exportSelectedTags,
+                exportByTagStyle
+            )
+            if (exportSelectedTags.isEmpty() || testJobs.isEmpty()) {
+                toast("Pilih minimal 1 Tag yang memiliki klip sebelum mengekspor")
+                return
+            }
+        }
         val primary = sources.first()
         val specs = sources.map { SourceSpec(it.uri.toString(), it.info) }
         val req = ExportRequest(
@@ -2498,7 +2635,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             style2 = style2,
             qIdx = qIdx,
             fIdx = fIdx,
-            mode = exportMode
+            mode = exportMode,
+            selectedExportTags = exportSelectedTags,
+            byTagStyle = exportByTagStyle
         )
         val plan = ExportPlanner.plan(primary.info, core.rot, qIdx, fIdx) { w, h -> EncoderCaps.supportsH264(w, h) }
         ExportCenter.start(getApplication<Application>(), req, plan)
@@ -2541,6 +2680,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private const val KEY_NOTES_JSON = "notes_json"
         private const val KEY_APP_THEME = "app_theme"
         private const val KEY_GRID_COLS = "grid_columns"
+        private const val KEY_PREVIEW_LOOP = "preview_loop_enabled"
         private const val KEY_CUSTOM_TAGS = "custom_tags_json"
         private const val KEY_TAG_COLORS_JSON = "custom_tag_colors_json"
         private const val KEY_SCENE_SENS = "scene_sensitivity"

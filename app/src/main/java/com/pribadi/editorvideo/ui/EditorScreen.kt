@@ -423,18 +423,39 @@ private fun FullscreenLayer(vm: EditorViewModel, onImport: () -> Unit) {
             Ico(R.drawable.ic_close, Color.White, 24.dp)
         }
 
-        Box(
+        Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = 24.dp)
-                .size(56.dp)
-                .clip(CircleShape)
-                .background(Color(0x66000000))
-                .clickable { vm.togglePlay() },
-            contentAlignment = Alignment.Center
+                .padding(bottom = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Ico(if (vm.playing) R.drawable.ic_pause else R.drawable.ic_play, Color.White, 32.dp)
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x66000000))
+                    .clickable { vm.togglePlay() },
+                contentAlignment = Alignment.Center
+            ) {
+                Ico(if (vm.playing) R.drawable.ic_pause else R.drawable.ic_play, Color.White, 32.dp)
+            }
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(if (vm.previewLoop) Ev.Accent else Color(0x66000000))
+                    .border(
+                        1.dp,
+                        if (vm.previewLoop) Ev.Accent else Color(0x55FFFFFF),
+                        CircleShape
+                    )
+                    .clickable { vm.togglePreviewLoop() },
+                contentAlignment = Alignment.Center
+            ) {
+                Ico(R.drawable.ic_loop, Color.White, 22.dp)
+            }
         }
     }
 }
@@ -483,12 +504,38 @@ private fun Controls(vm: EditorViewModel) {
             CtrlButton(R.drawable.ic_undo, 24.dp, vm.canUndo, Modifier) { vm.undo() }
             CtrlButton(R.drawable.ic_redo, 24.dp, vm.canRedo, Modifier) { vm.redo() }
         }
-        CtrlButton(
-            if (vm.playing) R.drawable.ic_pause else R.drawable.ic_play,
-            30.dp,
-            vm.hasVideo,
-            Modifier.align(Alignment.Center)
-        ) { vm.togglePlay() }
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CtrlButton(
+                if (vm.playing) R.drawable.ic_pause else R.drawable.ic_play,
+                30.dp,
+                vm.hasVideo,
+                Modifier
+            ) { vm.togglePlay() }
+            // Toggle Loop pratinjau (mengaktifkan/mematikan mode loop tanpa langsung memutar video)
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(if (vm.previewLoop) Ev.Accent else Ev.Ghost)
+                    .border(
+                        1.dp,
+                        if (vm.previewLoop) Ev.Accent else Ev.Line,
+                        CircleShape
+                    )
+                    .clickable { vm.togglePreviewLoop() },
+                contentAlignment = Alignment.Center
+            ) {
+                Ico(
+                    id = R.drawable.ic_loop,
+                    tint = if (vm.previewLoop) Color.White else Ev.Text2,
+                    size = 19.dp
+                )
+            }
+        }
         Row(
             modifier = Modifier.align(Alignment.CenterEnd),
             horizontalArrangement = Arrangement.spacedBy(6.dp),

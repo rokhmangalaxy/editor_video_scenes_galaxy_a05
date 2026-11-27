@@ -29,7 +29,8 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
    - Menu **AI** di toolbar bawah menangkap langsung buffer tampilan *Preview* (`TextureView`) yang tersinkronisasi penuh ke posisi *seek* (disertai *fallback* decode PTS presisi mikrodetik via `MediaCodec` dan tombol geser `±1 Frame` / `±5 Frame`), kolom **textarea prompt**, serta tombol **Generate** untuk persiapan penyisipan hasil AI secara presisi di posisi *seek*.
 7. **10 Pilihan Tema dengan Grid 2 Kolom Mini Preview:**
    - Tersedia **10 tema warna** (*Medium Maroon*, *Gelap Standar*, *Midnight Ocean*, *Emerald Forest*, *Royal Purple*, *Sunset Amber*, *Rose Gold*, *Cyber Teal*, *Crimson Gold*, dan *Slate Mocha*) yang ditampilkan dalam **Grid 2 Kolom lengkap dengan Mini Preview UI**.
-8. **Pinch untuk Zoom In/Out:**
+8. **Kontrol Pratinjau Lengkap (Toggle Loop & Pinch Zoom In/Out):**
+   - **Toggle Loop Pratinjau:** Aktifkan/matikan mode *Loop* pada kontrol pratinjau (maupun layar penuh) untuk mengulang pemutaran dari awal secara otomatis saat mencapai akhir timeline, sementara memulai/menjeda pemutaran tetap menggunakan tombol Play/Pause biasa.
    - **Timeline:** Cubit 2 jari pada area timeline untuk memperbesar/memperkecil rentang skala waktu (`4 dp/detik` hingga `400 dp/detik`).
    - **Pratinjau Video:** Cubit 2 jari pada area pratinjau untuk memperbesar/memperkecil tampilan video (`1.0x` – `4.0x`).
 9. **Catatan Bug, Pengembangan & Tab Updated (Readme):**
@@ -42,3 +43,5 @@ Aplikasi editor video Android berbasis **Jetpack Compose** & **Media3 (ExoPlayer
    - **Ekspor Video:** Menggabungkan seluruh potongan di timeline menjadi 1 berkas MP4.
    - **Ekspor Semua Potongan:** Mengekspor setiap potongan menjadi berkas MP4 terpisah secara berurutan.
    - **Ekspor Potongan Saat Ini:** Mengekspor hanya potongan yang sedang dipilih.
+   - **Ekspor Berdasarkan Tag (*By Tag*):** Pilih satu atau beberapa Tag dan ekspor klip yang cocok dalam format **Gabung 1 Video**, **Pisah per Klip**, atau **1 File per Tag**.
+   - **Shortcut "Sesuai Video Asli":** Tombol pintas di menu Ekspor untuk langsung menyetel Kualitas (resolusi asli) dan FPS agar sama persis dengan video sumber asli.

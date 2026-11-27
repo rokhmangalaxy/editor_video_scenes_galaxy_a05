@@ -78,7 +78,13 @@ object ExportEngine {
         progress: (fileIndex: Int, fileCount: Int, fraction: Float) -> Unit
     ): ExportOutcome {
         val app = context.applicationContext
-        val jobs = ExportMath.buildJobs(req.mode, req.segs, req.currentIndex)
+        val jobs = ExportMath.buildJobs(
+            req.mode,
+            req.segs,
+            req.currentIndex,
+            req.selectedExportTags,
+            req.byTagStyle
+        )
         if (jobs.isEmpty()) throw ExportFailure("Tidak ada potongan untuk diekspor.")
 
         val dir = File(app.cacheDir, "export")

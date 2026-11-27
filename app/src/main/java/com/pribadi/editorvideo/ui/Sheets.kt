@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pribadi.editorvideo.R
+import com.pribadi.editorvideo.export.ByTagExportStyle
 import com.pribadi.editorvideo.export.DetectedScene
 import com.pribadi.editorvideo.export.ExportMath
 import com.pribadi.editorvideo.export.ExportMode
@@ -2988,9 +2989,203 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
             title = "Ekspor Potongan Saat Ini",
             sub = info.subCurrent
         ) { vm.exportMode = ExportMode.CURRENT }
+        ModeRow(
+            on = vm.exportMode == ExportMode.BY_TAG,
+            enabled = !running,
+            title = "Ekspor Berdasarkan Tag",
+            sub = info.subByTag
+        ) { vm.selectExportByTagMode() }
+
+        if (vm.exportMode == ExportMode.BY_TAG) {
+            val usedTags = vm.usedTagsInTimeline()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Ev.Surface)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(12.dp))
+                    .padding(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "PILIH TAG KLIP",
+                        color = Ev.Muted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp
+                    )
+                    if (usedTags.isNotEmpty()) {
+                        val allSelected = vm.exportSelectedTags.size >= usedTags.size
+                        Text(
+                            text = if (allSelected) "Kosongkan" else "Pilih Semua",
+                            color = Ev.Accent,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !running) { vm.toggleAllExportTags() }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (usedTags.isEmpty()) {
+                    Text(
+                        text = "Belum ada klip yang diberi Tag di timeline. Buka Mode Grid untuk menandai klip terlebih dahulu.",
+                        color = Ev.Yellow,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                } else {
+                    SimpleFlow(8.dp, 8.dp) {
+                        for ((tagName, count) in usedTags) {
+                            val selected = vm.exportSelectedTags.any {
+                                it.equals(tagName, ignoreCase = true)
+                            }
+                            val tColor = vm.tagColor(tagName)
+                            val pillShape = RoundedCornerShape(16.dp)
+                            Row(
+                                modifier = Modifier
+                                    .clip(pillShape)
+                                    .background(
+                                        if (selected) tColor.copy(alpha = 0.24f) else Ev.Ghost
+                                    )
+                                    .border(
+                                        1.5.dp,
+                                        if (selected) tColor else Ev.Line,
+                                        pillShape
+                                    )
+                                    .clickable(enabled = !running) { vm.toggleExportTag(tagName) }
+                                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(tColor)
+                                )
+                                Text(
+                                    text = "#$tagName ($count)",
+                                    color = if (selected) Ev.Text else Ev.Text2,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    fontSize = 12.5.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "FORMAT KELUARAN TAG",
+                        color = Ev.Muted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    SimpleFlow(8.dp, 8.dp) {
+                        for (style in ByTagExportStyle.entries) {
+                            Chip(
+                                on = vm.exportByTagStyle == style,
+                                enabled = !running,
+                                label = style.label
+                            ) {
+                                vm.exportByTagStyle = style
+                            }
+                        }
+                    }
+                    Text(
+                        text = vm.exportByTagStyle.sub,
+                        color = Ev.Muted,
+                        fontSize = 11.5.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+            }
+        }
+
+        // Shortcut bernama untuk menyamakan Kualitas & FPS dengan video sumber asli
+        Spacer(modifier = Modifier.height(6.dp))
+        val origActive = vm.isOriginalExportSpec
+        val shortcutShape = RoundedCornerShape(12.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shortcutShape)
+                .background(if (origActive) Ev.Accent.copy(alpha = 0.16f) else Ev.Ghost)
+                .border(1.5.dp, if (origActive) Ev.Accent else Ev.Line, shortcutShape)
+                .clickable(enabled = !running) { vm.applyOriginalExportSpec() }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(if (origActive) Ev.Accent else Ev.Surface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Ico(
+                        id = R.drawable.ic_spark,
+                        tint = if (origActive) Color.White else Ev.Accent,
+                        size = 17.dp
+                    )
+                }
+                Column {
+                    Text(
+                        text = "Sesuai Video Asli",
+                        color = Ev.Text,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.5.sp
+                    )
+                    Text(
+                        text = "Setel Kualitas & FPS asli (${vm.originalSpecLabel()})",
+                        color = Ev.Muted,
+                        fontSize = 11.5.sp
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (origActive) Ev.Accent else Ev.Surface)
+                    .border(1.dp, if (origActive) Ev.Accent else Ev.Line, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 9.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = if (origActive) "Aktif ✓" else "Gunakan",
+                    color = if (origActive) Color.White else Ev.Text,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
 
         SectionLabel("KUALITAS")
         SimpleFlow(8.dp, 8.dp) {
+            Chip(
+                on = vm.qIdx == ExportMath.ORIGINAL_IDX,
+                enabled = !running,
+                label = "Asli"
+            ) {
+                vm.qIdx = ExportMath.ORIGINAL_IDX
+            }
             for (i in ExportMath.QUALITY_LABELS.indices) {
                 Chip(on = vm.qIdx == i, enabled = !running, label = ExportMath.QUALITY_LABELS[i]) {
                     vm.qIdx = i
@@ -3000,6 +3195,13 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
 
         SectionLabel("FPS")
         SimpleFlow(8.dp, 8.dp) {
+            Chip(
+                on = vm.fIdx == ExportMath.ORIGINAL_IDX,
+                enabled = !running,
+                label = "Asli"
+            ) {
+                vm.fIdx = ExportMath.ORIGINAL_IDX
+            }
             for (i in ExportMath.FPS_VALUES.indices) {
                 Chip(on = vm.fIdx == i, enabled = !running, label = ExportMath.FPS_VALUES[i].toString() + " fps") {
                     vm.fIdx = i
@@ -3116,12 +3318,12 @@ fun ExportSheet(vm: EditorViewModel, onStart: () -> Unit) {
 
                 is ExportState.Failed -> {
                     ActionButton("Tutup", false, Modifier.weight(1f)) { vm.closeExport() }
-                    ActionButton("Coba lagi", true, Modifier.weight(1f), onClick = onStart)
+                    ActionButton("Coba lagi", true, Modifier.weight(1f), enabled = info.canStart, onClick = onStart)
                 }
 
                 else -> {
                     ActionButton("Batal", false, Modifier.weight(1f)) { vm.closeExport() }
-                    ActionButton("Mulai Ekspor", true, Modifier.weight(1f), onClick = onStart)
+                    ActionButton("Mulai Ekspor", true, Modifier.weight(1f), enabled = info.canStart, onClick = onStart)
                 }
             }
         }
