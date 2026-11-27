@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -621,9 +622,10 @@ fun ThemeLightDarkToggle(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Panel untuk tombol gelap
-        Box(
+        Surface(
+            color = if (currentTheme.isLight) Ev.Ghost else Ev.Panel,
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier
-                .background(if (currentTheme.isLight) Ev.Ghost else Ev.Panel, RoundedCornerShape(8.dp))
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
                 .clickable { onToggle() }
                 .padding(10.dp),
@@ -643,9 +645,10 @@ fun ThemeLightDarkToggle(
             fontWeight = FontWeight.Medium
         )
         // Panel untuk tombol terang
-        Box(
+        Surface(
+            color = if (currentTheme.isLight) Ev.Accent else Ev.Ghost,
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier
-                .background(if (currentTheme.isLight) Ev.Accent else Ev.Ghost, RoundedCornerShape(8.dp))
                 .border(1.dp, if (currentTheme.isLight) Ev.Line else Ev.Accent, RoundedCornerShape(8.dp))
                 .clickable { onToggle() }
                 .padding(10.dp),
