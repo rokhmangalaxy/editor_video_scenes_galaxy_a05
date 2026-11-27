@@ -2497,7 +2497,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                             perSceneCount,
                             aiDurationSplit.maxSegSec
                         )
-                        val sceneFirstBmp: Bitmap? = withContext(Dispatchers.IO) {
+                        val sceneFirstBmp: Bitmap = withContext(Dispatchers.IO) {
                             val raw = VideoFrames.grabExactFrame(
                                 ctx, sceneSrc.uri, Math.round(max(0.0, sceneSeg.a) * 1e6), sceneSrc.info
                             ) ?: VideoFrames.grabFrame(
