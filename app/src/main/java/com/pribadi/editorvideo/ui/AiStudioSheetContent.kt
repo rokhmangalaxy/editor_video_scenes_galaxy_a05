@@ -232,1141 +232,6 @@ internal fun AiTinyIconLabel(
     }
 }
 @Composable
-internal fun AiCreateTabContent(vm: EditorViewModel) {
-    val plan = vm.currentAiExecutionPlan()
-
-    // 1. Pemilih Mode Kerja AI: Mode Sisipkan vs Mode Replace Scene
-    AiSectionLabel("MODE KERJA AI")
-    Spacer(modifier = Modifier.height(5.dp))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        AiModeCard(
-            modifier = Modifier.weight(1f),
-            active = vm.aiWorkMode == AiWorkMode.INSERT,
-            title = "➕ Mode Sisipkan",
-            sub = "Belah & selipkan di titik Seek"
-        ) {
-            vm.selectAiWorkMode(AiWorkMode.INSERT)
-        }
-        AiModeCard(
-            modifier = Modifier.weight(1f),
-            active = vm.aiWorkMode == AiWorkMode.REPLACE_SCENE,
-            title = "🔄 Replace Scene",
-            sub = "Ganti klip terpilih (≤10 dtk)"
-        ) {
-            vm.selectAiWorkMode(AiWorkMode.REPLACE_SCENE)
-        }
-    }
-
-    Spacer(modifier = Modifier.height(10.dp))
-
-    // 1B. Pembagian Durasi Sama: 1 Video / Dobel (maks 5 dtk × 2) / Tripel (maks 3.5 dtk × 3)
-    AiSectionLabel("PEMBAGIAN DURASI (SAMA RATA)")
-    Spacer(modifier = Modifier.height(5.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                for (sp in AiDurationSplit.entries) {
-                    val active = vm.aiDurationSplit == sp
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
-                            .border(
-                                width = if (active) 1.5.dp else 1.dp,
-                                color = if (active) Ev.Accent else Ev.Line,
-                                shape = RoundedCornerShape(11.dp)
-                            )
-                            .clickable { vm.selectAiDurationSplit(sp) }
-                            .padding(horizontal = 7.dp, vertical = 8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = when (sp) {
-                                AiDurationSplit.AUTO_1 -> "🎬 1 Video"
-                                AiDurationSplit.DOUBLE_5 -> "🎞️ 2 × ≤5s"
-                                AiDurationSplit.TRIPLE_35 -> "🎞️ 3 × ≤3.5s"
-                                AiDurationSplit.QUINTUPLE_2 -> "🎞️ 5 × ≤2s"
-                            },
-                            color = if (active) Color.White else Ev.Text,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = when (sp) {
-                                AiDurationSplit.AUTO_1 -> "maks 10.0s"
-                                AiDurationSplit.DOUBLE_5 -> "total maks 10.0s"
-                                AiDurationSplit.TRIPLE_35 -> "total maks 10.5s"
-                                AiDurationSplit.QUINTUPLE_2 -> "total maks 10.0s"
-                            },
-                            color = if (active) Ev.Yellow else Ev.Muted,
-                            fontSize = 9.sp,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
-    Spacer(modifier = Modifier.height(4.dp))
-    Text(
-        text = vm.aiDurationSplit.sub,
-        color = Ev.Muted,
-        fontSize = 10.sp,
-        lineHeight = 13.5.sp
-    )
-
-    // Total durasi yang dibagi rata (Dobel / Tripel)
-    if (vm.aiDurationSplit != AiDurationSplit.AUTO_1) {
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "TOTAL DURASI DIBAGI RATA",
-                color = Ev.Muted,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "${plan.segDurs.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(plan.targetTotalSec)} dtk",
-                color = Ev.Yellow,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        Slider(
-            value = vm.aiSplitTotalSec.toFloat()
-                .coerceIn(1.0f, vm.aiDurationSplit.maxTotalSec.toFloat()),
-            onValueChange = { vm.updateAiSplitTotalSec(it.toDouble()) },
-            valueRange = 1.0f..vm.aiDurationSplit.maxTotalSec.toFloat(),
-            colors = SliderDefaults.colors(
-                thumbColor = Ev.Yellow,
-                activeTrackColor = Ev.Accent,
-                inactiveTrackColor = Ev.Line
-            ),
-            modifier = Modifier.fillMaxWidth()
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            for (d in listOf(3.5, 5.0, 7.0, 9.0, 10.0, 10.5)) {
-                if (d > vm.aiDurationSplit.maxTotalSec + 0.001) continue
-                AiSmallChip(
-                    label = "${Fmt.one(d)}s",
-                    active = abs(vm.aiSplitTotalSec - d) < 0.06
-                ) {
-                    vm.updateAiSplitTotalSec(d)
-                }
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // 2. Konten Sumber Frame & Pengaturan Durasi sesuai Mode Kerja
-    if (vm.aiWorkMode == AiWorkMode.INSERT) {
-        AiInsertModeSection(vm, plan)
-    } else {
-        AiReplaceSceneSection(vm, plan)
-    }
-
-    // 3. Pengatur Multi-Hasil (otomatis tampil bila menghasilkan 2 atau 3 video)
-    if (plan.count >= 2) {
-        Spacer(modifier = Modifier.height(12.dp))
-        AiMultiOutputPreConfigCard(vm, plan)
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // 4. Editor Prompt (mendukung Satu Prompt untuk Semua atau Per-Segmen #1..#3)
-    AiPromptComposerSection(vm, plan)
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // 5. Pilihan Space HuggingFace & Keamanan
-    AiSpaceAndSafetySection(vm)
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // Info Batas Waktu (Dual Timeout 3 Menit)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(Ev.Bg)
-            .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Text(
-            text = "⚡ 1 Workflow tunggal (maks 10 dtk · khusus 3.5 dtk maks 10.5 dtk): setelah Video #1 berhasil, Video berikutnya otomatis digenerate di workflow yang sama · Timeout 3m workflow & 3m/video.",
-            color = Ev.Muted,
-            fontSize = 10.5.sp,
-            lineHeight = 14.sp
-        )
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // Tombol Utama Generate (menambahkan Kandidat baru bila hasil sebelumnya sudah ada!)
-    val nextCandNum = vm.aiCandidates.size + 1
-    val candTag = if (vm.aiCandidates.isNotEmpty()) "Kandidat #$nextCandNum · " else ""
-    val btnLabel = if (vm.aiWorkMode == AiWorkMode.INSERT) {
-        "✨ Generate ${candTag}${plan.count} Video (${Fmt.one(plan.targetTotalSec)} dtk)"
-    } else {
-        "🔄 Generate ${candTag}Replace (${Fmt.one(plan.targetTotalSec)} dtk · ${plan.count} Video)"
-    }
-    if (vm.aiCandidates.isNotEmpty()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 6.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(Ev.Accent.copy(alpha = 0.14f))
-                .border(1.dp, Ev.Accent.copy(alpha = 0.45f), RoundedCornerShape(9.dp))
-                .clickable { vm.aiActiveTab = AiTab.STATUS }
-                .padding(horizontal = 10.dp, vertical = 7.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "🗂 ${vm.aiCandidates.size} kandidat hasil tersimpan — generate lagi akan menambah kandidat baru tanpa menimpa!",
-                color = Ev.Text,
-                fontSize = 10.5.sp,
-                lineHeight = 14.sp,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = "Lihat →",
-                color = Ev.Yellow,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-    ActionButton(
-        text = if (vm.aiIsRunning) "⏳ Sedang Memproses… Lihat Tab Status" else btnLabel,
-        primary = true,
-        modifier = Modifier.fillMaxWidth(),
-        enabled = true,
-        onClick = {
-            if (vm.aiIsRunning) {
-                vm.aiActiveTab = AiTab.STATUS
-            } else {
-                vm.startAiGeneration()
-            }
-        }
-    )
-}
-
-@Composable
-internal fun AiInsertModeSection(vm: EditorViewModel, plan: AiExecutionPlan) {
-    val seekBmp = vm.aiSeekBitmap
-    val lastBmp = vm.aiInsertLastBitmap
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AiSectionLabel("FRAME REFERENSI POSISI SEEK")
-        if (vm.hasVideo && seekBmp != null) {
-            Text(
-                text = "✓ ${vm.aiCaptureSourceLabel}",
-                color = Ev.Yellow,
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-    Spacer(modifier = Modifier.height(6.dp))
-
-    // Kotak Frame Awal (100% Identik Preview)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(175.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color.Black)
-            .border(1.dp, Ev.Line, RoundedCornerShape(12.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        if (seekBmp != null && !seekBmp.isRecycled) {
-            Image(
-                bitmap = seekBmp.asImageBitmap(),
-                contentDescription = "Frame Awal posisi seek",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Text(
-                text = if (vm.hasVideo) "Menyinkronkan frame presisi…"
-                else "Impor video terlebih dahulu untuk mengambil frame posisi seek",
-                color = Ev.Muted,
-                fontSize = 11.5.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(16.dp)
-            )
-        }
-
-        if (vm.hasVideo) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(7.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(Color(0xD9000000))
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
-            ) {
-                Text(
-                    text = "Titik Sisip ${Fmt.preciseTime(vm.aiSeekTimeSec)} · Klip #${vm.aiSeekClipIndex + 1}",
-                    color = Ev.Yellow,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(7.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(Color(0xD9000000))
-                    .border(1.dp, Ev.Line, RoundedCornerShape(7.dp))
-                    .clickable { vm.captureAiSeekFrame(waitSeekSettle = true) }
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
-            ) {
-                Text(
-                    text = if (vm.aiFrameLoading) "Sinkron…" else "↻ Sinkron",
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        }
-    }
-
-    if (vm.hasVideo) {
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            AiMiniBtn("⏮ -5f", Modifier.weight(1f)) { vm.stepAiFrame(-5) }
-            AiMiniBtn("◀ -1f", Modifier.weight(1.15f)) { vm.stepAiFrame(-1) }
-            AiMiniBtn("+1f ▶", Modifier.weight(1.15f)) { vm.stepAiFrame(1) }
-            AiMiniBtn("+5f ⏭", Modifier.weight(1f)) { vm.stepAiFrame(5) }
-        }
-
-        // Frame Akhir Opsional (last_image)
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(Ev.Bg)
-                .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
-                .padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(width = 58.dp, height = 38.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color.Black)
-                    .border(1.dp, Ev.Line, RoundedCornerShape(6.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (lastBmp != null && !lastBmp.isRecycled) {
-                    Image(
-                        bitmap = lastBmp.asImageBitmap(),
-                        contentDescription = "Frame Akhir",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Text(text = "Opsional", color = Ev.Muted, fontSize = 8.5.sp)
-                }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Frame Akhir Tujuan (last_image)",
-                    color = Ev.Text,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = if (lastBmp != null && vm.aiInsertLastTimeSec >= 0.0) {
-                        "Dikunci di ${Fmt.preciseTime(vm.aiInsertLastTimeSec)}"
-                    } else {
-                        "Opsional · arahkan akhir gerakan ke frame tertentu"
-                    },
-                    color = Ev.Muted,
-                    fontSize = 10.sp
-                )
-            }
-            if (lastBmp != null) {
-                AiSmallChip(label = "✕ Hapus", active = false) { vm.clearInsertLastFrame() }
-            }
-            AiSmallChip(label = "📌 Kunci Seek", active = lastBmp != null) {
-                vm.captureInsertLastFrame()
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // Ringkasan pembagian durasi (dipakai untuk semua pilihan 1 Video / Dobel / Tripel)
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(11.dp))
-            .background(Ev.Bg)
-            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
-            .padding(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "HASIL PEMBAGIAN",
-                color = Ev.Muted,
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "${plan.count} video · ${Fmt.one(plan.targetTotalSec)} dtk",
-                color = Ev.Yellow,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        Spacer(modifier = Modifier.height(5.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            plan.segDurs.forEachIndexed { i, d ->
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Ev.Accent.copy(alpha = 0.20f))
-                        .border(1.dp, Ev.Accent.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "Video #${i + 1} · ${Fmt.one(d)}s",
-                        color = Ev.Text,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = "🎬 ${plan.note}",
-            color = Ev.InfoText,
-            fontSize = 10.5.sp,
-            lineHeight = 14.sp
-        )
-    }
-
-}
-
-@Composable
-internal fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
-    val hasScene = vm.hasVideo && vm.core.segs.isNotEmpty()
-    val segIdx = if (hasScene) vm.core.sel.coerceIn(0, vm.core.segs.lastIndex) else 0
-    val sceneDur = vm.selectedSceneDurationSec()
-    val canShortcut = vm.canUseSceneDurationShortcut()
-    val shortcutActive = vm.isSceneDurationShortcutActive()
-
-    // Pemilih Scene Aktif di Timeline
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AiSectionLabel("SCENE TARGET DI TIMELINE")
-        if (hasScene) {
-            Text(
-                text = "Scene #${segIdx + 1}/${vm.core.segs.size} · Asli ${Fmt.one(sceneDur)} dtk",
-                color = Ev.Yellow,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-    Spacer(modifier = Modifier.height(6.dp))
-
-    if (hasScene && vm.core.segs.size > 1) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            AiMiniBtn(
-                label = "◀ Scene Sebelumnya",
-                modifier = Modifier.weight(1f),
-                enabled = segIdx > 0
-            ) {
-                vm.stepReplaceTargetScene(-1)
-            }
-            AiMiniBtn(
-                label = "Scene Berikutnya ▶",
-                modifier = Modifier.weight(1f),
-                enabled = segIdx < vm.core.segs.lastIndex
-            ) {
-                vm.stepReplaceTargetScene(1)
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-    }
-
-    // =========================================================================
-    // REPLACE MULTI-SCENE BERURUTAN (item #3) — ganti beberapa scene sekaligus
-    // =========================================================================
-    if (hasScene && vm.core.segs.size > 1) {
-        val multiOn = vm.aiMultiSceneMode
-        val maxCount = vm.maxMultiSceneAllowed()
-        val multiPlan = vm.currentAiMultiScenePlan()
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(11.dp))
-                .background(if (multiOn) Ev.Accent.copy(alpha = 0.16f) else Ev.Bg)
-                .border(
-                    width = if (multiOn) 1.5.dp else 1.dp,
-                    color = if (multiOn) Ev.Accent else Ev.Line,
-                    shape = RoundedCornerShape(11.dp)
-                )
-                .padding(9.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "🔁 Replace Multi-Scene Berurutan",
-                        color = Ev.Text,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Ganti beberapa scene sekaligus mulai dari scene terpilih (tiap scene 1 workflow)",
-                        color = Ev.Muted,
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.5.sp
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(if (multiOn) Ev.Accent else Ev.Ghost)
-                        .border(1.dp, if (multiOn) Ev.Accent else Ev.Line, RoundedCornerShape(9.dp))
-                        .clickable { vm.toggleAiMultiSceneMode() }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = if (multiOn) "ON" else "OFF",
-                        color = Color.White,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-            if (multiOn) {
-                Spacer(modifier = Modifier.height(7.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    AiMiniBtn(
-                        label = "− Scene",
-                        modifier = Modifier.weight(0.8f),
-                        enabled = vm.aiMultiSceneCount > 1
-                    ) { vm.stepAiMultiSceneCount(-1) }
-                    Box(
-                        modifier = Modifier
-                            .weight(1.2f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Ev.Ghost)
-                            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
-                            .padding(vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${vm.aiMultiSceneCount} scene (maks $maxCount)",
-                            color = Ev.Yellow,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
-                    }
-                    AiMiniBtn(
-                        label = "+ Scene",
-                        modifier = Modifier.weight(0.8f),
-                        enabled = vm.aiMultiSceneCount < maxCount
-                    ) { vm.stepAiMultiSceneCount(1) }
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                if (multiPlan != null) {
-                    Text(
-                        text = "Target: Scene #${multiPlan.startSegIdx + 1}–#${multiPlan.endSegIdx + 1} · " +
-                            multiPlan.perSceneDurs.joinToString(" + ") { Fmt.one(it) } +
-                            " = ${Fmt.one(multiPlan.totalSec)} dtk (${plan.count} video AI)",
-                        color = Ev.InfoText,
-                        fontSize = 10.sp,
-                        lineHeight = 13.5.sp
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        AiSmallChip(
-                            label = "◀ Mulai Scene ${multiPlan.startSegIdx + 1}",
-                            active = false
-                        ) { vm.stepReplaceTargetScene(-1) }
-                        AiSmallChip(
-                            label = "Scene ${multiPlan.startSegIdx + 1} ▶",
-                            active = false
-                        ) { vm.stepReplaceTargetScene(1) }
-                    }
-                } else {
-                    Text(
-                        text = "Aktifkan untuk membuat ${vm.aiMultiSceneCount} scene sekaligus berurutan.",
-                        color = Ev.Muted,
-                        fontSize = 10.sp
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-    // =========================================================================
-    // OPSI GENERATE BERULANG (item #5) - Generate di posisi sama beberapa kali
-    // =========================================================================
-    if (hasScene && vm.aiWorkMode == AiWorkMode.REPLACE_SCENE) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(11.dp))
-                .background(if (vm.aiRepeatGenerate) Ev.Accent.copy(alpha = 0.16f) else Ev.Bg)
-                .border(
-                    width = if (vm.aiRepeatGenerate) 1.5.dp else 1.dp,
-                    color = if (vm.aiRepeatGenerate) Ev.Accent else Ev.Line,
-                    shape = RoundedCornerShape(11.dp)
-                )
-                .padding(9.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "🔁 Generate Berulang (Variasi)",
-                        color = Ev.Text,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Generate beberapa kali di posisi yang sama untuk mendapatkan variasi berbeda",
-                        color = Ev.Muted,
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.5.sp
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(if (vm.aiRepeatGenerate) Ev.Accent else Ev.Ghost)
-                        .border(1.dp, if (vm.aiRepeatGenerate) Ev.Accent else Ev.Line, RoundedCornerShape(9.dp))
-                        .clickable { vm.toggleAiRepeatGenerate() }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = if (vm.aiRepeatGenerate) "ON" else "OFF",
-                        color = Color.White,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-            if (vm.aiRepeatGenerate) {
-                Spacer(modifier = Modifier.height(7.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    AiMiniBtn(
-                        label = "−",
-                        modifier = Modifier.weight(0.8f),
-                        enabled = vm.aiRepeatCount > 1
-                    ) { vm.stepAiRepeatCount(-1) }
-                    Box(
-                        modifier = Modifier
-                            .weight(1.2f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Ev.Ghost)
-                            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
-                            .padding(vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${vm.aiRepeatCount}× generate (${vm.aiDurationSplit.label})",
-                            color = Ev.Yellow,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
-                    }
-                    AiMiniBtn(
-                        label = "+",
-                        modifier = Modifier.weight(0.8f),
-                        enabled = vm.aiRepeatCount < 5
-                    ) { vm.stepAiRepeatCount(1) }
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "Akan menghasilkan ${vm.aiRepeatCount} kandidat terpisah dengan durasi ${vm.aiDurationSplit.label} di posisi scene yang sama.",
-                    color = Ev.InfoText,
-                    fontSize = 10.sp,
-                    lineHeight = 13.5.sp
-                )
-            }
-        }
-    }
-
-    // =========================================================================
-    // OPSI FRAME AWAL & FRAME AKHIR DARI SCENE TETANGGA (item #4)
-    // =========================================================================
-    if (hasScene) {
-        val prevSeg = vm.core.segs.getOrNull(segIdx - 1)
-        val nextSeg = vm.core.segs.getOrNull(segIdx + 1)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(11.dp))
-                .background(Ev.Bg)
-                .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
-                .padding(9.dp)
-        ) {
-            Text(
-                text = "🔗 FRAME DARI SCENE TETANGGA (OPSIONAL)",
-                color = Ev.Muted,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(5.dp))
-            Text(text = "Frame Awal AI", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                AiSmallChip(
-                    label = "📸 Frame Sendiri",
-                    active = vm.aiFirstFrameSource == AiEdgeFrameSource.FRAME_SENDIRI
-                ) { vm.selectAiFirstFrameSource(AiEdgeFrameSource.FRAME_SENDIRI) }
-                AiSmallChip(
-                    label = "⏮ Akhir Scene ${segIdx}",
-                    active = vm.aiFirstFrameSource == AiEdgeFrameSource.SCENE_SEBELUMNYA
-                ) { vm.selectAiFirstFrameSource(AiEdgeFrameSource.SCENE_SEBELUMNYA) }
-            }
-            if (prevSeg == null) {
-                Text(
-                    text = "Tidak ada scene sebelumnya (scene ini yang pertama).",
-                    color = Ev.Muted,
-                    fontSize = 9.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(7.dp))
-            Text(text = "Frame Akhir AI", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                AiSmallChip(
-                    label = "📸 Frame Sendiri",
-                    active = vm.aiLastFrameSource == AiEdgeFrameSource.FRAME_SENDIRI
-                ) { vm.selectAiLastFrameSource(AiEdgeFrameSource.FRAME_SENDIRI) }
-                AiSmallChip(
-                    label = "Awal Scene ${segIdx + 2} ⏭",
-                    active = vm.aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA
-                ) { vm.selectAiLastFrameSource(AiEdgeFrameSource.SCENE_BERIKUTNYA) }
-            }
-            if (nextSeg == null) {
-                Text(
-                    text = "Tidak ada scene berikutnya (scene ini yang terakhir).",
-                    color = Ev.Muted,
-                    fontSize = 9.sp
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-    }
-
-    // Pratinjau 2 Frame Scene: Frame Awal AI & Frame Akhir AI
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Kartu Frame Awal Scene
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Ev.Bg)
-                .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
-                .padding(7.dp)
-        ) {
-            Text(
-                text = "FRAME AWAL AI",
-                color = Ev.Muted,
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(92.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(Color.Black),
-                contentAlignment = Alignment.Center
-            ) {
-                // Jika using frame dari scene sebelumnya, tampilkan itu; else frame sendiri
-                val firstBmp = when (vm.aiFirstFrameSource) {
-                    AiEdgeFrameSource.SCENE_SEBELUMNYA -> vm.aiNeighborFirstBitmap
-                    else -> vm.aiReplaceFirstBitmap ?: vm.aiSeekBitmap
-                }
-                if (firstBmp != null && !firstBmp.isRecycled) {
-                    Image(
-                        bitmap = firstBmp.asImageBitmap(),
-                        contentDescription = "Frame Awal AI",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Text(text = "Belum ada video", color = Ev.Muted, fontSize = 10.sp)
-                }
-            }
-            // Tampilkan label sumber frame
-            if (vm.aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Sumber: ${when (vm.aiFirstFrameSource) {
-                        AiEdgeFrameSource.SCENE_SEBELUMNYA -> "Akhir Scene Sebelumnya"
-                        AiEdgeFrameSource.SCENE_BERIKUTNYA -> "Awal Scene Berikutnya"
-                        else -> "Frame Sendiri"
-                    }}",
-                    color = Ev.Yellow,
-                    fontSize = 9.sp
-                )
-            }
-        }
-
-        // Kartu Frame Akhir AI (jika menggunakan frame dari scene berikutnya)
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Ev.Bg)
-                .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
-                .padding(7.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "FRAME AKHIR AI",
-                    color = Ev.Muted,
-                    fontSize = 9.5.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
-                        "Dari Scene Berikutnya"
-                    } else if (vm.aiReplaceBridgeLastFrame) "ON" else "OFF",
-                    color = if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
-                        Color(0xFF6EE7B7)
-                    } else if (vm.aiReplaceBridgeLastFrame) Color(0xFF6EE7B7) else Ev.Muted,
-                    fontSize = 9.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable { vm.toggleReplaceBridgeLastFrame() }
-                )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(92.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(Color.Black)
-                    .clickable { vm.toggleReplaceBridgeLastFrame() },
-                contentAlignment = Alignment.Center
-            ) {
-                // Jika using frame dari scene berikutnya, tampilkan itu
-                val lastBmp = when (vm.aiLastFrameSource) {
-                    AiEdgeFrameSource.SCENE_BERIKUTNYA -> vm.aiNeighborLastBitmap
-                    else -> vm.aiReplaceLastBitmap
-                }
-                if (vm.aiReplaceBridgeLastFrame && lastBmp != null && !lastBmp.isRecycled) {
-                    Image(
-                        bitmap = lastBmp.asImageBitmap(),
-                        contentDescription = "Frame Akhir AI",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Text(
-                        text = if (vm.aiReplaceBridgeLastFrame) "Menyinkronkan…" else "Nonaktif (Gerak Bebas)",
-                        color = Ev.Muted,
-                        fontSize = 10.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(6.dp)
-                    )
-                }
-            }
-            // Tampilkan label sumber frame
-            if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Sumber: ${when (vm.aiLastFrameSource) {
-                        AiEdgeFrameSource.SCENE_SEBELUMNYA -> "Akhir Scene Sebelumnya"
-                        AiEdgeFrameSource.SCENE_BERIKUTNYA -> "Awal Scene Berikutnya"
-                        else -> "Frame Sendiri"
-                    }}",
-                    color = Ev.Yellow,
-                    fontSize = 9.sp
-                )
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(10.dp))
-
-    // =========================================================================================
-    // INPUT RANGE DURASI REPLACE SCENE (1.0 – 10.0 DTK) + SHORTCUT DURASI SCENE (BILA <= 10 DTK)
-    // =========================================================================================
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(Ev.Bg)
-            .border(1.dp, Ev.Accent.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
-            .padding(11.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "DURASI REPLACE SCENE (MAKS 10 DTK)",
-                    color = Ev.Muted,
-                    fontSize = 10.5.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${Fmt.one(vm.aiReplaceTargetDurSec)} detik",
-                    color = Ev.Yellow,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            // Shortcut Durasi Seperti Scene (aktif jika durasi scene <= 10.0 detik!)
-            val shortcutLabel = if (!hasScene) {
-                "⚡ Sesuai Scene (-)"
-            } else if (canShortcut) {
-                "⚡ Sesuai Scene (${Fmt.one(sceneDur)} dtk)"
-            } else {
-                "Scene ${Fmt.one(sceneDur)}s (> Maks 10s)"
-            }
-            Box(
-                modifier = Modifier
-                    .alpha(if (canShortcut) 1f else 0.45f)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(
-                        when {
-                            shortcutActive -> Ev.Accent
-                            canShortcut -> Ev.Accent.copy(alpha = 0.22f)
-                            else -> Ev.Ghost
-                        }
-                    )
-                    .border(
-                        1.dp,
-                        if (canShortcut) Ev.Accent else Ev.Line,
-                        RoundedCornerShape(9.dp)
-                    )
-                    .clickable(enabled = canShortcut) { vm.applySceneDurationShortcut() }
-                    .padding(horizontal = 10.dp, vertical = 7.dp)
-            ) {
-                Text(
-                    text = shortcutLabel,
-                    color = if (shortcutActive) Color.White else Ev.Yellow,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        // Input Range Slider 1.0 dtk .. 10.0 dtk (step 0.1 dtk)
-        Slider(
-            value = vm.aiReplaceTargetDurSec.toFloat().coerceIn(1.0f, 10.0f),
-            onValueChange = { vm.updateReplaceTargetDuration(it.toDouble(), refreshEndFrame = false) },
-            onValueChangeFinished = { vm.captureReplaceSceneFrames() },
-            valueRange = 1.0f..10.0f,
-            steps = 89,
-            colors = SliderDefaults.colors(
-                thumbColor = Ev.Accent,
-                activeTrackColor = Ev.Accent,
-                inactiveTrackColor = Ev.Line
-            )
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(text = "Min 1.0 dtk", color = Ev.Muted, fontSize = 10.sp)
-            Text(text = "Batas ZeroGPU 10.0 dtk", color = Ev.Muted, fontSize = 10.sp)
-        }
-
-        Spacer(modifier = Modifier.height(7.dp))
-
-        // Preset Cepat + Shortcut Durasi Scene
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            if (canShortcut) {
-                AiSmallChip(
-                    label = "⚡ Scene (${Fmt.one(sceneDur)}s)",
-                    active = shortcutActive
-                ) {
-                    vm.applySceneDurationShortcut()
-                }
-            }
-            for (d in REPLACE_QUICK_DURS) {
-                val on = abs(vm.aiReplaceTargetDurSec - d) < 0.06
-                AiSmallChip(
-                    label = "${Fmt.one(d)} dtk",
-                    active = on
-                ) {
-                    vm.updateReplaceTargetDuration(d, refreshEndFrame = true)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Penjelasan Dekomposisi ZeroGPU Otomatis
-        Text(
-            text = "⚙ ${plan.note}",
-            color = Ev.InfoText,
-            fontSize = 10.5.sp,
-            lineHeight = 14.5.sp
-        )
-    }
-
-    Spacer(modifier = Modifier.height(10.dp))
-
-    // Opsi Audio pada Mode Replace Scene: Video Saja (Pertahankan Audio Asli) vs Video + Audio AI
-    AiReplaceAudioSelectorCard(vm)
-}
-
-@Composable
-internal fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(11.dp))
-            .background(Ev.Bg)
-            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
-            .padding(10.dp)
-    ) {
-        Text(
-            text = "OPSI AUDIO SAAT REPLACE SCENE",
-            color = Ev.Muted,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            for (am in AiReplaceAudioMode.entries) {
-                val active = vm.aiReplaceAudioMode == am
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
-                        .border(
-                            width = if (active) 1.5.dp else 1.dp,
-                            color = if (active) Ev.Accent else Ev.Line,
-                            shape = RoundedCornerShape(9.dp)
-                        )
-                        .clickable { vm.aiReplaceAudioMode = am }
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
-                        color = if (active) Color.White else Ev.Text,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = am.sub,
-                        color = if (active) Ev.Yellow else Ev.Muted,
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.5.sp
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 internal fun AiMultiOutputPreConfigCard(vm: EditorViewModel, plan: AiExecutionPlan) {
     val forceChain = vm.aiWorkMode == AiWorkMode.REPLACE_SCENE || vm.aiInsertPreset == AiInsertPreset.FULL_10
     Column(
@@ -3217,3 +2082,1138 @@ internal fun AiRunnerTabContent(vm: EditorViewModel) {
 // Komponen Kecil Pendukung UI Studio Video AI
 // =============================================================================================
 
+internal fun AiCreateTabContent(vm: EditorViewModel) {
+    val plan = vm.currentAiExecutionPlan()
+
+    // 1. Pemilih Mode Kerja AI: Mode Sisipkan vs Mode Replace Scene
+    AiSectionLabel("MODE KERJA AI")
+    Spacer(modifier = Modifier.height(5.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        AiModeCard(
+            modifier = Modifier.weight(1f),
+            active = vm.aiWorkMode == AiWorkMode.INSERT,
+            title = "➕ Mode Sisipkan",
+            sub = "Belah & selipkan di titik Seek"
+        ) {
+            vm.selectAiWorkMode(AiWorkMode.INSERT)
+        }
+        AiModeCard(
+            modifier = Modifier.weight(1f),
+            active = vm.aiWorkMode == AiWorkMode.REPLACE_SCENE,
+            title = "🔄 Replace Scene",
+            sub = "Ganti klip terpilih (≤10 dtk)"
+        ) {
+            vm.selectAiWorkMode(AiWorkMode.REPLACE_SCENE)
+        }
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    // 1B. Pembagian Durasi Sama: 1 Video / Dobel (maks 5 dtk × 2) / Tripel (maks 3.5 dtk × 3)
+    AiSectionLabel("PEMBAGIAN DURASI (SAMA RATA)")
+    Spacer(modifier = Modifier.height(5.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for (sp in AiDurationSplit.entries) {
+                    val active = vm.aiDurationSplit == sp
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
+                            .border(
+                                width = if (active) 1.5.dp else 1.dp,
+                                color = if (active) Ev.Accent else Ev.Line,
+                                shape = RoundedCornerShape(11.dp)
+                            )
+                            .clickable { vm.selectAiDurationSplit(sp) }
+                            .padding(horizontal = 7.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = when (sp) {
+                                AiDurationSplit.AUTO_1 -> "🎬 1 Video"
+                                AiDurationSplit.DOUBLE_5 -> "🎞️ 2 × ≤5s"
+                                AiDurationSplit.TRIPLE_35 -> "🎞️ 3 × ≤3.5s"
+                                AiDurationSplit.QUINTUPLE_2 -> "🎞️ 5 × ≤2s"
+                            },
+                            color = if (active) Color.White else Ev.Text,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = when (sp) {
+                                AiDurationSplit.AUTO_1 -> "maks 10.0s"
+                                AiDurationSplit.DOUBLE_5 -> "total maks 10.0s"
+                                AiDurationSplit.TRIPLE_35 -> "total maks 10.5s"
+                                AiDurationSplit.QUINTUPLE_2 -> "total maks 10.0s"
+                            },
+                            color = if (active) Ev.Yellow else Ev.Muted,
+                            fontSize = 9.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+    Spacer(modifier = Modifier.height(4.dp))
+    Text(
+        text = vm.aiDurationSplit.sub,
+        color = Ev.Muted,
+        fontSize = 10.sp,
+        lineHeight = 13.5.sp
+    )
+
+    // Total durasi yang dibagi rata (Dobel / Tripel)
+    if (vm.aiDurationSplit != AiDurationSplit.AUTO_1) {
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "TOTAL DURASI DIBAGI RATA",
+                color = Ev.Muted,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "${plan.segDurs.joinToString(" + ") { Fmt.one(it) }} = ${Fmt.one(plan.targetTotalSec)} dtk",
+                color = Ev.Yellow,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Slider(
+            value = vm.aiSplitTotalSec.toFloat()
+                .coerceIn(1.0f, vm.aiDurationSplit.maxTotalSec.toFloat()),
+            onValueChange = { vm.updateAiSplitTotalSec(it.toDouble()) },
+            valueRange = 1.0f..vm.aiDurationSplit.maxTotalSec.toFloat(),
+            colors = SliderDefaults.colors(
+                thumbColor = Ev.Yellow,
+                activeTrackColor = Ev.Accent,
+                inactiveTrackColor = Ev.Line
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (d in listOf(3.5, 5.0, 7.0, 9.0, 10.0, 10.5)) {
+                if (d > vm.aiDurationSplit.maxTotalSec + 0.001) continue
+                AiSmallChip(
+                    label = "${Fmt.one(d)}s",
+                    active = abs(vm.aiSplitTotalSec - d) < 0.06
+                ) {
+                    vm.updateAiSplitTotalSec(d)
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // 2. Konten Sumber Frame & Pengaturan Durasi sesuai Mode Kerja
+    if (vm.aiWorkMode == AiWorkMode.INSERT) {
+        AiInsertModeSection(vm, plan)
+    } else {
+        AiReplaceSceneSection(vm, plan)
+    }
+
+    // 3. Pengatur Multi-Hasil (otomatis tampil bila menghasilkan 2 atau 3 video)
+    if (plan.count >= 2) {
+        Spacer(modifier = Modifier.height(12.dp))
+        AiMultiOutputPreConfigCard(vm, plan)
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // 4. Editor Prompt (mendukung Satu Prompt untuk Semua atau Per-Segmen #1..#3)
+    AiPromptComposerSection(vm, plan)
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // 5. Pilihan Space HuggingFace & Keamanan
+    AiSpaceAndSafetySection(vm)
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Info Batas Waktu (Dual Timeout 3 Menit)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(
+            text = "⚡ 1 Workflow tunggal (maks 10 dtk · khusus 3.5 dtk maks 10.5 dtk): setelah Video #1 berhasil, Video berikutnya otomatis digenerate di workflow yang sama · Timeout 3m workflow & 3m/video.",
+            color = Ev.Muted,
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp
+        )
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Tombol Utama Generate (menambahkan Kandidat baru bila hasil sebelumnya sudah ada!)
+    val nextCandNum = vm.aiCandidates.size + 1
+    val candTag = if (vm.aiCandidates.isNotEmpty()) "Kandidat #$nextCandNum · " else ""
+    val btnLabel = if (vm.aiWorkMode == AiWorkMode.INSERT) {
+        "✨ Generate ${candTag}${plan.count} Video (${Fmt.one(plan.targetTotalSec)} dtk)"
+    } else {
+        "🔄 Generate ${candTag}Replace (${Fmt.one(plan.targetTotalSec)} dtk · ${plan.count} Video)"
+    }
+    if (vm.aiCandidates.isNotEmpty()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Ev.Accent.copy(alpha = 0.14f))
+                .border(1.dp, Ev.Accent.copy(alpha = 0.45f), RoundedCornerShape(9.dp))
+                .clickable { vm.aiActiveTab = AiTab.STATUS }
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🗂 ${vm.aiCandidates.size} kandidat hasil tersimpan — generate lagi akan menambah kandidat baru tanpa menimpa!",
+                color = Ev.Text,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "Lihat →",
+                color = Ev.Yellow,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+    ActionButton(
+        text = if (vm.aiIsRunning) "⏳ Sedang Memproses… Lihat Tab Status" else btnLabel,
+        primary = true,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = true,
+        onClick = {
+            if (vm.aiIsRunning) {
+                vm.aiActiveTab = AiTab.STATUS
+            } else {
+                vm.startAiGeneration()
+            }
+        }
+    )
+}
+
+@Composable
+internal fun AiInsertModeSection(vm: EditorViewModel, plan: AiExecutionPlan) {
+    val seekBmp = vm.aiSeekBitmap
+    val lastBmp = vm.aiInsertLastBitmap
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AiSectionLabel("FRAME REFERENSI POSISI SEEK")
+        if (vm.hasVideo && seekBmp != null) {
+            Text(
+                text = "✓ ${vm.aiCaptureSourceLabel}",
+                color = Ev.Yellow,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+
+    // Kotak Frame Awal (100% Identik Preview)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(175.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black)
+            .border(1.dp, Ev.Line, RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (seekBmp != null && !seekBmp.isRecycled) {
+            Image(
+                bitmap = seekBmp.asImageBitmap(),
+                contentDescription = "Frame Awal posisi seek",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                text = if (vm.hasVideo) "Menyinkronkan frame presisi…"
+                else "Impor video terlebih dahulu untuk mengambil frame posisi seek",
+                color = Ev.Muted,
+                fontSize = 11.5.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
+
+        if (vm.hasVideo) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(7.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Color(0xD9000000))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = "Titik Sisip ${Fmt.preciseTime(vm.aiSeekTimeSec)} · Klip #${vm.aiSeekClipIndex + 1}",
+                    color = Ev.Yellow,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(7.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Color(0xD9000000))
+                    .border(1.dp, Ev.Line, RoundedCornerShape(7.dp))
+                    .clickable { vm.captureAiSeekFrame(waitSeekSettle = true) }
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = if (vm.aiFrameLoading) "Sinkron…" else "↻ Sinkron",
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+
+    if (vm.hasVideo) {
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            AiMiniBtn("⏮ -5f", Modifier.weight(1f)) { vm.stepAiFrame(-5) }
+            AiMiniBtn("◀ -1f", Modifier.weight(1.15f)) { vm.stepAiFrame(-1) }
+            AiMiniBtn("+1f ▶", Modifier.weight(1.15f)) { vm.stepAiFrame(1) }
+            AiMiniBtn("+5f ⏭", Modifier.weight(1f)) { vm.stepAiFrame(5) }
+        }
+
+        // Frame Akhir Opsional (last_image)
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 58.dp, height = 38.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black)
+                    .border(1.dp, Ev.Line, RoundedCornerShape(6.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (lastBmp != null && !lastBmp.isRecycled) {
+                    Image(
+                        bitmap = lastBmp.asImageBitmap(),
+                        contentDescription = "Frame Akhir",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(text = "Opsional", color = Ev.Muted, fontSize = 8.5.sp)
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Frame Akhir Tujuan (last_image)",
+                    color = Ev.Text,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (lastBmp != null && vm.aiInsertLastTimeSec >= 0.0) {
+                        "Dikunci di ${Fmt.preciseTime(vm.aiInsertLastTimeSec)}"
+                    } else {
+                        "Opsional · arahkan akhir gerakan ke frame tertentu"
+                    },
+                    color = Ev.Muted,
+                    fontSize = 10.sp
+                )
+            }
+            if (lastBmp != null) {
+                AiSmallChip(label = "✕ Hapus", active = false) { vm.clearInsertLastFrame() }
+            }
+            AiSmallChip(label = "📌 Kunci Seek", active = lastBmp != null) {
+                vm.captureInsertLastFrame()
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Ringkasan pembagian durasi (dipakai untuk semua pilihan 1 Video / Dobel / Tripel)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+            .padding(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "HASIL PEMBAGIAN",
+                color = Ev.Muted,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "${plan.count} video · ${Fmt.one(plan.targetTotalSec)} dtk",
+                color = Ev.Yellow,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.height(5.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            plan.segDurs.forEachIndexed { i, d ->
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Ev.Accent.copy(alpha = 0.20f))
+                        .border(1.dp, Ev.Accent.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Video #${i + 1} · ${Fmt.one(d)}s",
+                        color = Ev.Text,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "🎬 ${plan.note}",
+            color = Ev.InfoText,
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp
+        )
+    }
+
+}
+
+@Composable
+internal fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
+    val hasScene = vm.hasVideo && vm.core.segs.isNotEmpty()
+    val segIdx = if (hasScene) vm.core.sel.coerceIn(0, vm.core.segs.lastIndex) else 0
+    val sceneDur = vm.selectedSceneDurationSec()
+    val canShortcut = vm.canUseSceneDurationShortcut()
+    val shortcutActive = vm.isSceneDurationShortcutActive()
+
+    // Pemilih Scene Aktif di Timeline
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AiSectionLabel("SCENE TARGET DI TIMELINE")
+        if (hasScene) {
+            Text(
+                text = "Scene #${segIdx + 1}/${vm.core.segs.size} · Asli ${Fmt.one(sceneDur)} dtk",
+                color = Ev.Yellow,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+
+    if (hasScene && vm.core.segs.size > 1) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            AiMiniBtn(
+                label = "◀ Scene Sebelumnya",
+                modifier = Modifier.weight(1f),
+                enabled = segIdx > 0
+            ) {
+                vm.stepReplaceTargetScene(-1)
+            }
+            AiMiniBtn(
+                label = "Scene Berikutnya ▶",
+                modifier = Modifier.weight(1f),
+                enabled = segIdx < vm.core.segs.lastIndex
+            ) {
+                vm.stepReplaceTargetScene(1)
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+
+    // =========================================================================
+    // REPLACE MULTI-SCENE BERURUTAN (item #3) — ganti beberapa scene sekaligus
+    // =========================================================================
+    if (hasScene && vm.core.segs.size > 1) {
+        val multiOn = vm.aiMultiSceneMode
+        val maxCount = vm.maxMultiSceneAllowed()
+        val multiPlan = vm.currentAiMultiScenePlan()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(11.dp))
+                .background(if (multiOn) Ev.Accent.copy(alpha = 0.16f) else Ev.Bg)
+                .border(
+                    width = if (multiOn) 1.5.dp else 1.dp,
+                    color = if (multiOn) Ev.Accent else Ev.Line,
+                    shape = RoundedCornerShape(11.dp)
+                )
+                .padding(9.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "🔁 Replace Multi-Scene Berurutan",
+                        color = Ev.Text,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Ganti beberapa scene sekaligus mulai dari scene terpilih (tiap scene 1 workflow)",
+                        color = Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (multiOn) Ev.Accent else Ev.Ghost)
+                        .border(1.dp, if (multiOn) Ev.Accent else Ev.Line, RoundedCornerShape(9.dp))
+                        .clickable { vm.toggleAiMultiSceneMode() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (multiOn) "ON" else "OFF",
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            if (multiOn) {
+                Spacer(modifier = Modifier.height(7.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AiMiniBtn(
+                        label = "− Scene",
+                        modifier = Modifier.weight(0.8f),
+                        enabled = vm.aiMultiSceneCount > 1
+                    ) { vm.stepAiMultiSceneCount(-1) }
+                    Box(
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Ev.Ghost)
+                            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${vm.aiMultiSceneCount} scene (maks $maxCount)",
+                            color = Ev.Yellow,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                    AiMiniBtn(
+                        label = "+ Scene",
+                        modifier = Modifier.weight(0.8f),
+                        enabled = vm.aiMultiSceneCount < maxCount
+                    ) { vm.stepAiMultiSceneCount(1) }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                if (multiPlan != null) {
+                    Text(
+                        text = "Target: Scene #${multiPlan.startSegIdx + 1}–#${multiPlan.endSegIdx + 1} · " +
+                            multiPlan.perSceneDurs.joinToString(" + ") { Fmt.one(it) } +
+                            " = ${Fmt.one(multiPlan.totalSec)} dtk (${plan.count} video AI)",
+                        color = Ev.InfoText,
+                        fontSize = 10.sp,
+                        lineHeight = 13.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        AiSmallChip(
+                            label = "◀ Mulai Scene ${multiPlan.startSegIdx + 1}",
+                            active = false
+                        ) { vm.stepReplaceTargetScene(-1) }
+                        AiSmallChip(
+                            label = "Scene ${multiPlan.startSegIdx + 1} ▶",
+                            active = false
+                        ) { vm.stepReplaceTargetScene(1) }
+                    }
+                } else {
+                    Text(
+                        text = "Aktifkan untuk membuat ${vm.aiMultiSceneCount} scene sekaligus berurutan.",
+                        color = Ev.Muted,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+
+    // =========================================================================
+    // OPSI GENERATE BERULANG (item #5) - Generate di posisi sama beberapa kali
+    // =========================================================================
+    if (hasScene && vm.aiWorkMode == AiWorkMode.REPLACE_SCENE) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(11.dp))
+                .background(if (vm.aiRepeatGenerate) Ev.Accent.copy(alpha = 0.16f) else Ev.Bg)
+                .border(
+                    width = if (vm.aiRepeatGenerate) 1.5.dp else 1.dp,
+                    color = if (vm.aiRepeatGenerate) Ev.Accent else Ev.Line,
+                    shape = RoundedCornerShape(11.dp)
+                )
+                .padding(9.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "🔁 Generate Berulang (Variasi)",
+                        color = Ev.Text,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Generate beberapa kali di posisi yang sama untuk mendapatkan variasi berbeda",
+                        color = Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (vm.aiRepeatGenerate) Ev.Accent else Ev.Ghost)
+                        .border(1.dp, if (vm.aiRepeatGenerate) Ev.Accent else Ev.Line, RoundedCornerShape(9.dp))
+                        .clickable { vm.toggleAiRepeatGenerate() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (vm.aiRepeatGenerate) "ON" else "OFF",
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            if (vm.aiRepeatGenerate) {
+                Spacer(modifier = Modifier.height(7.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AiMiniBtn(
+                        label = "−",
+                        modifier = Modifier.weight(0.8f),
+                        enabled = vm.aiRepeatCount > 1
+                    ) { vm.stepAiRepeatCount(-1) }
+                    Box(
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Ev.Ghost)
+                            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${vm.aiRepeatCount}× generate (${vm.aiDurationSplit.label})",
+                            color = Ev.Yellow,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                    AiMiniBtn(
+                        label = "+",
+                        modifier = Modifier.weight(0.8f),
+                        enabled = vm.aiRepeatCount < 5
+                    ) { vm.stepAiRepeatCount(1) }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Akan menghasilkan ${vm.aiRepeatCount} kandidat terpisah dengan durasi ${vm.aiDurationSplit.label} di posisi scene yang sama.",
+                    color = Ev.InfoText,
+                    fontSize = 10.sp,
+                    lineHeight = 13.5.sp
+                )
+            }
+        }
+    }
+
+    // =========================================================================
+    // OPSI FRAME AWAL & FRAME AKHIR DARI SCENE TETANGGA (item #4)
+    // =========================================================================
+    if (hasScene) {
+        val prevSeg = vm.core.segs.getOrNull(segIdx - 1)
+        val nextSeg = vm.core.segs.getOrNull(segIdx + 1)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(11.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+                .padding(9.dp)
+        ) {
+            Text(
+                text = "🔗 FRAME DARI SCENE TETANGGA (OPSIONAL)",
+                color = Ev.Muted,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(5.dp))
+            Text(text = "Frame Awal AI", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                AiSmallChip(
+                    label = "📸 Frame Sendiri",
+                    active = vm.aiFirstFrameSource == AiEdgeFrameSource.FRAME_SENDIRI
+                ) { vm.selectAiFirstFrameSource(AiEdgeFrameSource.FRAME_SENDIRI) }
+                AiSmallChip(
+                    label = "⏮ Akhir Scene ${segIdx}",
+                    active = vm.aiFirstFrameSource == AiEdgeFrameSource.SCENE_SEBELUMNYA
+                ) { vm.selectAiFirstFrameSource(AiEdgeFrameSource.SCENE_SEBELUMNYA) }
+            }
+            if (prevSeg == null) {
+                Text(
+                    text = "Tidak ada scene sebelumnya (scene ini yang pertama).",
+                    color = Ev.Muted,
+                    fontSize = 9.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(7.dp))
+            Text(text = "Frame Akhir AI", color = Ev.Text, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                AiSmallChip(
+                    label = "📸 Frame Sendiri",
+                    active = vm.aiLastFrameSource == AiEdgeFrameSource.FRAME_SENDIRI
+                ) { vm.selectAiLastFrameSource(AiEdgeFrameSource.FRAME_SENDIRI) }
+                AiSmallChip(
+                    label = "Awal Scene ${segIdx + 2} ⏭",
+                    active = vm.aiLastFrameSource == AiEdgeFrameSource.SCENE_BERIKUTNYA
+                ) { vm.selectAiLastFrameSource(AiEdgeFrameSource.SCENE_BERIKUTNYA) }
+            }
+            if (nextSeg == null) {
+                Text(
+                    text = "Tidak ada scene berikutnya (scene ini yang terakhir).",
+                    color = Ev.Muted,
+                    fontSize = 9.sp
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+
+    // Pratinjau 2 Frame Scene: Frame Awal AI & Frame Akhir AI
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Kartu Frame Awal Scene
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                .padding(7.dp)
+        ) {
+            Text(
+                text = "FRAME AWAL AI",
+                color = Ev.Muted,
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(92.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                // Jika using frame dari scene sebelumnya, tampilkan itu; else frame sendiri
+                val firstBmp = when (vm.aiFirstFrameSource) {
+                    AiEdgeFrameSource.SCENE_SEBELUMNYA -> vm.aiNeighborFirstBitmap
+                    else -> vm.aiReplaceFirstBitmap ?: vm.aiSeekBitmap
+                }
+                if (firstBmp != null && !firstBmp.isRecycled) {
+                    Image(
+                        bitmap = firstBmp.asImageBitmap(),
+                        contentDescription = "Frame Awal AI",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(text = "Belum ada video", color = Ev.Muted, fontSize = 10.sp)
+                }
+            }
+            // Tampilkan label sumber frame
+            if (vm.aiFirstFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Sumber: ${when (vm.aiFirstFrameSource) {
+                        AiEdgeFrameSource.SCENE_SEBELUMNYA -> "Akhir Scene Sebelumnya"
+                        AiEdgeFrameSource.SCENE_BERIKUTNYA -> "Awal Scene Berikutnya"
+                        else -> "Frame Sendiri"
+                    }}",
+                    color = Ev.Yellow,
+                    fontSize = 9.sp
+                )
+            }
+        }
+
+        // Kartu Frame Akhir AI (jika menggunakan frame dari scene berikutnya)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Ev.Bg)
+                .border(1.dp, Ev.Line, RoundedCornerShape(10.dp))
+                .padding(7.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "FRAME AKHIR AI",
+                    color = Ev.Muted,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                        "Dari Scene Berikutnya"
+                    } else if (vm.aiReplaceBridgeLastFrame) "ON" else "OFF",
+                    color = if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                        Color(0xFF6EE7B7)
+                    } else if (vm.aiReplaceBridgeLastFrame) Color(0xFF6EE7B7) else Ev.Muted,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable { vm.toggleReplaceBridgeLastFrame() }
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(92.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Color.Black)
+                    .clickable { vm.toggleReplaceBridgeLastFrame() },
+                contentAlignment = Alignment.Center
+            ) {
+                // Jika using frame dari scene berikutnya, tampilkan itu
+                val lastBmp = when (vm.aiLastFrameSource) {
+                    AiEdgeFrameSource.SCENE_BERIKUTNYA -> vm.aiNeighborLastBitmap
+                    else -> vm.aiReplaceLastBitmap
+                }
+                if (vm.aiReplaceBridgeLastFrame && lastBmp != null && !lastBmp.isRecycled) {
+                    Image(
+                        bitmap = lastBmp.asImageBitmap(),
+                        contentDescription = "Frame Akhir AI",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        text = if (vm.aiReplaceBridgeLastFrame) "Menyinkronkan…" else "Nonaktif (Gerak Bebas)",
+                        color = Ev.Muted,
+                        fontSize = 10.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(6.dp)
+                    )
+                }
+            }
+            // Tampilkan label sumber frame
+            if (vm.aiLastFrameSource != AiEdgeFrameSource.FRAME_SENDIRI) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Sumber: ${when (vm.aiLastFrameSource) {
+                        AiEdgeFrameSource.SCENE_SEBELUMNYA -> "Akhir Scene Sebelumnya"
+                        AiEdgeFrameSource.SCENE_BERIKUTNYA -> "Awal Scene Berikutnya"
+                        else -> "Frame Sendiri"
+                    }}",
+                    color = Ev.Yellow,
+                    fontSize = 9.sp
+                )
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    // =========================================================================================
+    // INPUT RANGE DURASI REPLACE SCENE (1.0 – 10.0 DTK) + SHORTCUT DURASI SCENE (BILA <= 10 DTK)
+    // =========================================================================================
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Accent.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+            .padding(11.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "DURASI REPLACE SCENE (MAKS 10 DTK)",
+                    color = Ev.Muted,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${Fmt.one(vm.aiReplaceTargetDurSec)} detik",
+                    color = Ev.Yellow,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Shortcut Durasi Seperti Scene (aktif jika durasi scene <= 10.0 detik!)
+            val shortcutLabel = if (!hasScene) {
+                "⚡ Sesuai Scene (-)"
+            } else if (canShortcut) {
+                "⚡ Sesuai Scene (${Fmt.one(sceneDur)} dtk)"
+            } else {
+                "Scene ${Fmt.one(sceneDur)}s (> Maks 10s)"
+            }
+            Box(
+                modifier = Modifier
+                    .alpha(if (canShortcut) 1f else 0.45f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(
+                        when {
+                            shortcutActive -> Ev.Accent
+                            canShortcut -> Ev.Accent.copy(alpha = 0.22f)
+                            else -> Ev.Ghost
+                        }
+                    )
+                    .border(
+                        1.dp,
+                        if (canShortcut) Ev.Accent else Ev.Line,
+                        RoundedCornerShape(9.dp)
+                    )
+                    .clickable(enabled = canShortcut) { vm.applySceneDurationShortcut() }
+                    .padding(horizontal = 10.dp, vertical = 7.dp)
+            ) {
+                Text(
+                    text = shortcutLabel,
+                    color = if (shortcutActive) Color.White else Ev.Yellow,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Input Range Slider 1.0 dtk .. 10.0 dtk (step 0.1 dtk)
+        Slider(
+            value = vm.aiReplaceTargetDurSec.toFloat().coerceIn(1.0f, 10.0f),
+            onValueChange = { vm.updateReplaceTargetDuration(it.toDouble(), refreshEndFrame = false) },
+            onValueChangeFinished = { vm.captureReplaceSceneFrames() },
+            valueRange = 1.0f..10.0f,
+            steps = 89,
+            colors = SliderDefaults.colors(
+                thumbColor = Ev.Accent,
+                activeTrackColor = Ev.Accent,
+                inactiveTrackColor = Ev.Line
+            )
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = "Min 1.0 dtk", color = Ev.Muted, fontSize = 10.sp)
+            Text(text = "Batas ZeroGPU 10.0 dtk", color = Ev.Muted, fontSize = 10.sp)
+        }
+
+        Spacer(modifier = Modifier.height(7.dp))
+
+        // Preset Cepat + Shortcut Durasi Scene
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (canShortcut) {
+                AiSmallChip(
+                    label = "⚡ Scene (${Fmt.one(sceneDur)}s)",
+                    active = shortcutActive
+                ) {
+                    vm.applySceneDurationShortcut()
+                }
+            }
+            for (d in REPLACE_QUICK_DURS) {
+                val on = abs(vm.aiReplaceTargetDurSec - d) < 0.06
+                AiSmallChip(
+                    label = "${Fmt.one(d)} dtk",
+                    active = on
+                ) {
+                    vm.updateReplaceTargetDuration(d, refreshEndFrame = true)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Penjelasan Dekomposisi ZeroGPU Otomatis
+        Text(
+            text = "⚙ ${plan.note}",
+            color = Ev.InfoText,
+            fontSize = 10.5.sp,
+            lineHeight = 14.5.sp
+        )
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    // Opsi Audio pada Mode Replace Scene: Video Saja (Pertahankan Audio Asli) vs Video + Audio AI
+    AiReplaceAudioSelectorCard(vm)
+}
+
+@Composable
+internal fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            text = "OPSI AUDIO SAAT REPLACE SCENE",
+            color = Ev.Muted,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (am in AiReplaceAudioMode.entries) {
+                val active = vm.aiReplaceAudioMode == am
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
+                        .border(
+                            width = if (active) 1.5.dp else 1.dp,
+                            color = if (active) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(9.dp)
+                        )
+                        .clickable { vm.aiReplaceAudioMode = am }
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
+                        color = if (active) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = am.sub,
+                        color = if (active) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
