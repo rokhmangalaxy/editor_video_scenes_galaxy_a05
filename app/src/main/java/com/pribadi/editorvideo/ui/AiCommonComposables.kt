@@ -1,5 +1,6 @@
 package com.pribadi.editorvideo.ui
 
+import com.pribadi.editorvideo.ui.Theme.Ev
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
