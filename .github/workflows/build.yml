@@ -52,7 +52,7 @@ jobs:
       - name: Ambil isi repo
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.branch || github.ref_name }}
+          ref: ${{ github.event.inputs.branch }}
           persist-credentials: false
 
       - name: Periksa struktur proyek
