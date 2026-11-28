@@ -110,6 +110,128 @@ internal fun readPlainTextClipboard(context: Context): String? {
 
 
 @Composable
+internal fun AiSectionLabel(text: String) {
+    Text(
+        text = text,
+        color = Ev.Muted,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold
+    )
+}
+
+@Composable
+internal fun AiModeCard(
+    modifier: Modifier,
+    active: Boolean,
+    title: String,
+    sub: String,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(11.dp))
+            .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
+            .border(
+                width = if (active) 1.5.dp else 1.dp,
+                color = if (active) Ev.Accent else Ev.Line,
+                shape = RoundedCornerShape(11.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp)
+    ) {
+        Text(
+            text = title,
+            color = if (active) Color.White else Ev.Text,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = sub,
+            color = if (active) Ev.Yellow else Ev.Muted,
+            fontSize = 10.sp
+        )
+    }
+}
+
+@Composable
+internal fun AiMiniBtn(
+    label: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .alpha(if (enabled) 1f else 0.4f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Ev.Ghost)
+            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 7.dp, horizontal = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = Ev.Text,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+internal fun AiSmallChip(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) Ev.Accent else Ev.Ghost)
+            .border(1.dp, if (active) Ev.Accent else Ev.Line, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+internal fun AiTinyIconLabel(
+    symbol: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .alpha(if (enabled) 1f else 0.35f)
+            .clip(CircleShape)
+            .background(Ev.Ghost)
+            .border(1.dp, Ev.Line, CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = symbol,
+            color = Ev.Text,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+@Composable
 internal fun AiCreateTabContent(vm: EditorViewModel) {
     val plan = vm.currentAiExecutionPlan()
 
@@ -3095,125 +3217,3 @@ internal fun AiRunnerTabContent(vm: EditorViewModel) {
 // Komponen Kecil Pendukung UI Studio Video AI
 // =============================================================================================
 
-@Composable
-internal fun AiSectionLabel(text: String) {
-    Text(
-        text = text,
-        color = Ev.Muted,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold
-    )
-}
-
-@Composable
-internal fun AiModeCard(
-    modifier: Modifier,
-    active: Boolean,
-    title: String,
-    sub: String,
-    onClick: () -> Unit
-) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(11.dp))
-            .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Bg)
-            .border(
-                width = if (active) 1.5.dp else 1.dp,
-                color = if (active) Ev.Accent else Ev.Line,
-                shape = RoundedCornerShape(11.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp)
-    ) {
-        Text(
-            text = title,
-            color = if (active) Color.White else Ev.Text,
-            fontSize = 12.5.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = sub,
-            color = if (active) Ev.Yellow else Ev.Muted,
-            fontSize = 10.sp
-        )
-    }
-}
-
-@Composable
-internal fun AiMiniBtn(
-    label: String,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = modifier
-            .alpha(if (enabled) 1f else 0.4f)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Ev.Ghost)
-            .border(1.dp, Ev.Line, RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 7.dp, horizontal = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            color = Ev.Text,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-internal fun AiSmallChip(
-    label: String,
-    active: Boolean,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (active) Ev.Accent else Ev.Ghost)
-            .border(1.dp, if (active) Ev.Accent else Ev.Line, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 5.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            color = Color.White,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1
-        )
-    }
-}
-
-@Composable
-internal fun AiTinyIconLabel(
-    symbol: String,
-    enabled: Boolean = true,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .size(26.dp)
-            .alpha(if (enabled) 1f else 0.35f)
-            .clip(CircleShape)
-            .background(Ev.Ghost)
-            .border(1.dp, Ev.Line, CircleShape)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = symbol,
-            color = Ev.Text,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
-        )
-    }
-}
