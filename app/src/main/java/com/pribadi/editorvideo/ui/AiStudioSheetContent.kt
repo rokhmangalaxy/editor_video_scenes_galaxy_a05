@@ -1077,6 +1077,59 @@ internal fun AiStatusTabContent(vm: EditorViewModel) {
 
         // Opsi Audio Replace Scene langsung di Tab Status sebelum menekan Ganti Scene
         if (vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE) {
+internal fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            text = "OPSI AUDIO SAAT REPLACE SCENE",
+            color = Ev.Muted,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (am in AiReplaceAudioMode.entries) {
+                val active = vm.aiReplaceAudioMode == am
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
+                        .border(
+                            width = if (active) 1.5.dp else 1.dp,
+                            color = if (active) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(9.dp)
+                        )
+                        .clickable { vm.aiReplaceAudioMode = am }
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
+                        color = if (active) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = am.sub,
+                        color = if (active) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
             AiReplaceAudioSelectorCard(vm)
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -2082,6 +2135,7 @@ internal fun AiRunnerTabContent(vm: EditorViewModel) {
 // Komponen Kecil Pendukung UI Studio Video AI
 // =============================================================================================
 
+@Composable
 internal fun AiCreateTabContent(vm: EditorViewModel) {
     val plan = vm.currentAiExecutionPlan()
 
@@ -3162,58 +3216,5 @@ internal fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
 }
 
 @Composable
-internal fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(11.dp))
-            .background(Ev.Bg)
-            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
-            .padding(10.dp)
-    ) {
-        Text(
-            text = "OPSI AUDIO SAAT REPLACE SCENE",
-            color = Ev.Muted,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            for (am in AiReplaceAudioMode.entries) {
-                val active = vm.aiReplaceAudioMode == am
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
-                        .border(
-                            width = if (active) 1.5.dp else 1.dp,
-                            color = if (active) Ev.Accent else Ev.Line,
-                            shape = RoundedCornerShape(9.dp)
-                        )
-                        .clickable { vm.aiReplaceAudioMode = am }
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
-                        color = if (active) Color.White else Ev.Text,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = am.sub,
-                        color = if (active) Ev.Yellow else Ev.Muted,
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.5.sp
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
