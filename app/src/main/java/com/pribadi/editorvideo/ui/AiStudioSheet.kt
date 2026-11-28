@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.view.TextureView
+import com.pribadi.editorvideo.ui.AiStudioSheetContent.*
+
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -89,24 +91,8 @@ import kotlin.math.min
 private val REPLACE_QUICK_DURS = listOf(3.5, 5.0, 7.0, 10.0)
 private val PROMPT_CATEGORIES = listOf("Kamera", "Transisi", "Sinematik", "Aksi", "Kustom")
 
-private fun formatClockSec(sec: Int): String {
-    val s = sec.coerceAtLeast(0)
-    val m = s / 60
-    val r = s % 60
-    return String.format(Locale.US, "%02d:%02d", m, r)
-}
 
-private fun copyPlainText(context: Context, label: String, value: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    cm.setPrimaryClip(ClipData.newPlainText(label, value))
-}
 
-private fun readPlainTextClipboard(context: Context): String? {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return null
-    val clip = cm.primaryClip ?: return null
-    if (clip.itemCount <= 0) return null
-    return clip.getItemAt(0).coerceToText(context)?.toString()
-}
 
 @Composable
 fun AiStudioSheet(
