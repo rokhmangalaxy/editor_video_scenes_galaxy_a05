@@ -5,8 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.view.TextureView
-import com.pribadi.editorvideo.ui.AiStudioSheetContent.*
-
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
