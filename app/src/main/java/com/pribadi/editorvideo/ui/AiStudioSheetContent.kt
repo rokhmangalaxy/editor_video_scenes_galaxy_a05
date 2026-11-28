@@ -231,6 +231,62 @@ internal fun AiTinyIconLabel(
         )
     }
 }
+        // Pemutar Pratinjau MP4 Hasil AI:
+        // - Bila Mode Replace Scene: tampilkan KIRI (Video Scene Asli) vs KANAN (Hasil Video AI)!
+        // - Bila Mode Sisipkan     : tampilkan pemutar tunggal Hasil Video AI.
+internal fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(Ev.Bg)
+            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
+            .padding(10.dp)
+    ) {
+        Text(
+            text = "OPSI AUDIO SAAT REPLACE SCENE",
+            color = Ev.Muted,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (am in AiReplaceAudioMode.entries) {
+                val active = vm.aiReplaceAudioMode == am
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
+                        .border(
+                            width = if (active) 1.5.dp else 1.dp,
+                            color = if (active) Ev.Accent else Ev.Line,
+                            shape = RoundedCornerShape(9.dp)
+                        )
+                        .clickable { vm.aiReplaceAudioMode = am }
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
+                        color = if (active) Color.White else Ev.Text,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = am.sub,
+                        color = if (active) Ev.Yellow else Ev.Muted,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
 @Composable
 internal fun AiMultiOutputPreConfigCard(vm: EditorViewModel, plan: AiExecutionPlan) {
     val forceChain = vm.aiWorkMode == AiWorkMode.REPLACE_SCENE || vm.aiInsertPreset == AiInsertPreset.FULL_10
@@ -985,9 +1041,6 @@ internal fun AiStatusTabContent(vm: EditorViewModel) {
         val previewIdx = vm.aiPreviewResultIndex.coerceIn(0, results.lastIndex)
         val activeSeg = results[previewIdx]
 
-        // Pemutar Pratinjau MP4 Hasil AI:
-        // - Bila Mode Replace Scene: tampilkan KIRI (Video Scene Asli) vs KANAN (Hasil Video AI)!
-        // - Bila Mode Sisipkan     : tampilkan pemutar tunggal Hasil Video AI.
         if (!activeSeg.failed && activeSeg.mp4File != null) {
             val replaceTarget = if (vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE) {
                 vm.resolveSnapshotReplaceTarget()
@@ -1077,59 +1130,6 @@ internal fun AiStatusTabContent(vm: EditorViewModel) {
 
         // Opsi Audio Replace Scene langsung di Tab Status sebelum menekan Ganti Scene
         if (vm.aiSnapshotWorkMode == AiWorkMode.REPLACE_SCENE) {
-internal fun AiReplaceAudioSelectorCard(vm: EditorViewModel) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(11.dp))
-            .background(Ev.Bg)
-            .border(1.dp, Ev.Line, RoundedCornerShape(11.dp))
-            .padding(10.dp)
-    ) {
-        Text(
-            text = "OPSI AUDIO SAAT REPLACE SCENE",
-            color = Ev.Muted,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            for (am in AiReplaceAudioMode.entries) {
-                val active = vm.aiReplaceAudioMode == am
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(if (active) Ev.Accent.copy(alpha = 0.22f) else Ev.Ghost)
-                        .border(
-                            width = if (active) 1.5.dp else 1.dp,
-                            color = if (active) Ev.Accent else Ev.Line,
-                            shape = RoundedCornerShape(9.dp)
-                        )
-                        .clickable { vm.aiReplaceAudioMode = am }
-                        .padding(8.dp)
-                ) {
-                    Text(
-                        text = (if (am == AiReplaceAudioMode.VIDEO_ONLY) "🎬 " else "🔊 ") + am.label,
-                        color = if (active) Color.White else Ev.Text,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = am.sub,
-                        color = if (active) Ev.Yellow else Ev.Muted,
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.5.sp
-                    )
-                }
-            }
-        }
-    }
-}
             AiReplaceAudioSelectorCard(vm)
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -3214,7 +3214,3 @@ internal fun AiReplaceSceneSection(vm: EditorViewModel, plan: AiExecutionPlan) {
     // Opsi Audio pada Mode Replace Scene: Video Saja (Pertahankan Audio Asli) vs Video + Audio AI
     AiReplaceAudioSelectorCard(vm)
 }
-
-@Composable
-
-@Composable
